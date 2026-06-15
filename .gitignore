@@ -1,0 +1,97 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+app.log
+
+# Output / Build
+output/
+*.exe
+*.spec
+
+# Data (user-specific)
+data/
+history.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+nul
+cleanup_nul.bat
+
+# Test files
+sample.txt
+*.png.bak
+# Ignore PNGs except screenshots folder
+/*.PNG
+/*.png
+
+# Cookies (sensitive)
+cookies.txt
+*.cookies
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations (compiled)
+*.mo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
