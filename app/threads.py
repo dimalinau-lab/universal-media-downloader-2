@@ -182,7 +182,11 @@ class DownloadWorker(QRunnable):
         if tmp or fn:
             self.task.update_current_paths(tmpfilename=tmp, filename=fn)
         if d['status'] == 'downloading':
+            # Вытягиваем размер файла из yt-dlp во время скачивания
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
+            if total_bytes:
+                self.task.set_file_size(total_bytes)
+
             if total_bytes:
                 # Scale download to 0-90%
                 raw_percent = d.get('downloaded_bytes', 0) / total_bytes * 100

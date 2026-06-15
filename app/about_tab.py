@@ -12,6 +12,7 @@ class AboutTab(QWidget):
     def __init__(self, translator: Translator, parent=None):
         super().__init__(parent)
         self.translator = translator
+        self.parent_window = parent  # Сохраняем доступ к главному окну, чтобы проверять язык
         self.initUI()
         self.translator.language_changed.connect(self.update_translations)
 
@@ -37,19 +38,19 @@ class AboutTab(QWidget):
         info_box = QVBoxLayout()
         info_box.setSpacing(6)
 
-        self.lbl_title = QLabel(self.translator.translate('app_title'))
+        self.lbl_title = QLabel()
         self.lbl_title.setObjectName('AboutTitleLabel')
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.lbl_version = QLabel(self.translator.translate('version'))
+        self.lbl_version = QLabel()
         self.lbl_version.setObjectName('AboutVersionLabel')
         self.lbl_version.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.lbl_author = QLabel(self.translator.translate('author'))
+        self.lbl_author = QLabel()
         self.lbl_author.setObjectName('AboutAuthorLabel')
         self.lbl_author.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.lbl_desc = QLabel(self.translator.translate('description'))
+        self.lbl_desc = QLabel()
         self.lbl_desc.setObjectName('AboutDescriptionLabel')
         self.lbl_desc.setWordWrap(True)
         self.lbl_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -73,11 +74,11 @@ class AboutTab(QWidget):
         buttons_layout.setSpacing(16)
         buttons_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.btn_telegram = QPushButton(self.translator.translate('Telegram'))
+        self.btn_telegram = QPushButton()
         self.btn_telegram.setObjectName('AboutButton')
         self.btn_telegram.clicked.connect(self.on_telegram_clicked)
 
-        self.btn_support = QPushButton(self.translator.translate('support_author'))
+        self.btn_support = QPushButton()
         self.btn_support.setObjectName('AboutButton')
         self.btn_support.clicked.connect(self.on_support_clicked)
 
@@ -87,13 +88,30 @@ class AboutTab(QWidget):
         layout.addLayout(buttons_layout)
         layout.addStretch(1)
 
+        # Вызываем функцию перевода при запуске, чтобы сразу прогрузить нужный текст
+        self.update_translations()
+
     def update_translations(self):
         self.lbl_title.setText(self.translator.translate('app_title'))
-        self.lbl_version.setText(self.translator.translate('version'))
-        self.lbl_author.setText(self.translator.translate('author'))
         self.lbl_desc.setText(self.translator.translate('description'))
-        self.btn_telegram.setText(self.translator.translate('Telegram'))
-        self.btn_support.setText(self.translator.translate('support_author'))
+        self.btn_telegram.setText(self.translator.translate('Telegram', 'Telegram'))
+        self.btn_support.setText(self.translator.translate('support_author', 'Поддержать автора'))
+
+        # --- ЛОГИКА ТРЕХ ЯЗЫКОВ ДЛЯ АВТОРА И ВЕРСИИ ---
+        lang = 'ru'
+        if self.parent_window and hasattr(self.parent_window, 'settings'):
+            lang = self.parent_window.settings.value('language', 'ru')
+
+        if lang == 'en':
+            self.lbl_version.setText("Version: 1.6")
+            self.lbl_author.setText("Author: Magerko\nModified by: MrPablo")
+        elif lang == 'uk':
+            self.lbl_version.setText("Версія: 1.6")
+            self.lbl_author.setText("Автор: Magerko\nДоповнено: MrPablo")
+        else:
+            self.lbl_version.setText("Версия: 1.6")
+            self.lbl_author.setText("Автор: Magerko\nДополнено: MrPablo")
+        # -----------------------------------------------
 
     def on_telegram_clicked(self):
         QDesktopServices.openUrl(QUrl('https://t.me/mcodeg'))

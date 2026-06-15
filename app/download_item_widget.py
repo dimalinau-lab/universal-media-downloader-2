@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 class DownloadItemWidget(QWidget):
     remove_requested = pyqtSignal()
     open_folder_requested = pyqtSignal()
+    open_file_requested = pyqtSignal()  # <--- НОВЫЙ СИГНАЛ ДЛЯ ОТКРЫТИЯ ФАЙЛА
     copy_link_requested = pyqtSignal()
     start_or_retry_requested = pyqtSignal()
 
@@ -52,13 +53,24 @@ class DownloadItemWidget(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setObjectName('ItemProgressBar')
 
+        status_layout = QHBoxLayout()
+
         self.status_label = QLabel()
         self.status_label.setObjectName('StatusLabelItem')
+
+        self.size_label = QLabel()
+        self.size_label.setObjectName('SizeLabelItem')
+        self.size_label.setStyleSheet("color: #007acc; font-weight: bold; font-size: 13px;")
+        self.size_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        status_layout.addWidget(self.status_label)
+        status_layout.addStretch()
+        status_layout.addWidget(self.size_label)
 
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.url_label)
         info_layout.addWidget(self.progress_bar)
-        info_layout.addWidget(self.status_label)
+        info_layout.addLayout(status_layout)
 
         main_layout.addLayout(info_layout, 1)
 
@@ -74,7 +86,7 @@ class DownloadItemWidget(QWidget):
             if not icon.isNull():
                 self.remove_button.setIcon(icon)
             else:
-                logger.warning(f"Не удалось загрузить иконку, хотя файл существует: {close_icon_path}")
+                logger.warning(f"Не удалось загрузить иконку: {close_icon_path}")
                 self.remove_button.setText('X')
         else:
             logger.warning(f"Файл иконки не найден: {close_icon_path}")
@@ -87,14 +99,19 @@ class DownloadItemWidget(QWidget):
 
     def show_context_menu(self, pos):
         menu = QMenu(self)
+        act_start = QAction(self.translator.translate('download_this_video'), self)
+
+        # --- НОВАЯ КНОПКА В МЕНЮ ---
+        act_open_file = QAction(self.translator.translate('open_file', 'Открыть видео'), self)
+
         act_open = QAction(self.translator.translate('open_save_folder'), self)
         act_copy = QAction(self.translator.translate('copy_link'), self)
-        act_start = QAction(self.translator.translate('download_this_video'), self)
         act_remove = QAction(self.translator.translate('remove_from_list'), self)
 
+        act_start.triggered.connect(self.start_or_retry_requested.emit)
+        act_open_file.triggered.connect(self.open_file_requested.emit)  # <--- ПОДКЛЮЧАЕМ
         act_open.triggered.connect(self.open_folder_requested.emit)
         act_copy.triggered.connect(self.copy_link_requested.emit)
-        act_start.triggered.connect(self.start_or_retry_requested.emit)
         act_remove.triggered.connect(self.remove_requested.emit)
 
         is_startable = self.task.status in (
@@ -102,9 +119,11 @@ class DownloadItemWidget(QWidget):
         act_start.setEnabled(is_startable)
 
         is_completed = self.task.status == DownloadTask.Status.COMPLETED
+        act_open_file.setEnabled(is_completed)  # <--- АКТИВНО ТОЛЬКО ЕСЛИ СКАЧАНО
         act_open.setEnabled(is_completed)
 
         menu.addAction(act_start)
+        menu.addAction(act_open_file)  # <--- ДОБАВЛЯЕМ В МЕНЮ
         menu.addAction(act_open)
         menu.addAction(act_copy)
         menu.addSeparator()
@@ -116,7 +135,11 @@ class DownloadItemWidget(QWidget):
         self.task.status_changed.connect(self.update_ui)
         self.task.progress_updated.connect(self.on_progress_update)
         self.task.thumbnail_loaded.connect(self.set_thumbnail)
+        self.task.size_updated.connect(self.on_size_update)
         self.remove_button.clicked.connect(self.remove_requested.emit)
+
+    def on_size_update(self, size_str):
+        self.size_label.setText(size_str)
 
     def on_progress_update(self, percent, text):
         self.progress_bar.setValue(percent)
@@ -129,6 +152,8 @@ class DownloadItemWidget(QWidget):
 
     def update_ui(self):
         self.title_label.setText(self.task.title)
+        self.size_label.setText(self.task.file_size_str)
+
         status = self.task.status
         self.progress_bar.setVisible(
             status == DownloadTask.Status.DOWNLOADING or status == DownloadTask.Status.PROCESSING)

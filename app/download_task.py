@@ -20,6 +20,7 @@ class DownloadTask(QObject):
     progress_updated = pyqtSignal(int, str)
     thumbnail_loaded = pyqtSignal(QPixmap)
     thumbnail_load_requested = pyqtSignal(str, object)
+    size_updated = pyqtSignal(str)  # Сигнал для обновления размера в UI
 
     def __init__(self, url):
         super().__init__()
@@ -41,6 +42,7 @@ class DownloadTask(QObject):
         self.current_filename = None
         self.final_filepath = None
         self.thumbnail_loading = False
+        self.file_size_str = ""  # Строка с размером файла (напр. "15.4 MB")
 
     @property
     def status(self):
@@ -56,11 +58,34 @@ class DownloadTask(QObject):
         self.thumbnail_url = info.get('thumbnail')
         self.platform = info.get('extractor_key', 'Unknown')
         self.video_id = info.get('id')
+
+        # Пытаемся получить размер файла еще до начала загрузки
+        filesize = info.get('filesize') or info.get('filesize_approx')
+        if filesize:
+            self.set_file_size(filesize)
+
         self.info_updated.emit()
         self.set_status(self.Status.PENDING)
         if self.thumbnail_url and not self.thumbnail_loading:
             self.thumbnail_loading = True
             self.thumbnail_load_requested.emit(self.thumbnail_url, self)
+
+    def set_file_size(self, bytes_val):
+        """Переводит байты в КБ, МБ, ГБ и обновляет UI"""
+        if not bytes_val:
+            return
+        try:
+            b = float(bytes_val)
+            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                if b < 1024.0:
+                    new_str = f"{b:.1f} {unit}"
+                    if self.file_size_str != new_str:
+                        self.file_size_str = new_str
+                        self.size_updated.emit(self.file_size_str)
+                    return
+                b /= 1024.0
+        except ValueError:
+            pass
 
     def update_current_paths(self, tmpfilename=None, filename=None):
         if tmpfilename:

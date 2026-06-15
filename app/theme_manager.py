@@ -55,7 +55,9 @@ class ThemeManager:
             #UrlInput:focus {
                 border: 1px solid #007acc;
             }
-            #AddUrlButton, #LoadFileButton, #SecondaryButton {
+
+            /* --- ТУТ МЫ ДОБАВИЛИ #NotesButton --- */
+            #AddUrlButton, #LoadFileButton, #NotesButton, #SecondaryButton {
                 background-color: #3a3a3c;
                 border: 1px solid #505052;
                 border-radius: 17px;
@@ -68,9 +70,28 @@ class ThemeManager:
                 min-width: 0px;
                 min-height: 0px;
             }
-            #AddUrlButton:hover, #LoadFileButton:hover, #SecondaryButton:hover {
+            #AddUrlButton:hover, #LoadFileButton:hover, #NotesButton:hover, #SecondaryButton:hover {
                 background-color: #4f4f4f;
             }
+            /* ------------------------------------- */
+
+            /* --- СТИЛЬ ДЛЯ ОКНА ПРИМЕЧАНИЙ --- */
+            QDialog {
+                background-color: #1c1c1e;
+            }
+            QTextEdit {
+                background-color: #2a2a2c;
+                border: 1px solid #3a3a3c;
+                border-radius: 8px;
+                padding: 10px;
+                color: #e0e0e0;
+                font-size: 14px;
+            }
+            QTextEdit:focus {
+                border: 1px solid #007acc;
+            }
+            /* ---------------------------------- */
+
             #DownloadsList {
                 background-color: #1c1c1e;
                 border: none;
@@ -292,7 +313,9 @@ class ThemeManager:
             #UrlInput:focus {
                 border: 1px solid #007acc;
             }
-            #AddUrlButton, #LoadFileButton, #SecondaryButton {
+
+            /* --- ТУТ МЫ ДОБАВИЛИ #NotesButton --- */
+            #AddUrlButton, #LoadFileButton, #NotesButton, #SecondaryButton {
                 background-color: #ffffff;
                 border: 1px solid #dcdfe3;
                 border-radius: 17px;
@@ -305,9 +328,28 @@ class ThemeManager:
                 min-width: 0px;
                 min-height: 0px;
             }
-            #AddUrlButton:hover, #LoadFileButton:hover, #SecondaryButton:hover {
+            #AddUrlButton:hover, #LoadFileButton:hover, #NotesButton:hover, #SecondaryButton:hover {
                 background-color: #f5f5f5;
             }
+            /* ------------------------------------- */
+
+            /* --- СТИЛЬ ДЛЯ ОКНА ПРИМЕЧАНИЙ --- */
+            QDialog {
+                background-color: #f0f2f5;
+            }
+            QTextEdit {
+                background-color: #ffffff;
+                border: 1px solid #dcdfe3;
+                border-radius: 8px;
+                padding: 10px;
+                color: #1e1e1e;
+                font-size: 14px;
+            }
+            QTextEdit:focus {
+                border: 1px solid #007acc;
+            }
+            /* ---------------------------------- */
+
             #DownloadsList {
                 background-color: #f0f2f5;
                 border: none;

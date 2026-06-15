@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QProgressBar, QLabel,
                              QFileDialog, QMessageBox, QComboBox,
                              QListWidget, QListWidgetItem, QStackedWidget,
-                             QToolButton, QFrame, QApplication)
-from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl
+                             QToolButton, QFrame, QApplication, QDialog)
+from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl, QTimer
 from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices
 from .settings_tab import SettingsTab
 from .about_tab import AboutTab
@@ -42,8 +42,9 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.translator.language_changed.connect(self.update_translations)
 
+        # Проверяем первый запуск (счетчик = 0) и показываем примечания
+        QTimer.singleShot(500, self._check_first_launch)
         # Check for updates and Deno on startup (after window is shown)
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(1000, self._startup_checks)
 
     def check_ffmpeg(self):
@@ -97,9 +98,18 @@ class MainWindow(QMainWindow):
         self.btn_file.setFixedSize(35, 35)
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
 
+        # --- КНОПКА: Примечания ---
+        self.btn_notes = QToolButton()
+        self.btn_notes.setObjectName('NotesButton')
+        self.btn_notes.setText('📝')
+        self.btn_notes.setFixedSize(35, 35)
+        self.btn_notes.setToolTip(self.translator.translate('notes', 'Примечания'))
+        # --------------------------------
+
         top_bar_layout.addWidget(self.url_input)
         top_bar_layout.addWidget(self.btn_add)
         top_bar_layout.addWidget(self.btn_file)
+        top_bar_layout.addWidget(self.btn_notes)
         main_layout.addWidget(top_bar)
 
         content_layout = QHBoxLayout()
@@ -248,9 +258,9 @@ class MainWindow(QMainWindow):
         self.about_page = AboutTab(self.translator, self)
 
         self.page_stack.addWidget(self.downloads_page_stack)  # index 0
-        self.page_stack.addWidget(self.history_page)          # index 1
-        self.page_stack.addWidget(self.settings_page)         # index 2
-        self.page_stack.addWidget(self.about_page)            # index 3
+        self.page_stack.addWidget(self.history_page)  # index 1
+        self.page_stack.addWidget(self.settings_page)  # index 2
+        self.page_stack.addWidget(self.about_page)  # index 3
 
         self.update_placeholder_visibility()
         self._rebuild_recent_buttons()
@@ -313,6 +323,7 @@ class MainWindow(QMainWindow):
         self.btn_add.clicked.connect(self.on_add_link)
         self.url_input.returnPressed.connect(self.on_add_link)
         self.btn_file.clicked.connect(self.on_load_from_file)
+        self.btn_notes.clicked.connect(self.on_notes_clicked)
         self.language_combo.currentIndexChanged.connect(self.on_language_change)
         self.quick_theme_combo.currentIndexChanged.connect(self.on_quick_theme_change)
         self.download_button.clicked.connect(self.download_manager.start_all)
@@ -352,6 +363,7 @@ class MainWindow(QMainWindow):
         self.btn_about.setText(self.translator.translate('about'))
         self.btn_add.setToolTip(self.translator.translate('add_link'))
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
+        self.btn_notes.setToolTip(self.translator.translate('notes', 'Примечания'))
         self.empty_title.setText(
             self.translator.translate('no_downloads_placeholder', 'Add links to start downloading'))
         self.empty_b1.setText(
@@ -448,6 +460,9 @@ class MainWindow(QMainWindow):
         task.list_item = list_item
         item_widget.remove_requested.connect(lambda: self.remove_download_item(task))
         item_widget.open_folder_requested.connect(self.open_save_folder)
+
+        item_widget.open_file_requested.connect(lambda: self.open_downloaded_file(task))
+
         item_widget.copy_link_requested.connect(lambda: QApplication.clipboard().setText(task.url))
         item_widget.start_or_retry_requested.connect(lambda: self.download_manager.start_or_retry_task(task))
 
@@ -509,6 +524,111 @@ class MainWindow(QMainWindow):
             subprocess.Popen(['open', path])
         else:
             subprocess.Popen(['xdg-open', path])
+
+    def open_downloaded_file(self, task):
+        actual_path = task.final_filepath
+
+        if not actual_path or not os.path.exists(actual_path):
+            actual_path = task.current_filename
+
+        if actual_path and os.path.exists(actual_path):
+            self._open_path(actual_path)
+        else:
+            QMessageBox.warning(self, self.translator.translate('warning', 'Внимание'),
+                                self.translator.translate('file_not_found',
+                                                          'Файл не найден! Возможно, он еще конвертируется или был удален.'))
+
+    # --- ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ПЕРВОГО ЗАПУСКА И СЧЕТЧИКА ---
+    def _check_first_launch(self):
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        data_dir = os.path.join(project_root, 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        counter_file = os.path.join(data_dir, 'launch_count.json')
+
+        launch_count = 0
+        if os.path.exists(counter_file):
+            try:
+                with open(counter_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    launch_count = data.get('count', 0)
+            except Exception as e:
+                logger.error(f"Error reading launch count: {e}")
+
+        # Если это самый первый запуск — принудительно показываем окно заметок
+        if launch_count == 0:
+            self.on_notes_clicked()
+
+        # Увеличиваем счетчик запусков на 1 и сохраняем обратно
+        launch_count += 1
+        try:
+            with open(counter_file, 'w', encoding='utf-8') as f:
+                json.dump({'count': launch_count}, f)
+        except Exception as e:
+            logger.error(f"Error saving launch count: {e}")
+
+    # --- ФУНКЦИЯ ПРИМЕЧАНИЙ (С ТАЙМЕРОМ) ---
+    def on_notes_clicked(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel
+        from PyQt6.QtCore import QTimer, Qt
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.translator.translate('notes', 'Примечания'))
+
+        # Уменьшили высоту окна, так как поля ввода больше нет
+        dialog.resize(450, 150)
+
+        # Строго отключаем системную кнопку закрытия (крестик), чтобы нельзя было обойти таймер
+        dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+
+        layout = QVBoxLayout(dialog)
+
+        # Логика мультиязычного предупреждения о KinoPub
+        lang = self.settings.value('language', 'ru')
+        if lang == 'en':
+            warning_text = "⚠️ <b>Note:</b> For KinoPub, you must first play the video in your browser for 5 seconds, and only then copy the link to download!"
+            close_btn_text = "Understood / Close"
+        elif lang == 'uk':
+            warning_text = "⚠️ <b>Увага:</b> На KinoPub потрібно спочатку запустити відео в браузері на 5 секунд, і тільки потім копіювати посилання для завантаження!"
+            close_btn_text = "Зрозуміло / Закрити"
+        else:
+            warning_text = "⚠️ <b>Внимание:</b> На KinoPub нужно сначала запустить видео в браузере на 5 секунд, и только потом копировать ссылку для скачивания!"
+            close_btn_text = "Понятно / Закрыть"
+
+        warning_label = QLabel(warning_text)
+        warning_label.setWordWrap(True)
+        warning_label.setStyleSheet("color: #ff9800; font-size: 15px; margin-bottom: 15px;")
+        layout.addWidget(warning_label)
+
+        # Наша единственная кнопка (по умолчанию отключена)
+        close_btn = QPushButton(f"{close_btn_text} (5)")
+        close_btn.setObjectName('ActionButton')
+        close_btn.setFixedHeight(40)
+        close_btn.setEnabled(False)
+        layout.addWidget(close_btn)
+
+        # Логика таймера
+        time_left = [5]
+
+        def update_timer():
+            time_left[0] -= 1
+            if time_left[0] > 0:
+                close_btn.setText(f"{close_btn_text} ({time_left[0]})")
+            else:
+                timer.stop()
+                close_btn.setText(close_btn_text)
+                close_btn.setEnabled(True)  # Включаем кнопку!
+
+        timer = QTimer(dialog)
+        timer.timeout.connect(update_timer)
+        timer.start(1000)
+
+        # Логика закрытия
+        def on_close():
+            dialog.accept()
+
+        close_btn.clicked.connect(on_close)
+
+        dialog.exec()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
