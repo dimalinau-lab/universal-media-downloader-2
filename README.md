@@ -156,7 +156,7 @@ Downloader/
 
 ## Автор
 
-**Оригинальный автор:** Magerko  
+**Оригинальный автор:** Magerko  https://github.com/Magerko/universal-media-downloader
 **Дополнено (версия 1.6):** MrPablo  
 
 ## Лицензия
