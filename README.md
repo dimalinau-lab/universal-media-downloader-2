@@ -1,4 +1,4 @@
-# Universal Media Downloader
+# Universal Media Downloader v1.6
 
 <p align="center">
   <img src="assets/icon.png" alt="Logo" width="128" height="128">
@@ -9,18 +9,27 @@
 </p>
 
 <p align="center">
+  <a href="#что-нового-в-версии-16">Что нового</a> •
   <a href="#возможности">Возможности</a> •
-  <a href="#установка">Установка</a> •
   <a href="#требования">Требования</a> •
+  <a href="#установка">Установка</a> •
   <a href="#использование">Использование</a> •
   <a href="#скриншоты">Скриншоты</a>
 </p>
 
 ---
 
+## ✨ Что нового в версии 1.6 (Дополнено: MrPablo)
+
+- 📝 **Примечания:** Добавлена кнопка заметок со встроенным 5-секундным таймером и важным предупреждением для корректного скачивания с KinoPub (появляется при первом запуске).
+- 💾 **Отображение размера файла:** Теперь в карточке загрузки "на лету" отображается точный размер скачиваемого видео (в MB или GB).
+- ▶️ **Быстрый запуск:** В контекстное меню (по правому клику на завершенной загрузке) добавлена кнопка **«Открыть видео»**, которая моментально запускает скачанный файл в вашем плеере по умолчанию.
+
+---
+
 ## Возможности
 
-- **Поддержка платформ**: YouTube, TikTok, Instagram, VK, RuTube, Twitch, Kick, Kinopoisk и другие
+- **Поддержка платформ**: YouTube, TikTok, Instagram, VK, RuTube, Twitch, Kick, Kinopoisk, KinoPub и другие
 - **Выбор качества**: индивидуальные настройки для каждой платформы
 - **Извлечение аудио**: конвертация в MP3 (192kbps)
 - **Параллельные загрузки**: настраиваемое количество одновременных загрузок
@@ -36,50 +45,25 @@
 
 - **Python** 3.10+
 - **Deno** 2.0+ (требуется для загрузки с YouTube)
-- **FFmpeg** (включён в проект или системный)
 
 ### Установка Deno (обязательно для YouTube)
 
 **Windows (PowerShell):**
 ```powershell
-irm https://deno.land/install.ps1 | iex
-```
-
-**macOS/Linux:**
-```bash
-curl -fsSL https://deno.land/install.sh | sh
+irm [https://deno.land/install.ps1](https://deno.land/install.ps1) | iex
 ```
 
 ### FFmpeg
 
 FFmpeg используется для объединения видео и аудио потоков, конвертации форматов и извлечения аудио.
 
-**Вариант 1:** Приложение уже содержит FFmpeg в папке `assets/ffmpeg/`
-
-**Вариант 2:** Установить системно:
-
-**Windows:**
-```powershell
-winget install FFmpeg
-```
-или скачать с [ffmpeg.org](https://ffmpeg.org/download.html)
-
-**macOS:**
-```bash
-brew install ffmpeg
-```
-
-**Linux:**
-```bash
-sudo apt install ffmpeg  # Debian/Ubuntu
-sudo dnf install ffmpeg  # Fedora
-```
+**Устанавливать FFmpeg не нужно!** Приложение уже содержит все необходимые встроенные бинарные файлы в папке `assets/ffmpeg/`, поэтому программа готова к работе сразу после скачивания.
 
 ## Установка
 
 1. **Клонируйте репозиторий:**
 ```bash
-git clone https://github.com/YOUR_USERNAME/universal-media-downloader.git
+git clone [https://github.com/YOUR_USERNAME/universal-media-downloader.git](https://github.com/YOUR_USERNAME/universal-media-downloader.git)
 cd universal-media-downloader
 ```
 
@@ -93,11 +77,6 @@ python -m venv .venv
 Windows:
 ```bash
 .venv\Scripts\activate
-```
-
-macOS/Linux:
-```bash
-source .venv/bin/activate
 ```
 
 4. **Установите зависимости:**
@@ -133,7 +112,7 @@ python main.py
 
 ## Структура проекта
 
-```
+```text
 Downloader/
 ├── app/                    # Основной код приложения
 │   ├── main_window.py      # Главное окно
@@ -177,7 +156,8 @@ Downloader/
 
 ## Автор
 
-**Magerko**
+**Оригинальный автор:** Magerko  
+**Дополнено (версия 1.6):** MrPablo  
 
 ## Лицензия
 
@@ -186,5 +166,4 @@ MIT License - см. файл LICENSE для подробностей.
 ---
 
 <p align="center">
-  Сделано с ❤️ на Python и PyQt6
 </p>
