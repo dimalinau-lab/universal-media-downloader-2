@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class DownloadItemWidget(QWidget):
     remove_requested = pyqtSignal()
     open_folder_requested = pyqtSignal()
-    open_file_requested = pyqtSignal()  # <--- НОВЫЙ СИГНАЛ ДЛЯ ОТКРЫТИЯ ФАЙЛА
+    open_file_requested = pyqtSignal()
     copy_link_requested = pyqtSignal()
     start_or_retry_requested = pyqtSignal()
 
@@ -101,7 +101,6 @@ class DownloadItemWidget(QWidget):
         menu = QMenu(self)
         act_start = QAction(self.translator.translate('download_this_video'), self)
 
-        # --- НОВАЯ КНОПКА В МЕНЮ ---
         act_open_file = QAction(self.translator.translate('open_file', 'Открыть видео'), self)
 
         act_open = QAction(self.translator.translate('open_save_folder'), self)
@@ -109,7 +108,7 @@ class DownloadItemWidget(QWidget):
         act_remove = QAction(self.translator.translate('remove_from_list'), self)
 
         act_start.triggered.connect(self.start_or_retry_requested.emit)
-        act_open_file.triggered.connect(self.open_file_requested.emit)  # <--- ПОДКЛЮЧАЕМ
+        act_open_file.triggered.connect(self.open_file_requested.emit)
         act_open.triggered.connect(self.open_folder_requested.emit)
         act_copy.triggered.connect(self.copy_link_requested.emit)
         act_remove.triggered.connect(self.remove_requested.emit)
@@ -119,11 +118,11 @@ class DownloadItemWidget(QWidget):
         act_start.setEnabled(is_startable)
 
         is_completed = self.task.status == DownloadTask.Status.COMPLETED
-        act_open_file.setEnabled(is_completed)  # <--- АКТИВНО ТОЛЬКО ЕСЛИ СКАЧАНО
+        act_open_file.setEnabled(is_completed)
         act_open.setEnabled(is_completed)
 
         menu.addAction(act_start)
-        menu.addAction(act_open_file)  # <--- ДОБАВЛЯЕМ В МЕНЮ
+        menu.addAction(act_open_file)
         menu.addAction(act_open)
         menu.addAction(act_copy)
         menu.addSeparator()

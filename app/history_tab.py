@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class HistoryManager:
-    """Manages download history storage in JSON file."""
 
     def __init__(self, data_dir):
         self.data_dir = data_dir
@@ -25,7 +24,6 @@ class HistoryManager:
         self._load()
 
     def _load(self):
-        """Load history from file."""
         try:
             if os.path.exists(self.history_file):
                 with open(self.history_file, 'r', encoding='utf-8') as f:
@@ -35,7 +33,6 @@ class HistoryManager:
             self._history = []
 
     def _save(self):
-        """Save history to file."""
         try:
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(self._history, f, ensure_ascii=False, indent=2)
@@ -43,7 +40,6 @@ class HistoryManager:
             logger.error(f"Failed to save history: {e}")
 
     def add_entry(self, url, title, platform, status, file_path=None):
-        """Add a new history entry."""
         entry = {
             'id': len(self._history) + 1,
             'url': url,
@@ -53,9 +49,8 @@ class HistoryManager:
             'file_path': file_path,
             'date': datetime.now().isoformat()
         }
-        self._history.insert(0, entry)  # Add to beginning (newest first)
+        self._history.insert(0, entry)
 
-        # Keep only last 500 entries
         if len(self._history) > 500:
             self._history = self._history[:500]
 
@@ -63,11 +58,9 @@ class HistoryManager:
         return entry
 
     def get_all(self):
-        """Get all history entries."""
         return self._history.copy()
 
     def search(self, query):
-        """Search history by title or URL."""
         query = query.lower()
         return [
             entry for entry in self._history
@@ -75,27 +68,23 @@ class HistoryManager:
         ]
 
     def clear(self):
-        """Clear all history."""
         self._history = []
         self._save()
 
     def remove_entry(self, entry_id):
-        """Remove a specific entry by ID."""
         self._history = [e for e in self._history if e.get('id') != entry_id]
         self._save()
 
 
 class HistoryTab(QWidget):
-    """Tab for displaying download history."""
 
-    redownload_requested = pyqtSignal(str)  # URL to re-download
+    redownload_requested = pyqtSignal(str)
 
     def __init__(self, translator, parent=None):
         super().__init__(parent)
         self.translator = translator
         self.parent_window = parent
 
-        # Initialize history manager
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         data_dir = os.path.join(project_root, 'data')
         self.history_manager = HistoryManager(data_dir)

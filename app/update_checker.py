@@ -10,10 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 class UpdateSignals(QObject):
-    update_available = pyqtSignal(str, str)  # current_version, latest_version
-    update_completed = pyqtSignal(bool, str)  # success, message
+    update_available = pyqtSignal(str, str)
+    update_completed = pyqtSignal(bool, str)
     no_update_needed = pyqtSignal()
-    check_failed = pyqtSignal(str)  # error message
+    check_failed = pyqtSignal(str)
 
 
 class UpdateCheckWorker(QRunnable):
@@ -25,8 +25,6 @@ class UpdateCheckWorker(QRunnable):
         try:
             import yt_dlp
             current_version = yt_dlp.version.__version__
-
-            # Get latest version from PyPI
             import requests
             response = requests.get(
                 'https://pypi.org/pypi/yt-dlp/json',
@@ -39,7 +37,6 @@ class UpdateCheckWorker(QRunnable):
 
             logger.info(f"yt-dlp version check: current={current_version}, latest={latest_version}")
 
-            # Compare versions
             if version.parse(latest_version) > version.parse(current_version):
                 self.signals.update_available.emit(current_version, latest_version)
             else:
@@ -57,7 +54,6 @@ class UpdateWorker(QRunnable):
 
     def run(self):
         try:
-            # Update yt-dlp using pip
             python_exe = sys.executable
             result = subprocess.run(
                 [python_exe, '-m', 'pip', 'install', '-U', 'yt-dlp[curl-cffi]'],
@@ -92,7 +88,6 @@ class UpdateChecker(QObject):
         self._latest_version = None
 
     def check_for_updates(self, silent=False):
-        """Check for yt-dlp updates. If silent=True, don't show dialog if no update."""
         self._silent = silent
         worker = UpdateCheckWorker()
         worker.signals.update_available.connect(self._on_update_available)
@@ -156,7 +151,6 @@ class UpdateChecker(QObject):
             logger.warning(f"Update check failed: {error}")
 
     def _perform_update(self):
-        # Show progress dialog
         from PyQt6.QtWidgets import QProgressDialog
         progress = QProgressDialog(
             self.translator.translate('updating_ytdlp', 'Updating yt-dlp...'),
@@ -206,7 +200,6 @@ class UpdateChecker(QObject):
                     timeout=5
                 )
                 if result.returncode == 0:
-                    # Parse version from output like "deno 2.1.0"
                     for line in result.stdout.split('\n'):
                         if line.startswith('deno'):
                             return line.split()[1]

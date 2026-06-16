@@ -98,5 +98,15 @@
   "remove_from_history": "Видалити з історії",
   "confirm": "Підтвердження",
   "clear_history_confirm": "Ви впевнені, що хочете очистити всю історію?",
-  "history_stats": "Всього: {total} | Завершено: {completed} | Помилки: {errors}"
+  "history_stats": "Всього: {total} | Завершено: {completed} | Помилки: {errors}",
+  "files_tab": "Файли",
+  "downloaded_files": "Завантажені файли",
+  "status_downloaded": "Завантажено ✓",
+  "play_video": "Відтворити відео",
+  "show_in_folder": "Показати в папці",
+  "delete_file_forever": "Видалити файл назавжди",
+  "delete_file_title": "Видалення файлу",
+  "delete_file_confirm": "Ви впевнені, що хочете безповоротно видалити файл:\n{filename}?",
+  "file_not_exists": "Файл більше не існує. Оновіть список.",
+  "failed_to_delete": "Не вдалося видалити файл:\n{error}"
 }

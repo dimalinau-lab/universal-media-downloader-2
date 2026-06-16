@@ -12,7 +12,7 @@ class AboutTab(QWidget):
     def __init__(self, translator: Translator, parent=None):
         super().__init__(parent)
         self.translator = translator
-        self.parent_window = parent  # Сохраняем доступ к главному окну, чтобы проверять язык
+        self.parent_window = parent
         self.initUI()
         self.translator.language_changed.connect(self.update_translations)
 
@@ -88,7 +88,6 @@ class AboutTab(QWidget):
         layout.addLayout(buttons_layout)
         layout.addStretch(1)
 
-        # Вызываем функцию перевода при запуске, чтобы сразу прогрузить нужный текст
         self.update_translations()
 
     def update_translations(self):
@@ -97,21 +96,20 @@ class AboutTab(QWidget):
         self.btn_telegram.setText(self.translator.translate('Telegram', 'Telegram'))
         self.btn_support.setText(self.translator.translate('support_author', 'Поддержать автора'))
 
-        # --- ЛОГИКА ТРЕХ ЯЗЫКОВ ДЛЯ АВТОРА И ВЕРСИИ ---
+
         lang = 'ru'
         if self.parent_window and hasattr(self.parent_window, 'settings'):
             lang = self.parent_window.settings.value('language', 'ru')
 
         if lang == 'en':
-            self.lbl_version.setText("Version: 1.6")
+            self.lbl_version.setText("Version: 2.0")
             self.lbl_author.setText("Author: Magerko\nModified by: MrPablo")
         elif lang == 'uk':
-            self.lbl_version.setText("Версія: 1.6")
+            self.lbl_version.setText("Версія: 2.0")
             self.lbl_author.setText("Автор: Magerko\nДоповнено: MrPablo")
         else:
-            self.lbl_version.setText("Версия: 1.6")
+            self.lbl_version.setText("Версия: 2.0")
             self.lbl_author.setText("Автор: Magerko\nДополнено: MrPablo")
-        # -----------------------------------------------
 
     def on_telegram_clicked(self):
         QDesktopServices.openUrl(QUrl('https://t.me/mcodeg'))

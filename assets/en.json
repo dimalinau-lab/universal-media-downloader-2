@@ -98,5 +98,15 @@
   "remove_from_history": "Remove from history",
   "confirm": "Confirm",
   "clear_history_confirm": "Are you sure you want to clear all history?",
-  "history_stats": "Total: {total} | Completed: {completed} | Errors: {errors}"
+  "history_stats": "Total: {total} | Completed: {completed} | Errors: {errors}",
+  "files_tab": "Files",
+  "downloaded_files": "Downloaded files",
+  "status_downloaded": "Downloaded ✓",
+  "play_video": "Play video",
+  "show_in_folder": "Show in folder",
+  "delete_file_forever": "Delete file permanently",
+  "delete_file_title": "Delete File",
+  "delete_file_confirm": "Are you sure you want to permanently delete the file:\n{filename}?",
+  "file_not_exists": "The file no longer exists. Please refresh the list.",
+  "failed_to_delete": "Failed to delete file:\n{error}"
 }

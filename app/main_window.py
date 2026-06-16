@@ -3,6 +3,7 @@ import os
 import subprocess
 import logging
 import json
+from qfluentwidgets import LineEdit, TransparentToolButton, FluentIcon, setTheme, Theme
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QProgressBar, QLabel,
                              QFileDialog, QMessageBox, QComboBox,
@@ -10,6 +11,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QToolButton, QFrame, QApplication, QDialog)
 from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl, QTimer
 from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices
+
 from .settings_tab import SettingsTab
 from .about_tab import AboutTab
 from .history_tab import HistoryTab
@@ -19,6 +21,7 @@ from .translation import Translator
 from .theme_manager import ThemeManager
 from .flow_layout import FlowLayout
 from .update_checker import UpdateChecker
+from .files_tab import FilesTab
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +33,7 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.ffmpeg_path = self.check_ffmpeg()
         self.thread_pool = QThreadPool()
-        # Set higher thread count for better parallelism
-        # (thumbnail loading, info fetching, and downloads run in parallel)
         parallel_downloads = int(self.settings.value('parallel_downloads', 2))
-        # Allow extra threads for thumbnails and info workers
         self.thread_pool.setMaxThreadCount(max(parallel_downloads + 6, 8))
         self.download_manager = DownloadManager(self.settings, self.ffmpeg_path, self.thread_pool, self.translator)
         self.update_checker = UpdateChecker(self, self.translator, self.settings, self.thread_pool)
@@ -42,9 +42,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.translator.language_changed.connect(self.update_translations)
 
-        # Проверяем первый запуск (счетчик = 0) и показываем примечания
         QTimer.singleShot(500, self._check_first_launch)
-        # Check for updates and Deno on startup (after window is shown)
         QTimer.singleShot(1000, self._startup_checks)
 
     def check_ffmpeg(self):
@@ -70,6 +68,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.translator.translate('app_title'))
         self.resize(1200, 800)
 
+        current_theme = self.settings.value('theme', 'dark')
+        setTheme(Theme.DARK if current_theme == 'dark' else Theme.LIGHT)
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -81,30 +82,23 @@ class MainWindow(QMainWindow):
         top_bar_layout = QHBoxLayout(top_bar)
         top_bar_layout.setContentsMargins(15, 10, 15, 10)
 
-        self.url_input = QLineEdit()
+        self.url_input = LineEdit()
         self.url_input.setObjectName('UrlInput')
         self.url_input.setMinimumHeight(35)
         self.url_input.setPlaceholderText(self.translator.translate('enter_link_and_press_add'))
+        self.url_input.setClearButtonEnabled(True)
 
-        self.btn_add = QToolButton()
-        self.btn_add.setObjectName('AddUrlButton')
-        self.btn_add.setText('➕')
+        self.btn_add = TransparentToolButton(FluentIcon.ADD)
         self.btn_add.setFixedSize(35, 35)
         self.btn_add.setToolTip(self.translator.translate('add_link'))
 
-        self.btn_file = QToolButton()
-        self.btn_file.setObjectName('LoadFileButton')
-        self.btn_file.setText('📁')
+        self.btn_file = TransparentToolButton(FluentIcon.FOLDER)
         self.btn_file.setFixedSize(35, 35)
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
 
-        # --- КНОПКА: Примечания ---
-        self.btn_notes = QToolButton()
-        self.btn_notes.setObjectName('NotesButton')
-        self.btn_notes.setText('📝')
+        self.btn_notes = TransparentToolButton(FluentIcon.EDIT)
         self.btn_notes.setFixedSize(35, 35)
         self.btn_notes.setToolTip(self.translator.translate('notes', 'Примечания'))
-        # --------------------------------
 
         top_bar_layout.addWidget(self.url_input)
         top_bar_layout.addWidget(self.btn_add)
@@ -126,6 +120,10 @@ class MainWindow(QMainWindow):
         self.btn_downloads.setObjectName('NavButton')
         self.btn_history = QPushButton(self.translator.translate('history', 'History'))
         self.btn_history.setObjectName('NavButton')
+
+        self.btn_files = QPushButton(self.translator.translate('files_tab', 'Файлы'))
+        self.btn_files.setObjectName('NavButton')
+
         self.btn_settings = QPushButton(self.translator.translate('settings'))
         self.btn_settings.setObjectName('NavButton')
         self.btn_about = QPushButton(self.translator.translate('about'))
@@ -133,6 +131,7 @@ class MainWindow(QMainWindow):
 
         nav_layout.addWidget(self.btn_downloads)
         nav_layout.addWidget(self.btn_history)
+        nav_layout.addWidget(self.btn_files)
         nav_layout.addWidget(self.btn_settings)
         nav_layout.addWidget(self.btn_about)
         nav_layout.addStretch()
@@ -255,12 +254,14 @@ class MainWindow(QMainWindow):
 
         self.settings_page = SettingsTab(self.translator, self)
         self.history_page = HistoryTab(self.translator, self)
+        self.files_page = FilesTab(self.translator, self)
         self.about_page = AboutTab(self.translator, self)
 
-        self.page_stack.addWidget(self.downloads_page_stack)  # index 0
-        self.page_stack.addWidget(self.history_page)  # index 1
-        self.page_stack.addWidget(self.settings_page)  # index 2
-        self.page_stack.addWidget(self.about_page)  # index 3
+        self.page_stack.addWidget(self.downloads_page_stack)  # 0
+        self.page_stack.addWidget(self.history_page)  # 1
+        self.page_stack.addWidget(self.files_page)  # 2
+        self.page_stack.addWidget(self.settings_page)  # 3
+        self.page_stack.addWidget(self.about_page)  # 4
 
         self.update_placeholder_visibility()
         self._rebuild_recent_buttons()
@@ -331,13 +332,17 @@ class MainWindow(QMainWindow):
         self.clear_button.clicked.connect(self.clear_completed_items)
         self.btn_paste.clicked.connect(self.on_paste_from_clipboard)
         self.btn_import.clicked.connect(self.on_load_from_file)
-        self.btn_quality.clicked.connect(lambda: self.page_stack.setCurrentIndex(2))  # Settings
+
+        self.btn_quality.clicked.connect(lambda: self.page_stack.setCurrentIndex(3))
         self.btn_downloads.clicked.connect(lambda: self.page_stack.setCurrentIndex(0))
         self.btn_history.clicked.connect(lambda: self.page_stack.setCurrentIndex(1))
-        self.btn_settings.clicked.connect(lambda: self.page_stack.setCurrentIndex(2))
-        self.btn_about.clicked.connect(lambda: self.page_stack.setCurrentIndex(3))
 
-        # History re-download signal
+
+        self.btn_files.clicked.connect(self._show_files_tab)
+
+        self.btn_settings.clicked.connect(lambda: self.page_stack.setCurrentIndex(3))
+        self.btn_about.clicked.connect(lambda: self.page_stack.setCurrentIndex(4))
+
         self.history_page.redownload_requested.connect(self._redownload_from_history)
         self.btn_open_save.clicked.connect(self.open_save_folder)
         self.btn_open_logs.clicked.connect(self.open_logs_folder)
@@ -360,6 +365,7 @@ class MainWindow(QMainWindow):
         self.btn_downloads.setText(self.translator.translate('loader_tab_title'))
         self.btn_settings.setText(self.translator.translate('settings'))
         self.btn_history.setText(self.translator.translate('history', 'History'))
+        self.btn_files.setText(self.translator.translate('files_tab', 'Файлы'))
         self.btn_about.setText(self.translator.translate('about'))
         self.btn_add.setToolTip(self.translator.translate('add_link'))
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
@@ -388,6 +394,9 @@ class MainWindow(QMainWindow):
         self.settings_page.update_translations()
         self.history_page.update_translations()
         self.about_page.update_translations()
+
+        if hasattr(self, 'files_page') and hasattr(self.files_page, 'update_translations'):
+            self.files_page.update_translations()
 
     def on_language_change(self, index):
         language_map = {0: 'en', 1: 'ru', 2: 'uk'}
@@ -466,7 +475,6 @@ class MainWindow(QMainWindow):
         item_widget.copy_link_requested.connect(lambda: QApplication.clipboard().setText(task.url))
         item_widget.start_or_retry_requested.connect(lambda: self.download_manager.start_or_retry_task(task))
 
-        # Connect to save history when download completes/fails/stops
         task.status_changed.connect(lambda status, t=task: self._on_task_status_changed(t, status))
         self.update_placeholder_visibility()
 
@@ -538,7 +546,6 @@ class MainWindow(QMainWindow):
                                 self.translator.translate('file_not_found',
                                                           'Файл не найден! Возможно, он еще конвертируется или был удален.'))
 
-    # --- ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ПЕРВОГО ЗАПУСКА И СЧЕТЧИКА ---
     def _check_first_launch(self):
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         data_dir = os.path.join(project_root, 'data')
@@ -554,11 +561,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Error reading launch count: {e}")
 
-        # Если это самый первый запуск — принудительно показываем окно заметок
         if launch_count == 0:
             self.on_notes_clicked()
 
-        # Увеличиваем счетчик запусков на 1 и сохраняем обратно
         launch_count += 1
         try:
             with open(counter_file, 'w', encoding='utf-8') as f:
@@ -566,7 +571,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Error saving launch count: {e}")
 
-    # --- ФУНКЦИЯ ПРИМЕЧАНИЙ (С ТАЙМЕРОМ) ---
     def on_notes_clicked(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel
         from PyQt6.QtCore import QTimer, Qt
@@ -574,15 +578,11 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle(self.translator.translate('notes', 'Примечания'))
 
-        # Уменьшили высоту окна, так как поля ввода больше нет
         dialog.resize(450, 150)
-
-        # Строго отключаем системную кнопку закрытия (крестик), чтобы нельзя было обойти таймер
         dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
 
         layout = QVBoxLayout(dialog)
 
-        # Логика мультиязычного предупреждения о KinoPub
         lang = self.settings.value('language', 'ru')
         if lang == 'en':
             warning_text = "⚠️ <b>Note:</b> For KinoPub, you must first play the video in your browser for 5 seconds, and only then copy the link to download!"
@@ -599,14 +599,12 @@ class MainWindow(QMainWindow):
         warning_label.setStyleSheet("color: #ff9800; font-size: 15px; margin-bottom: 15px;")
         layout.addWidget(warning_label)
 
-        # Наша единственная кнопка (по умолчанию отключена)
         close_btn = QPushButton(f"{close_btn_text} (5)")
         close_btn.setObjectName('ActionButton')
         close_btn.setFixedHeight(40)
         close_btn.setEnabled(False)
         layout.addWidget(close_btn)
 
-        # Логика таймера
         time_left = [5]
 
         def update_timer():
@@ -616,13 +614,12 @@ class MainWindow(QMainWindow):
             else:
                 timer.stop()
                 close_btn.setText(close_btn_text)
-                close_btn.setEnabled(True)  # Включаем кнопку!
+                close_btn.setEnabled(True)
 
         timer = QTimer(dialog)
         timer.timeout.connect(update_timer)
         timer.start(1000)
 
-        # Логика закрытия
         def on_close():
             dialog.accept()
 
@@ -712,23 +709,18 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_buttons()
 
     def _startup_checks(self):
-        """Perform startup checks for Deno and yt-dlp updates."""
-        # Check if Deno is installed (for YouTube support)
         if not self.update_checker.check_deno_installed():
             self.update_checker.show_deno_warning()
 
-        # Check for yt-dlp updates (silent mode - only notify if update available)
         self.update_checker.check_for_updates(silent=True)
 
     def _redownload_from_history(self, url):
-        """Re-download a URL from history."""
         self.download_manager.add_urls([url])
         self._add_recent(url)
         self._rebuild_recent_buttons()
-        self.page_stack.setCurrentIndex(0)  # Switch to downloads tab
+        self.page_stack.setCurrentIndex(0)
 
     def _save_to_history(self, task):
-        """Save completed task to history."""
         self.history_page.add_to_history(
             url=task.url,
             title=task.title,
@@ -738,8 +730,11 @@ class MainWindow(QMainWindow):
         )
 
     def _on_task_status_changed(self, task, status):
-        """Handle task status changes - save to history when finished."""
         from .download_task import DownloadTask
         final_statuses = [DownloadTask.Status.COMPLETED, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED]
         if status in final_statuses:
             self._save_to_history(task)
+
+    def _show_files_tab(self):
+        self.files_page.load_files()
+        self.page_stack.setCurrentIndex(2)

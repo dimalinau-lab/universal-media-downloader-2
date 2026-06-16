@@ -98,5 +98,15 @@
   "remove_from_history": "Удалить из истории",
   "confirm": "Подтверждение",
   "clear_history_confirm": "Вы уверены, что хотите очистить всю историю?",
-  "history_stats": "Всего: {total} | Завершено: {completed} | Ошибки: {errors}"
+  "history_stats": "Всего: {total} | Завершено: {completed} | Ошибки: {errors}",
+  "files_tab": "Файлы",
+  "downloaded_files": "Скачанные файлы",
+  "status_downloaded": "Скачано ✓",
+  "play_video": "Воспроизвести видео",
+  "show_in_folder": "Показать в папке",
+  "delete_file_forever": "Удалить файл навсегда",
+  "delete_file_title": "Удаление файла",
+  "delete_file_confirm": "Вы уверены, что хотите безвозвратно удалить файл:\n{filename}?",
+  "file_not_exists": "Файл больше не существует. Обновите список.",
+  "failed_to_delete": "Не удалось удалить файл:\n{error}"
 }

@@ -15,12 +15,10 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
-# Global HTTP session with connection pooling and retries
 _http_session = None
 
 
 def get_http_session():
-    """Get or create a global HTTP session with connection pooling."""
     global _http_session
     if _http_session is None:
         _http_session = requests.Session()
@@ -42,10 +40,8 @@ def get_http_session():
     return _http_session
 
 
-# Thumbnail cache (in-memory LRU cache)
-class ThumbnailCache:
-    """Simple LRU cache for thumbnails."""
 
+class ThumbnailCache:
     def __init__(self, max_size=100):
         self._cache = {}
         self._order = []
@@ -57,7 +53,6 @@ class ThumbnailCache:
     def get(self, url):
         key = self._get_key(url)
         if key in self._cache:
-            # Move to end (most recently used)
             self._order.remove(key)
             self._order.append(key)
             return self._cache[key]
@@ -68,7 +63,6 @@ class ThumbnailCache:
         if key in self._cache:
             self._order.remove(key)
         elif len(self._cache) >= self._max_size:
-            # Remove oldest
             oldest = self._order.pop(0)
             del self._cache[oldest]
         self._cache[key] = pixmap
@@ -79,7 +73,6 @@ class ThumbnailCache:
         self._order.clear()
 
 
-# Global thumbnail cache
 thumbnail_cache = ThumbnailCache(max_size=100)
 
 
@@ -104,7 +97,6 @@ class InfoWorker(QRunnable):
                 'quiet': True,
                 'skip_download': True,
                 'nocheckcertificate': True,
-                # EJS support for YouTube (requires Deno runtime)
                 'enable_js': True,
                 'remote_components': {'ejs:github': True},
             }
@@ -139,13 +131,11 @@ class ThumbnailWorker(QRunnable):
 
     def run(self):
         try:
-            # Check cache first
             cached = thumbnail_cache.get(self.url)
             if cached is not None:
                 self.signals.thumbnail_loaded.emit(cached)
                 return
 
-            # Use connection-pooled session
             session = get_http_session()
             response = session.get(self.url, timeout=10)
             response.raise_for_status()
@@ -153,7 +143,6 @@ class ThumbnailWorker(QRunnable):
             image.loadFromData(response.content)
             if not image.isNull():
                 pixmap = QPixmap.fromImage(image)
-                # Cache the result
                 thumbnail_cache.set(self.url, pixmap)
                 self.signals.thumbnail_loaded.emit(pixmap)
         except Exception as e:
@@ -182,13 +171,11 @@ class DownloadWorker(QRunnable):
         if tmp or fn:
             self.task.update_current_paths(tmpfilename=tmp, filename=fn)
         if d['status'] == 'downloading':
-            # Вытягиваем размер файла из yt-dlp во время скачивания
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
             if total_bytes:
                 self.task.set_file_size(total_bytes)
 
             if total_bytes:
-                # Scale download to 0-90%
                 raw_percent = d.get('downloaded_bytes', 0) / total_bytes * 100
                 percent = int(raw_percent * 0.9)
                 speed = d.get('_speed_str', 'N/A').strip()
@@ -320,27 +307,20 @@ class DownloadWorker(QRunnable):
         try:
             platform = self.task.platform.lower().replace(' ', '_').replace('(', '').replace(')', '')
 
-            # --- ПРАВИЛО ДЛЯ KINOPUB НАЧАЛО ---
             if 'kinopub' in self.task.url or 'kino.pub' in self.task.url:
                 platform = 'kinopub'
-            # --- ПРАВИЛО ДЛЯ KINOPUB КОНЕЦ ---
 
             quality_key = f'quality_{platform}'
             chosen_format = self.settings.value(quality_key, 'bestvideo+bestaudio/best')
 
-            # --- ФИКС КАЧЕСТВА ДЛЯ KINOPUB И ПОДОБНЫХ M3U8 ---
             if platform == 'kinopub':
                 import re
-                # Ищем желаемую высоту из настроек ютуба (например, 1080)
                 m = re.search(r'height<=(\d+)', chosen_format)
                 if m:
                     h = m.group(1)
-                    # Просим цельный поток (best) нужного разрешения.
                     chosen_format = f'best[height<={h}]/bestvideo[height<={h}]+bestaudio/best'
                 elif 'bestvideo' in chosen_format:
-                    # Если стоит просто "Лучшее качество"
                     chosen_format = 'best/bestvideo+bestaudio'
-            # --------------------------------------------------
 
             save_path = self.settings.value('save_path', '')
             if not save_path or not os.path.isdir(save_path):
@@ -363,11 +343,8 @@ class DownloadWorker(QRunnable):
                 'remote_components': {'ejs:github': True},
             }
 
-            # --- ЖЕСТКАЯ СОРТИРОВКА ПО РАЗРЕШЕНИЮ ДЛЯ КИНОПАБА ---
             if platform == 'kinopub':
-                # Это запретит скачивать 640x640, если есть нормальные 1080p
                 ydl_opts['format_sort'] = ['res']
-            # -----------------------------------------------------
 
             video_only_mode = chosen_format == 'video_only_stripped'
             if video_only_mode:
