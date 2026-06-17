@@ -121,7 +121,6 @@ class InfoWorker(QRunnable):
             logger.error(f"InfoWorker error for {self.url}: {e}")
             self.signals.error.emit(str(e))
 
-
 class ThumbnailWorker(QRunnable):
     def __init__(self, url, task):
         super().__init__()
@@ -130,6 +129,57 @@ class ThumbnailWorker(QRunnable):
         self.signals = WorkerSignals()
 
     def run(self):
+        try:
+            cached = thumbnail_cache.get(self.url)
+            if cached is not None:
+                self.signals.thumbnail_loaded.emit(cached)
+                return
+
+            session = get_http_session()
+            response = session.get(self.url, timeout=10)
+            response.raise_for_status()
+            image = QImage()
+            image.loadFromData(response.content)
+            if not image.isNull():
+                pixmap = QPixmap.fromImage(image)
+                thumbnail_cache.set(self.url, pixmap)
+                self.signals.thumbnail_loaded.emit(pixmap)
+        except Exception as e:
+            logger.debug(f"Failed to load thumbnail from {self.url}: {e}")
+
+
+class PlaylistCheckWorker(QRunnable):
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'extract_flat': True,
+                'skip_download': True,
+                'nocheckcertificate': True,
+                'ignoreerrors': True,
+            }
+            import yt_dlp
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(self.url, download=False)
+                if info:
+                    self.signals.info_fetched.emit(info)
+                else:
+                    self.signals.error.emit("Нет данных")
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+
+class DownloadWorker(QRunnable):
+    def __init__(self, task, settings, ffmpeg_path, translator):
+
+
+
+     def run(self):
         try:
             cached = thumbnail_cache.get(self.url)
             if cached is not None:

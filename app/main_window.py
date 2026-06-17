@@ -415,12 +415,49 @@ class MainWindow(QMainWindow):
     def on_add_link(self):
         url = self.url_input.text().strip()
         if url:
-            self.download_manager.add_urls([url])
-            self._add_recent(url)
             self.url_input.clear()
-            self._rebuild_recent_buttons()
+            if 'list=' in url:
+                self.status_label.setText("Анализ плейлиста...")
+                from .threads import PlaylistCheckWorker
+                worker = PlaylistCheckWorker(url)
+                worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
+                worker.signals.error.connect(lambda err: self._handle_link_error(err, url))
+                self.thread_pool.start(worker)
+
+            else:
+                self.status_label.setText(self.translator.translate('waiting'))
+                self.download_manager.add_urls([url])
+                self._add_recent(url)
+                self._rebuild_recent_buttons()
+
         else:
             QMessageBox.warning(self, self.translator.translate('warning'), self.translator.translate('enter_link'))
+
+    def _handle_link_info(self, info, original_url):
+        self.status_label.setText(self.translator.translate('waiting'))
+
+        if info.get('_type') == 'playlist' and 'entries' in info:
+            entries = list(info['entries'])
+            if len(entries) > 1:
+                from .playlist_dialog import PlaylistDialog
+                dialog = PlaylistDialog(entries, self)
+                if dialog.exec():
+                    urls_to_add = dialog.selected_urls
+                    if urls_to_add:
+                        self.download_manager.add_urls(urls_to_add)
+                        self._add_recent(original_url)
+                        self._rebuild_recent_buttons()
+                return
+
+        self.download_manager.add_urls([original_url])
+        self._add_recent(original_url)
+        self._rebuild_recent_buttons()
+
+    def _handle_link_error(self, err, original_url):
+        self.status_label.setText(self.translator.translate('waiting'))
+        self.download_manager.add_urls([original_url])
+        self._add_recent(original_url)
+        self._rebuild_recent_buttons()
 
     def on_paste_from_clipboard(self):
         text = QApplication.clipboard().text()
