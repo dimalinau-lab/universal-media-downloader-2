@@ -108,5 +108,8 @@
   "delete_file_title": "Удаление файла",
   "delete_file_confirm": "Вы уверены, что хотите безвозвратно удалить файл:\n{filename}?",
   "file_not_exists": "Файл больше не существует. Обновите список.",
-  "failed_to_delete": "Не удалось удалить файл:\n{error}"
+  "failed_to_delete": "Не удалось удалить файл:\n{error}",
+  "download_subtitles": "Скачивать субтитры (если доступны)",
+  "sponsorblock": "Вырезать спонсорскую рекламу (SponsorBlock)",
+  "use_cookies": "Использовать Cookies"
 }

@@ -148,6 +148,10 @@ class SettingsTab(QWidget):
         group_box.setObjectName('SettingsGroup')
         v_layout = QVBoxLayout(group_box)
 
+        self.sponsorblock_checkbox = QCheckBox("Вырезать спонсорскую рекламу (SponsorBlock)")
+        self.sponsorblock_checkbox.setProperty("text_key", "sponsorblock")
+
+        v_layout.addWidget(self.sponsorblock_checkbox)
         save_path_layout = QHBoxLayout()
         self.save_path_btn = QPushButton()
         self.save_path_btn.setObjectName('SecondaryButton')
@@ -269,6 +273,7 @@ class SettingsTab(QWidget):
         self.parallel_downloads_spin.valueChanged.connect(self.on_setting_changed)
         self.save_path_btn.clicked.connect(self.on_select_save_path)
         self.subtitles_checkbox.stateChanged.connect(self.on_setting_changed)
+        self.sponsorblock_checkbox.stateChanged.connect(self.on_setting_changed)
         self.cookies_checkbox.stateChanged.connect(self.on_setting_changed)
         self.rb_cookie_file.toggled.connect(self.on_setting_changed)
         self.cookies_btn.clicked.connect(self.on_select_cookies_file)
@@ -281,6 +286,7 @@ class SettingsTab(QWidget):
         self.parallel_downloads_spin.valueChanged.disconnect()
         self.save_path_btn.clicked.disconnect()
         self.subtitles_checkbox.stateChanged.disconnect()
+        self.sponsorblock_checkbox.stateChanged.disconnect()
         self.cookies_checkbox.stateChanged.disconnect()
         self.rb_cookie_file.toggled.disconnect()
         self.cookies_btn.clicked.disconnect()
@@ -354,6 +360,7 @@ class SettingsTab(QWidget):
             self.save_path_lbl.setText(self.translator.translate('folder_not_selected'))
 
         self.subtitles_checkbox.setChecked(self.settings.value('subtitles_enabled', False, type=bool))
+        self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
 
         cookie_source_type = self.settings.value('cookie_source_type', 'file')
@@ -389,6 +396,7 @@ class SettingsTab(QWidget):
         self.parent_window.thread_pool.setMaxThreadCount(self.parallel_downloads_spin.value())
 
         self.settings.setValue('subtitles_enabled', self.subtitles_checkbox.isChecked())
+        self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
         self.settings.setValue('use_cookies', self.cookies_checkbox.isChecked())
 
         if self.rb_cookie_file.isChecked():

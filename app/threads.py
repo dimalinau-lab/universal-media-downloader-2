@@ -410,15 +410,36 @@ class DownloadWorker(QRunnable):
                     'preferredquality': '192',
                 }]
             else:
-                ydl_opts['format'] = chosen_format
+                safe_format = chosen_format.replace('bestaudio', 'bestaudio[ext=m4a]')
+
+                ydl_opts['format'] = safe_format
+                ydl_opts['merge_output_format'] = 'mp4'
+
                 ydl_opts['postprocessors'] = [{
-                    'key': 'FFmpegVideoConvertor',
+                    'key': 'FFmpegVideoRemuxer',
                     'preferedformat': 'mp4',
                 }]
+
+                ydl_opts['postprocessor_args'] = {
+                    'video_remuxer': ['-c:v', 'copy', '-c:a', 'copy', '-movflags', '+faststart']
+                }
 
             if self.settings.value('subtitles_enabled', False, type=bool):
                 ydl_opts['writesubtitles'] = True
                 ydl_opts['subtitleslangs'] = ['en', 'ru', 'uk']
+
+            if self.settings.value('sponsorblock_enabled', False, type=bool):
+                sb_categories = ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction']
+
+                ydl_opts['postprocessors'].append({
+                    'key': 'SponsorBlock',
+                    'categories': sb_categories,
+                })
+
+                ydl_opts['postprocessors'].append({
+                    'key': 'ModifyChapters',
+                    'remove_sponsor_segments': sb_categories,
+                })
 
             use_cookies = self.settings.value('use_cookies', False, type=bool)
             if use_cookies:
