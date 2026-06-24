@@ -102,13 +102,13 @@ class AboutTab(QWidget):
             lang = self.parent_window.settings.value('language', 'ru')
 
         if lang == 'en':
-            self.lbl_version.setText("Version: 2.1")
+            self.lbl_version.setText("Version: 2.4")
             self.lbl_author.setText("Author: Magerko\nModified by: MrPablo")
         elif lang == 'uk':
-            self.lbl_version.setText("Версія: 2.1")
+            self.lbl_version.setText("Версія: 2.4")
             self.lbl_author.setText("Автор: Magerko\nДоповнено: MrPablo")
         else:
-            self.lbl_version.setText("Версия: 2.1")
+            self.lbl_version.setText("Версия: 2.4")
             self.lbl_author.setText("Автор: Magerko\nДополнено: MrPablo")
 
     def on_telegram_clicked(self):

@@ -416,10 +416,10 @@ class MainWindow(QMainWindow):
         url = self.url_input.text().strip()
         if url:
             self.url_input.clear()
-            if 'list=' in url:
+            if 'list=' in url or '/playlist' in url:
                 self.status_label.setText("Анализ плейлиста...")
                 from .threads import PlaylistCheckWorker
-                worker = PlaylistCheckWorker(url)
+                worker = PlaylistCheckWorker(url)  # Вызываем сканер БЕЗ куки
                 worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
                 worker.signals.error.connect(lambda err: self._handle_link_error(err, url))
                 self.thread_pool.start(worker)
@@ -429,26 +429,30 @@ class MainWindow(QMainWindow):
                 self.download_manager.add_urls([url])
                 self._add_recent(url)
                 self._rebuild_recent_buttons()
-
         else:
             QMessageBox.warning(self, self.translator.translate('warning'), self.translator.translate('enter_link'))
 
     def _handle_link_info(self, info, original_url):
         self.status_label.setText(self.translator.translate('waiting'))
 
-        if info.get('_type') == 'playlist' and 'entries' in info:
-            entries = list(info['entries'])
-            if len(entries) > 1:
-                from .playlist_dialog import PlaylistDialog
-                dialog = PlaylistDialog(entries, self)
-                if dialog.exec():
-                    urls_to_add = dialog.selected_urls
-                    if urls_to_add:
-                        self.download_manager.add_urls(urls_to_add)
-                        self._add_recent(original_url)
-                        self._rebuild_recent_buttons()
-                return
+        if info and info.get('_type') == 'playlist':
+            raw_entries = info.get('entries')
+            if raw_entries is not None:
+                # ФИКС КРАША: Выкидываем из списка удаленные/скрытые видео (None)
+                entries = [e for e in list(raw_entries) if e is not None]
 
+                if len(entries) > 0:
+                    from .playlist_dialog import PlaylistDialog
+                    dialog = PlaylistDialog(entries, self)
+                    if dialog.exec():
+                        urls_to_add = dialog.selected_urls
+                        if urls_to_add:
+                            self.download_manager.add_urls(urls_to_add)
+                            self._add_recent(original_url)
+                            self._rebuild_recent_buttons()
+                    return
+
+        # Если это не плейлист или он пустой - скачиваем как обычное видео
         self.download_manager.add_urls([original_url])
         self._add_recent(original_url)
         self._rebuild_recent_buttons()
