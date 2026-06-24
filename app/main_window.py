@@ -8,8 +8,10 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QProgressBar, QLabel,
                              QFileDialog, QMessageBox, QComboBox,
                              QListWidget, QListWidgetItem, QStackedWidget,
-                             QToolButton, QFrame, QApplication, QDialog)
+                             QToolButton, QFrame, QApplication, QDialog,
+                             QSystemTrayIcon, QMenu)
 from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl, QTimer
+from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices, QAction
 from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices
 
 from .settings_tab import SettingsTab
@@ -319,6 +321,14 @@ class MainWindow(QMainWindow):
         bottom_bar_layout.addSpacing(10)
         bottom_bar_layout.addWidget(self.status_label)
         main_layout.addWidget(bottom_bar)
+
+        bottom_bar_layout.addWidget(self.summary_info)
+        bottom_bar_layout.addSpacing(10)
+        bottom_bar_layout.addWidget(self.status_label)
+        main_layout.addWidget(bottom_bar)
+
+        self.init_tray()
+
 
     def connect_signals(self):
         self.btn_add.clicked.connect(self.on_add_link)
@@ -692,10 +702,13 @@ class MainWindow(QMainWindow):
             self._rebuild_recent_buttons()
 
     def closeEvent(self, event):
-        self.download_manager.stop_all()
-        self.thread_pool.waitForDone()
-        self.settings.sync()
-        event.accept()
+        event.ignore()
+        self.hide()
+        self.tray_icon.showMessage(
+            self.translator.translate('app_title', 'Universal Media Downloader'),
+            "Программа свернута в трей и продолжает работу",
+            QSystemTrayIcon.MessageIcon.Information,
+        )
 
     def _get_recent(self):
         raw = self.settings.value('recent_urls', '')
@@ -779,3 +792,52 @@ class MainWindow(QMainWindow):
     def _show_files_tab(self):
         self.files_page.load_files()
         self.page_stack.setCurrentIndex(2)
+
+    def init_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+
+        # Ищем иконку для трея (используем главную иконку прилы)
+        icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.png')
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            # Запасная иконка, если основной нет
+            icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icons', 'download.svg')
+            self.tray_icon.setIcon(QIcon(icon_path))
+
+        # Создаем меню для правой кнопки мыши
+        tray_menu = QMenu()
+
+        show_action = QAction("Показать / Скрыть", self)
+        show_action.triggered.connect(self.toggle_window)
+
+        quit_action = QAction("Выход", self)
+        quit_action.triggered.connect(self.quit_app)
+
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+
+        # Обработка двойного клика по иконке
+        self.tray_icon.activated.connect(self.tray_activated)
+        self.tray_icon.show()
+
+    def toggle_window(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.activateWindow()
+
+    def tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.toggle_window()
+
+    def quit_app(self):
+        # Настоящий выход из программы
+        self.download_manager.stop_all()
+        self.thread_pool.waitForDone()
+        self.settings.sync()
+        QApplication.quit()

@@ -312,6 +312,7 @@ class DownloadWorker(QRunnable):
     def _run_standard_vod(self, save_path):
         self.task.is_stream_mode = False
         print(f"[ОТЛАДКА] [VOD] Папка сохранения: {save_path}")
+        self._start_time = time.time()  # <-- ФИКС 1: Фиксируем время старта задачи
 
         ydl_opts = {
             'outtmpl': os.path.join(save_path, '%(title)s [%(id)s].%(ext)s'),
@@ -323,7 +324,9 @@ class DownloadWorker(QRunnable):
             'quiet': True,
             'noprogress': True,
             'noplaylist': True,
-            'postprocessors': []  # Инициализируем пустой список для SponsorBlock и субтитров
+            'ignoreerrors': True,
+            # <-- ФИКС 2: Жестко игнорируем любые ошибки (например 429 субтитров), чтобы качать видео дальше!
+            'postprocessors': []
         }
 
         # === 1. COOKIES ===
@@ -342,66 +345,73 @@ class DownloadWorker(QRunnable):
                     except Exception as e:
                         print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
 
-        # === 2. ТОТ САМЫЙ SPONSORBLOCK ИЗ ТВОЕГО СТАРОГО КОДА ===
+        # === 2. SPONSORBLOCK ===
         if self.settings.value('sponsorblock_enabled', False, type=bool):
             sb_categories = ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction']
-
-            # Скачиваем таймкоды
             ydl_opts['postprocessors'].append({
                 'key': 'SponsorBlock',
                 'categories': sb_categories,
             })
-
-            # Вырезаем рекламу
             ydl_opts['postprocessors'].append({
                 'key': 'ModifyChapters',
                 'remove_sponsor_segments': sb_categories,
             })
 
-        # === 3. СУБТИТРЫ (С ЗАЩИТОЙ ОТ ОШИБКИ 429) ===
+        # === 3. СУБТИТРЫ ===
         if self.settings.value('subtitles_enabled', False, type=bool):
             ydl_opts['writesubtitles'] = True
             ydl_opts['writeautomaticsub'] = True
-            ydl_opts['subtitleslangs'] = ['ru', 'en', 'uk']
-            ydl_opts['sleep_subtitles'] = 3
+            ydl_opts['subtitleslangs'] = ['ru', 'en']  # ФИКС 3: Убрал 'uk', так как он чаще всего крашит ютуб
+            ydl_opts['sleep_subtitles'] = 2
 
             ydl_opts['postprocessors'].append({
                 'key': 'FFmpegEmbedSubtitle',
                 'when': 'post_process',
             })
-            ydl_opts['ignoreerrors'] = 'only_download'
 
-        # Если настройки не добавили ни одного постпроцессора, удаляем пустой список
         if not ydl_opts['postprocessors']:
             del ydl_opts['postprocessors']
 
         # === 4. ЗАПУСК СКАЧИВАНИЯ ===
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             print("[ОТЛАДКА] [VOD] yt-dlp: Начинаем скачивание...")
-
             if self.task.is_stop_requested() or self._cancel_requested:
                 raise yt_dlp.utils.DownloadCancelled("Stopped")
-
             ydl.download([self.task.url])
             print("[ОТЛАДКА] [VOD] yt-dlp: Завершено.")
 
-        # === 5. НАДЕЖНЫЙ ПОИСК ГОТОВОГО ФАЙЛА ===
-        time.sleep(1)  # Даем системе секунду на сохранение файла
-        list_of_files = [os.path.join(save_path, f) for f in os.listdir(save_path)
-                         if f.endswith('.mp4') and not f.endswith('.part')]
+        # === 5. НАДЕЖНЫЙ ПОИСК ГОТОВОГО ФАЙЛА (УМНЫЙ) ===
+        time.sleep(1.5)
 
-        if not list_of_files:
-            raise Exception("Файл не найден в папке после скачивания!")
+        video_id = getattr(self.task, 'video_id', None)
+        final_file = None
+        valid_exts = ('.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4a', '.mp3')
 
-        # Берем самый новый файл в папке
-        latest_file = max(list_of_files, key=os.path.getmtime)
+        # ПОИСК №1: Ищем файл, в названии которого есть уникальный ID именно этого видео
+        if video_id:
+            for f in os.listdir(save_path):
+                if f"[{video_id}]" in f and f.endswith(valid_exts):
+                    final_file = os.path.join(save_path, f)
+                    break
 
-        if os.path.exists(latest_file) and os.path.getsize(latest_file) > 1024:
-            print(f"[ОТЛАДКА] [VOD] Найден финальный файл: {latest_file}")
+        # ПОИСК №2: Если ID нет, ищем самый свежий файл, НО проверяем, чтобы он был создан ПОСЛЕ запуска этой задачи
+        if not final_file:
+            list_of_files = [os.path.join(save_path, f) for f in os.listdir(save_path)
+                             if f.endswith(valid_exts) and not f.endswith('.part')]
+            if list_of_files:
+                latest_file = max(list_of_files, key=os.path.getmtime)
+                # Если файл старше, чем старт задачи, значит скачивание не удалось, и это просто старый файл!
+                if os.path.getmtime(latest_file) >= (self._start_time - 10):
+                    final_file = latest_file
+
+        # ПРОВЕРКА УСПЕХА
+        if final_file and os.path.exists(final_file) and os.path.getsize(final_file) > 1024:
+            print(f"[ОТЛАДКА] [VOD] Найден финальный файл: {final_file}")
             self.task.update_progress(100, "Скачано ✓")
-            self.task.set_completed(latest_file)
+            self.task.set_completed(final_file)
         else:
-            raise Exception("Файл пустой или поврежден!")
+            # Если дошли сюда, значит видео физически не скачалось (ошибка Ютуба)
+            raise Exception("Сбой скачивания. Файл не найден (возможно, блокировка 429).")
 
     def _run_twitch_stream(self, save_path):
         import re
