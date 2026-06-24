@@ -1,4 +1,4 @@
-# Universal Media Downloader v2.3
+# Universal Media Downloader v2.4
 
 <p align="center">
   <img src="assets/icon.png" alt="Logo" width="128" height="128">
