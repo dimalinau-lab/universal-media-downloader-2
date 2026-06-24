@@ -20,7 +20,7 @@ class DownloadTask(QObject):
     progress_updated = pyqtSignal(int, str)
     thumbnail_loaded = pyqtSignal(QPixmap)
     thumbnail_load_requested = pyqtSignal(str, object)
-    size_updated = pyqtSignal(str)  # Сигнал для обновления размера в UI
+    size_updated = pyqtSignal(str)
 
     def __init__(self, url):
         super().__init__()
@@ -42,7 +42,10 @@ class DownloadTask(QObject):
         self.current_filename = None
         self.final_filepath = None
         self.thumbnail_loading = False
-        self.file_size_str = ""  # Строка с размером файла (напр. "15.4 MB")
+        self.file_size_str = ""
+        self.info = {}
+        # Флаг для корзины
+        self.is_removed = False
 
     @property
     def status(self):
@@ -54,12 +57,12 @@ class DownloadTask(QObject):
             self.status_changed.emit(new_status)
 
     def update_info(self, info):
+        self.info = info
         self.title = info.get('title', 'Unknown Title')
         self.thumbnail_url = info.get('thumbnail')
         self.platform = info.get('extractor_key', 'Unknown')
         self.video_id = info.get('id')
 
-        # Пытаемся получить размер файла еще до начала загрузки
         filesize = info.get('filesize') or info.get('filesize_approx')
         if filesize:
             self.set_file_size(filesize)
@@ -71,7 +74,6 @@ class DownloadTask(QObject):
             self.thumbnail_load_requested.emit(self.thumbnail_url, self)
 
     def set_file_size(self, bytes_val):
-        """Переводит байты в КБ, МБ, ГБ и обновляет UI"""
         if not bytes_val:
             return
         try:
@@ -112,10 +114,17 @@ class DownloadTask(QObject):
         self.set_status(self.Status.COMPLETED)
         self.update_progress(100, "")
 
-    def request_stop(self):
+    # --- БРОНЕБОЙНЫЙ ФИКС КНОПКИ СТОП ---
+    def request_stop(self, *args, **kwargs):
+        # args перехватывает скрытый сигнал от кнопки интерфейса PyQt
+        # kwargs ловит команду от Корзины, если мы решили удалить файл
+        self.is_removed = kwargs.get('is_removed', False)
         self._stop_event.set()
-        if self.status in (self.Status.PENDING, self.Status.DOWNLOADING, self.Status.PROCESSING):
-            self.set_status(self.Status.STOPPED)
+
+        # Мгновенный отклик интерфейса!
+        if not self.is_removed and self.status == self.Status.DOWNLOADING:
+            self.set_status(self.Status.PROCESSING)
+            self.update_progress(95, "Остановлена запись. Беру файлы и начинаю склейку...")
 
     def is_stop_requested(self):
         return self._stop_event.is_set()

@@ -1,10 +1,16 @@
 import os
 import math
 import subprocess
+import traceback
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
-                             QListWidget, QListWidgetItem, QPushButton, QLabel, QMessageBox)
-from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject
+                             QListWidget, QListWidgetItem, QPushButton, QLabel, QMessageBox,
+                             QDialog, QFormLayout, QTimeEdit, QSlider, QStyle)
+from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject, QTime
 from PyQt6.QtGui import QDesktopServices, QPixmap
+
+# --- ДОБАВЛЕНЫ БИБЛИОТЕКИ ДЛЯ ВИДЕОПЛЕЕРА ---
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 from qfluentwidgets import TransparentToolButton, FluentIcon
 
 
@@ -42,6 +48,207 @@ class LocalThumbWorker(QRunnable):
                 self.signals.loaded.emit(pixmap)
         except Exception:
             pass
+
+
+# ==========================================
+# --- ЛОГИКА ТРИММЕРА (ОБРЕЗКА ВИДЕО) ---
+# ==========================================
+class TrimSignals(QObject):
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+
+class TrimWorker(QRunnable):
+    def __init__(self, ffmpeg_path, input_path, output_path, start_str, end_str):
+        super().__init__()
+        self.ffmpeg_path = ffmpeg_path
+        self.input_path = input_path
+        self.output_path = output_path
+        self.start_str = start_str
+        self.end_str = end_str
+        self.signals = TrimSignals()
+
+    def run(self):
+        try:
+            cmd = [
+                self.ffmpeg_path, '-y',
+                '-i', self.input_path,
+                '-ss', self.start_str,
+                '-to', self.end_str,
+                '-c', 'copy',
+                self.output_path
+            ]
+            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
+
+            if process.returncode == 0:
+                self.signals.finished.emit(self.output_path)
+            else:
+                self.signals.error.emit(process.stderr.decode('utf-8', errors='ignore'))
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+
+class TrimDialog(QDialog):
+    def __init__(self, translator, filepath, parent=None):
+        super().__init__(parent)
+        self.translator = translator
+        self.filepath = filepath
+        self.setWindowTitle(self.translator.translate('trim_video', 'Визуальная обрезка файла'))
+        self.resize(650, 500)  # Увеличили окно для плеера
+        self.initUI()
+        self.init_player()
+
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+
+        # 1. Видеоплеер (Превью)
+        self.video_widget = QVideoWidget()
+        self.video_widget.setMinimumHeight(300)
+        self.video_widget.setStyleSheet("background-color: black; border-radius: 8px;")
+        layout.addWidget(self.video_widget)
+
+        # 2. Управление плеером (Play/Pause и Ползунок)
+        playback_layout = QHBoxLayout()
+
+        self.btn_play = QPushButton()
+        self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.btn_play.setFixedSize(35, 35)
+        self.btn_play.clicked.connect(self.toggle_play)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 0)
+        self.slider.sliderMoved.connect(self.set_position)
+
+        self.time_label = QLabel("00:00 / 00:00")
+        self.time_label.setFixedWidth(100)
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        playback_layout.addWidget(self.btn_play)
+        playback_layout.addWidget(self.slider)
+        playback_layout.addWidget(self.time_label)
+        layout.addLayout(playback_layout)
+
+        # 3. Маркеры времени (Задать начало и конец)
+        markers_layout = QHBoxLayout()
+
+        self.btn_set_start = QPushButton("⬅️ Старт отсюда")
+        self.btn_set_start.setObjectName('SecondaryButton')
+        self.btn_set_start.clicked.connect(self.mark_start)
+
+        self.start_time = QTimeEdit()
+        self.start_time.setDisplayFormat("HH:mm:ss")
+        self.start_time.setTime(QTime(0, 0, 0))
+
+        markers_layout.addWidget(self.btn_set_start)
+        markers_layout.addWidget(self.start_time)
+        markers_layout.addStretch()
+
+        self.end_time = QTimeEdit()
+        self.end_time.setDisplayFormat("HH:mm:ss")
+        self.end_time.setTime(QTime(0, 0, 0))
+
+        self.btn_set_end = QPushButton("Финиш здесь ➡️")
+        self.btn_set_end.setObjectName('SecondaryButton')
+        self.btn_set_end.clicked.connect(self.mark_end)
+
+        markers_layout.addWidget(self.end_time)
+        markers_layout.addWidget(self.btn_set_end)
+        layout.addLayout(markers_layout)
+
+        # 4. Финальные кнопки Обрезать / Отмена
+        btn_layout = QHBoxLayout()
+        self.btn_ok = QPushButton(self.translator.translate('cut_btn', '✂️ Обрезать файл'))
+        self.btn_ok.setObjectName('ActionButton')
+        self.btn_ok.setFixedHeight(40)
+        self.btn_ok.clicked.connect(self.accept_trim)
+
+        self.btn_cancel = QPushButton(self.translator.translate('cancel', 'Отмена'))
+        self.btn_cancel.setObjectName('SecondaryButton')
+        self.btn_cancel.setFixedHeight(40)
+        self.btn_cancel.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_ok)
+        layout.addLayout(btn_layout)
+
+    def init_player(self):
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+        self.player.setVideoOutput(self.video_widget)
+
+        self.player.positionChanged.connect(self.position_changed)
+        self.player.durationChanged.connect(self.duration_changed)
+
+        self.player.setSource(QUrl.fromLocalFile(self.filepath))
+        self.player.pause()  # Оставляем на паузе при старте
+
+    def toggle_play(self):
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.player.pause()
+            self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        else:
+            self.player.play()
+            self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+
+    def position_changed(self, position):
+        self.slider.setValue(position)
+        self.update_time_label()
+
+    def duration_changed(self, duration):
+        self.slider.setRange(0, duration)
+        self.update_time_label()
+
+        # Автоматически ставим "Конец" на общую длину видео
+        total_seconds = duration // 1000
+        h = total_seconds // 3600
+        m = (total_seconds % 3600) // 60
+        s = total_seconds % 60
+        self.end_time.setTime(QTime(h, m, s))
+
+    def set_position(self, position):
+        self.player.setPosition(position)
+
+    def update_time_label(self):
+        pos = self.player.position() // 1000
+        dur = self.player.duration() // 1000
+        self.time_label.setText(f"{self.format_time(pos)} / {self.format_time(dur)}")
+
+    def format_time(self, seconds):
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        if h > 0:
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+
+    def mark_start(self):
+        pos = self.player.position() // 1000
+        h = pos // 3600
+        m = (pos % 3600) // 60
+        s = pos % 60
+        self.start_time.setTime(QTime(h, m, s))
+
+    def mark_end(self):
+        pos = self.player.position() // 1000
+        h = pos // 3600
+        m = (pos % 3600) // 60
+        s = pos % 60
+        self.end_time.setTime(QTime(h, m, s))
+
+    def accept_trim(self):
+        self.player.stop()  # Обязательно глушим плеер перед обрезкой, чтобы файл не был "занят"
+        self.accept()
+
+    def reject(self):
+        self.player.stop()
+        super().reject()
+
+
+# ==========================================
 
 
 class LocalFileItemWidget(QWidget):
@@ -111,17 +318,21 @@ class LocalFileItemWidget(QWidget):
         self.btn_folder.setFixedSize(34, 34)
         self.btn_folder.clicked.connect(self.open_folder)
 
+        self.btn_trim = TransparentToolButton(FluentIcon.CUT)
+        self.btn_trim.setFixedSize(34, 34)
+        self.btn_trim.clicked.connect(self.trim_file)
+
         self.btn_delete = TransparentToolButton(FluentIcon.DELETE)
         self.btn_delete.setFixedSize(34, 34)
         self.btn_delete.clicked.connect(self.delete_file)
 
         btn_layout.addWidget(self.btn_open)
         btn_layout.addWidget(self.btn_folder)
+        btn_layout.addWidget(self.btn_trim)
         btn_layout.addWidget(self.btn_delete)
         btn_layout.addStretch()
 
         main_layout.addLayout(btn_layout)
-
 
         self.update_translations()
 
@@ -129,6 +340,7 @@ class LocalFileItemWidget(QWidget):
         self.status_label.setText(self.translator.translate('status_downloaded', 'Скачано ✓'))
         self.btn_open.setToolTip(self.translator.translate('play_video', 'Воспроизвести видео'))
         self.btn_folder.setToolTip(self.translator.translate('show_in_folder', 'Показать в папке'))
+        self.btn_trim.setToolTip(self.translator.translate('trim_file_tooltip', 'Обрезать фрагмент'))
         self.btn_delete.setToolTip(self.translator.translate('delete_file_forever', 'Удалить файл навсегда'))
 
     def load_thumbnail(self):
@@ -165,6 +377,49 @@ class LocalFileItemWidget(QWidget):
         if os.path.exists(self.filepath):
             folder = os.path.dirname(self.filepath)
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def trim_file(self):
+        try:
+            if not os.path.exists(self.filepath):
+                QMessageBox.warning(self, "Ошибка",
+                                    f"Файл не найден на диске! Возможно, он был перемещен.\nПуть: {self.filepath}")
+                return
+
+            dialog = TrimDialog(self.translator, self.filepath, self)
+            if dialog.exec():
+                start_str = dialog.start_time.time().toString("HH:mm:ss")
+                end_str = dialog.end_time.time().toString("HH:mm:ss")
+
+                if start_str == "00:00:00" and end_str == "00:00:00":
+                    return
+
+                base, ext = os.path.splitext(self.filepath)
+                output_path = f"{base}_trimmed{ext}"
+
+                self.status_label.setText("Режем... ✂️")
+                self.btn_trim.setEnabled(False)
+
+                ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
+                worker = TrimWorker(ffmpeg_path, self.filepath, output_path, start_str, end_str)
+                worker.signals.finished.connect(self._on_trim_finished)
+                worker.signals.error.connect(self._on_trim_error)
+                self.parent_tab.parent_window.thread_pool.start(worker)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Скрытая ошибка Python",
+                                 f"Произошел сбой:\n{str(e)}\n\n{traceback.format_exc()}")
+
+    def _on_trim_finished(self, out_path):
+        self.status_label.setText(self.translator.translate('status_downloaded', 'Скачано ✓'))
+        self.btn_trim.setEnabled(True)
+        QMessageBox.information(self, "Готово",
+                                f"Видео успешно обрезано!\nСохранено как:\n{os.path.basename(out_path)}")
+        self.parent_tab.load_files()
+
+    def _on_trim_error(self, err_msg):
+        self.status_label.setText(self.translator.translate('status_downloaded', 'Скачано ✓'))
+        self.btn_trim.setEnabled(True)
+        QMessageBox.warning(self, "Ошибка обрезки FFmpeg", f"Не удалось обрезать файл:\n{err_msg}")
 
     def delete_file(self):
         filename = os.path.basename(self.filepath)

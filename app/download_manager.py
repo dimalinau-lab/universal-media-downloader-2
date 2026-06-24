@@ -144,6 +144,7 @@ class DownloadManager(QObject):
             self.translator
         )
         self._workers[task] = worker
+        task.worker = worker  # ← ДОБАВЛЕНО: сохраняем ссылку в задаче
         worker.signals.finished.connect(lambda t=task: self.on_task_finished(t))
         worker.signals.error.connect(lambda error, t=task: self.on_task_error(t, error))
 

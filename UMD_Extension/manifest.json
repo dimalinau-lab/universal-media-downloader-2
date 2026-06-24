@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "UMD Sender",
+  "version": "1.1",
+  "description": "Мгновенная отправка видео в Universal Media Downloader",
+  "permissions": ["activeTab", "scripting", "contextMenus"],
+  "host_permissions": ["http://127.0.0.1:65432/"],
+  "action": {
+    "default_title": "Скачать через UMD!"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
