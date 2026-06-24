@@ -44,7 +44,6 @@ class DownloadTask(QObject):
         self.thumbnail_loading = False
         self.file_size_str = ""
         self.info = {}
-        # Флаг для корзины
         self.is_removed = False
 
     @property
@@ -114,10 +113,7 @@ class DownloadTask(QObject):
         self.set_status(self.Status.COMPLETED)
         self.update_progress(100, "")
 
-    # --- БРОНЕБОЙНЫЙ ФИКС КНОПКИ СТОП ---
     def request_stop(self, *args, **kwargs):
-        # args перехватывает скрытый сигнал от кнопки интерфейса PyQt
-        # kwargs ловит команду от Корзины, если мы решили удалить файл
         self.is_removed = kwargs.get('is_removed', False)
         self._stop_event.set()
 

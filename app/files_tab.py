@@ -59,21 +59,21 @@ class VideoCutterDialog(QDialog):
         self.setFixedSize(320, 150)
         layout = QVBoxLayout(self)
 
-        # Начало обрезки
+
         start_layout = QHBoxLayout()
         start_layout.addWidget(QLabel("Начало (ЧЧ:ММ:СС):"))
         self.start_input = QLineEdit("00:00:00")
         start_layout.addWidget(self.start_input)
         layout.addLayout(start_layout)
 
-        # Конец обрезки
+
         end_layout = QHBoxLayout()
         end_layout.addWidget(QLabel("Конец (ЧЧ:ММ:СС):"))
         self.end_input = QLineEdit("00:00:00")
         end_layout.addWidget(self.end_input)
         layout.addLayout(end_layout)
 
-        # Кнопки
+
         btn_layout = QHBoxLayout()
         self.btn_cut = QPushButton("Обрезать")
         self.btn_cut.setObjectName('ActionButton')
@@ -91,11 +91,10 @@ class VideoCutterDialog(QDialog):
         start_time = self.start_input.text().strip()
         end_time = self.end_input.text().strip()
 
-        # Создаем имя для нового файла
+
         base, ext = os.path.splitext(self.filepath)
         out_path = f"{base}_cut{ext}"
 
-        # Команда для быстрой обрезки (копирование потока, без перекодировки)
         cmd = [
             self.ffmpeg_path,
             '-y',
@@ -219,13 +218,10 @@ class LocalFileItemWidget(QWidget):
                                                           'Файл больше не существует. Обновите список.'))
             return
 
-        # Получаем путь к FFmpeg из главного окна
         ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
 
-        # Открываем диалоговое окно
         dialog = VideoCutterDialog(self.filepath, ffmpeg_path, self)
         if dialog.exec():
-            # Если обрезка прошла успешно, обновляем список файлов, чтобы новый файл появился в программе
             self.parent_tab.load_files()
             return
     def load_thumbnail(self):
@@ -322,7 +318,6 @@ class VideoCutterDialog(QDialog):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
 
-        # 4. Кнопки захвата времени
         times_layout = QHBoxLayout()
 
         self.btn_set_start = QPushButton("⬅ Начать отсюда")

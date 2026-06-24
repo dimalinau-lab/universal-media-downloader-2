@@ -87,7 +87,6 @@ class StreamAssembler(QRunnable):
     def run(self):
         try:
             self.task.update_progress(95, "Склейка стрима начата...")
-            # Используем самые надежные флаги для восстановления стрима
             cmd = [
                 self.ffmpeg_path, '-y', '-err_detect', 'ignore_err',
                 '-fflags', '+genpts', '-i', self.part_file,
@@ -185,11 +184,11 @@ class PlaylistCheckWorker(QRunnable):
         try:
             ydl_opts = {
                 'quiet': True,
-                'extract_flat': 'in_playlist', # Обязательно 'in_playlist' для быстрого сбора
+                'extract_flat': 'in_playlist',
                 'skip_download': True,
                 'nocheckcertificate': True,
                 'ignoreerrors': True,
-                'noplaylist': False, # <--- ГЛАВНЫЙ ФИКС: Заставляем видеть плейлист, а не одиночное видео
+                'noplaylist': False, #
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
@@ -312,7 +311,7 @@ class DownloadWorker(QRunnable):
     def _run_standard_vod(self, save_path):
         self.task.is_stream_mode = False
         print(f"[ОТЛАДКА] [VOD] Папка сохранения: {save_path}")
-        self._start_time = time.time()  # <-- ФИКС 1: Фиксируем время старта задачи
+        self._start_time = time.time()
 
         ydl_opts = {
             'outtmpl': os.path.join(save_path, '%(title)s [%(id)s].%(ext)s'),
@@ -325,11 +324,10 @@ class DownloadWorker(QRunnable):
             'noprogress': True,
             'noplaylist': True,
             'ignoreerrors': True,
-            # <-- ФИКС 2: Жестко игнорируем любые ошибки (например 429 субтитров), чтобы качать видео дальше!
             'postprocessors': []
         }
 
-        # === 1. COOKIES ===
+
         use_cookies = self.settings.value('use_cookies', False, type=bool)
         if use_cookies:
             source_type = self.settings.value('cookie_source_type', 'file')
@@ -379,38 +377,32 @@ class DownloadWorker(QRunnable):
                 raise yt_dlp.utils.DownloadCancelled("Stopped")
             ydl.download([self.task.url])
             print("[ОТЛАДКА] [VOD] yt-dlp: Завершено.")
-
-        # === 5. НАДЕЖНЫЙ ПОИСК ГОТОВОГО ФАЙЛА (УМНЫЙ) ===
         time.sleep(1.5)
 
         video_id = getattr(self.task, 'video_id', None)
         final_file = None
         valid_exts = ('.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4a', '.mp3')
 
-        # ПОИСК №1: Ищем файл, в названии которого есть уникальный ID именно этого видео
         if video_id:
             for f in os.listdir(save_path):
                 if f"[{video_id}]" in f and f.endswith(valid_exts):
                     final_file = os.path.join(save_path, f)
                     break
 
-        # ПОИСК №2: Если ID нет, ищем самый свежий файл, НО проверяем, чтобы он был создан ПОСЛЕ запуска этой задачи
+
         if not final_file:
             list_of_files = [os.path.join(save_path, f) for f in os.listdir(save_path)
                              if f.endswith(valid_exts) and not f.endswith('.part')]
             if list_of_files:
                 latest_file = max(list_of_files, key=os.path.getmtime)
-                # Если файл старше, чем старт задачи, значит скачивание не удалось, и это просто старый файл!
                 if os.path.getmtime(latest_file) >= (self._start_time - 10):
                     final_file = latest_file
 
-        # ПРОВЕРКА УСПЕХА
         if final_file and os.path.exists(final_file) and os.path.getsize(final_file) > 1024:
             print(f"[ОТЛАДКА] [VOD] Найден финальный файл: {final_file}")
             self.task.update_progress(100, "Скачано ✓")
             self.task.set_completed(final_file)
         else:
-            # Если дошли сюда, значит видео физически не скачалось (ошибка Ютуба)
             raise Exception("Сбой скачивания. Файл не найден (возможно, блокировка 429).")
 
     def _run_twitch_stream(self, save_path):
@@ -423,8 +415,6 @@ class DownloadWorker(QRunnable):
             'noprogress': True,
             'format': 'best',
         }
-
-        # === ПЕРЕДАЕМ COOKIES ДЛЯ ОБХОДА РЕКЛАМЫ ===
         use_cookies = self.settings.value('use_cookies', False, type=bool)
         if use_cookies:
             source_type = self.settings.value('cookie_source_type', 'file')
@@ -439,7 +429,6 @@ class DownloadWorker(QRunnable):
                         ydl_opts['cookiesfrombrowser'] = (browser,)
                     except Exception as e:
                         print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
-        # ===========================================
 
         try:
             print("[ОТЛАДКА] [TWITCH] Получаем прямую ссылку на поток (БЕЗ скачивания)...")
@@ -452,7 +441,6 @@ class DownloadWorker(QRunnable):
             if not stream_url:
                 raise Exception("Не удалось получить ссылку на поток")
 
-            # Дальше идет старый код без изменений...
             safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip()
             final_mp4 = os.path.join(save_path, f"{safe_title} [{video_id}].mp4")
             temp_ts = os.path.join(save_path, f"{safe_title} [{video_id}].ts")

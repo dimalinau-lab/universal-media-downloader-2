@@ -429,7 +429,7 @@ class MainWindow(QMainWindow):
             if 'list=' in url or '/playlist' in url:
                 self.status_label.setText("Анализ плейлиста...")
                 from .threads import PlaylistCheckWorker
-                worker = PlaylistCheckWorker(url)  # Вызываем сканер БЕЗ куки
+                worker = PlaylistCheckWorker(url)
                 worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
                 worker.signals.error.connect(lambda err: self._handle_link_error(err, url))
                 self.thread_pool.start(worker)
@@ -448,7 +448,6 @@ class MainWindow(QMainWindow):
         if info and info.get('_type') == 'playlist':
             raw_entries = info.get('entries')
             if raw_entries is not None:
-                # ФИКС КРАША: Выкидываем из списка удаленные/скрытые видео (None)
                 entries = [e for e in list(raw_entries) if e is not None]
 
                 if len(entries) > 0:
@@ -462,7 +461,6 @@ class MainWindow(QMainWindow):
                             self._rebuild_recent_buttons()
                     return
 
-        # Если это не плейлист или он пустой - скачиваем как обычное видео
         self.download_manager.add_urls([original_url])
         self._add_recent(original_url)
         self._rebuild_recent_buttons()
@@ -796,16 +794,13 @@ class MainWindow(QMainWindow):
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
 
-        # Ищем иконку для трея (используем главную иконку прилы)
         icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.png')
         if os.path.exists(icon_path):
             self.tray_icon.setIcon(QIcon(icon_path))
         else:
-            # Запасная иконка, если основной нет
             icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icons', 'download.svg')
             self.tray_icon.setIcon(QIcon(icon_path))
 
-        # Создаем меню для правой кнопки мыши
         tray_menu = QMenu()
 
         show_action = QAction("Показать / Скрыть", self)
@@ -819,8 +814,6 @@ class MainWindow(QMainWindow):
         tray_menu.addAction(quit_action)
 
         self.tray_icon.setContextMenu(tray_menu)
-
-        # Обработка двойного клика по иконке
         self.tray_icon.activated.connect(self.tray_activated)
         self.tray_icon.show()
 

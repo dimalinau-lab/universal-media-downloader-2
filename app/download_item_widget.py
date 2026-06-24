@@ -122,7 +122,6 @@ class DownloadItemWidget(QWidget):
         return is_stream and is_running and not is_stopped
 
     def on_start_clicked(self):
-        # --- ФИКС: Сбрасываем флаг остановки перед новым запуском! ---
         if hasattr(self.task, '_stop_event'):
             self.task._stop_event.clear()
 
@@ -145,9 +144,6 @@ class DownloadItemWidget(QWidget):
                                     "Этот Twitch канал сейчас не в эфире. Скачивание невозможно.")
                 return
             is_live = True
-
-        # === ДИАЛОГ УБРАН ===
-        # Теперь любой стрим по умолчанию пишется строго с текущего момента без лишних вопросов
         if is_live:
             self.task.stream_mode_choice = 'from_now'
 
