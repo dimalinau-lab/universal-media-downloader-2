@@ -1,18 +1,20 @@
 import os
 import math
 import subprocess
+import traceback
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QListWidget, QListWidgetItem, QPushButton, QLabel, QMessageBox,
-                             QDialog, QLineEdit)
+                             QDialog, QLineEdit, QSlider)
 from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject
 from PyQt6.QtGui import QDesktopServices, QPixmap
 from qfluentwidgets import TransparentToolButton, FluentIcon
-from PyQt6.QtWidgets import QSlider, QLineEdit, QDialog
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
+
 class ThumbSignals(QObject):
     loaded = pyqtSignal(QPixmap)
+    error = pyqtSignal(str)
 
 
 class LocalThumbWorker(QRunnable):
@@ -25,101 +27,26 @@ class LocalThumbWorker(QRunnable):
     def run(self):
         try:
             cmd = [
-                self.ffmpeg_path, '-y',
-                '-i', self.input_path,
-                '-ss', self.start_str,
-                '-to', self.end_str,
-
-                # --- ФИКС ЧЕРНОГО ЭКРАНА ---
-                '-c:v', 'libx264',  # Принудительно создаем новые кадры видео
-                '-preset', 'fast',  # Делаем это максимально быстро
-                '-c:a', 'copy',  # Звук просто копируем без изменений
-                # ---------------------------
-
-                self.output_path
+                self.ffmpeg_path,
+                '-y',
+                '-ss', '00:00:01',
+                '-i', self.filepath,
+                '-vframes', '1',
+                '-q:v', '2',
+                '-f', 'image2pipe',
+                '-vcodec', 'mjpeg',
+                '-'
             ]
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
-
-            # Проверяем, успешно ли отработал FFmpeg
-            if process.returncode == 0:
-                self.signals.finished.emit(self.output_path)
-            else:
-                self.signals.error.emit(process.stderr.decode('utf-8', errors='ignore'))
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=flags)
+            image_data, _ = process.communicate()
+            if image_data:
+                pixmap = QPixmap()
+                pixmap.loadFromData(image_data)
+                self.signals.loaded.emit(pixmap)
         except Exception as e:
             self.signals.error.emit(str(e))
 
-
-class VideoCutterDialog(QDialog):
-    def __init__(self, filepath, ffmpeg_path, parent=None):
-        super().__init__(parent)
-        self.filepath = filepath
-        self.ffmpeg_path = ffmpeg_path
-        self.initUI()
-
-    def initUI(self):
-        self.setWindowTitle("Обрезать видео")
-        self.setFixedSize(320, 150)
-        layout = QVBoxLayout(self)
-
-
-        start_layout = QHBoxLayout()
-        start_layout.addWidget(QLabel("Начало (ЧЧ:ММ:СС):"))
-        self.start_input = QLineEdit("00:00:00")
-        start_layout.addWidget(self.start_input)
-        layout.addLayout(start_layout)
-
-
-        end_layout = QHBoxLayout()
-        end_layout.addWidget(QLabel("Конец (ЧЧ:ММ:СС):"))
-        self.end_input = QLineEdit("00:00:00")
-        end_layout.addWidget(self.end_input)
-        layout.addLayout(end_layout)
-
-
-        btn_layout = QHBoxLayout()
-        self.btn_cut = QPushButton("Обрезать")
-        self.btn_cut.setObjectName('ActionButton')
-        self.btn_cut.clicked.connect(self.process_cut)
-
-        self.btn_cancel = QPushButton("Отмена")
-        self.btn_cancel.setObjectName('SecondaryButton')
-        self.btn_cancel.clicked.connect(self.reject)
-
-        btn_layout.addWidget(self.btn_cut)
-        btn_layout.addWidget(self.btn_cancel)
-        layout.addLayout(btn_layout)
-
-    def process_cut(self):
-        start_time = self.start_input.text().strip()
-        end_time = self.end_input.text().strip()
-
-
-        base, ext = os.path.splitext(self.filepath)
-        out_path = f"{base}_cut{ext}"
-
-        cmd = [
-            self.ffmpeg_path,
-            '-y',
-            '-i', self.filepath,
-            '-ss', start_time,
-            '-to', end_time,
-            '-c', 'copy',
-            out_path
-        ]
-
-        try:
-            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            self.btn_cut.setText("Режем...")
-            self.btn_cut.setEnabled(False)
-
-            subprocess.run(cmd, check=True, creationflags=flags)
-            QMessageBox.information(self, "Успех", "Видео успешно обрезано!\nНовый файл сохранен рядом с оригиналом.")
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось обрезать видео:\n{e}")
-            self.btn_cut.setText("Обрезать")
-            self.btn_cut.setEnabled(True)
 
 class LocalFileItemWidget(QWidget):
     def __init__(self, filepath, parent_tab):
@@ -203,30 +130,26 @@ class LocalFileItemWidget(QWidget):
         btn_layout.addStretch()
 
         main_layout.addLayout(btn_layout)
-
-
         self.update_translations()
 
     def update_translations(self):
         self.status_label.setText(self.translator.translate('status_downloaded', 'Скачано ✓'))
         self.btn_open.setToolTip(self.translator.translate('play_video', 'Воспроизвести видео'))
-        self.btn_cut.setToolTip(self.translator.translate('cut_video', 'Обрезать по таймингу')) # <-- Добавлено
+        self.btn_cut.setToolTip(self.translator.translate('cut_video', 'Обрезать по таймингу'))
         self.btn_folder.setToolTip(self.translator.translate('show_in_folder', 'Показать в папке'))
         self.btn_delete.setToolTip(self.translator.translate('delete_file_forever', 'Удалить файл навсегда'))
 
     def cut_file(self):
         if not os.path.exists(self.filepath):
             QMessageBox.warning(self, self.translator.translate('error', 'Ошибка'),
-                                self.translator.translate('file_not_exists',
-                                                          'Файл больше не существует. Обновите список.'))
+                                self.translator.translate('file_not_exists', 'Файл больше не существует.'))
             return
 
         ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
-
         dialog = VideoCutterDialog(self.filepath, ffmpeg_path, self)
         if dialog.exec():
             self.parent_tab.load_files()
-            return
+
     def load_thumbnail(self):
         ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
         worker = LocalThumbWorker(self.filepath, ffmpeg_path)
@@ -252,10 +175,6 @@ class LocalFileItemWidget(QWidget):
     def open_file(self):
         if os.path.exists(self.filepath):
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.filepath))
-        else:
-            QMessageBox.warning(self, self.translator.translate('error', 'Ошибка'),
-                                self.translator.translate('file_not_exists',
-                                                          'Файл больше не существует. Обновите список.'))
 
     def open_folder(self):
         if os.path.exists(self.filepath):
@@ -264,26 +183,14 @@ class LocalFileItemWidget(QWidget):
 
     def delete_file(self):
         filename = os.path.basename(self.filepath)
-        confirm_text = self.translator.translate('delete_file_confirm',
-                                                 'Вы уверены, что хотите безвозвратно удалить файл:\n{filename}?').replace(
-            '{filename}', filename)
-
-        reply = QMessageBox.question(
-            self,
-            self.translator.translate('delete_file_title', 'Удаление файла'),
-            confirm_text,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-
+        reply = QMessageBox.question(self, 'Удаление файла', f'Вы уверены, что хотите удалить файл:\n{filename}?',
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             try:
                 os.remove(self.filepath)
                 self.parent_tab.load_files()
             except Exception as e:
-                err_text = self.translator.translate('failed_to_delete', 'Не удалось удалить файл:\n{error}').replace(
-                    '{error}', str(e))
-                QMessageBox.warning(self, self.translator.translate('error', 'Ошибка'), err_text)
+                QMessageBox.warning(self, 'Ошибка', f'Не удалось удалить файл:\n{str(e)}')
 
 
 class VideoCutterDialog(QDialog):
@@ -299,30 +206,24 @@ class VideoCutterDialog(QDialog):
         self.setMinimumSize(720, 480)
         layout = QVBoxLayout(self)
 
-        # 1. Видеоплеер
         self.video_widget = QVideoWidget()
         self.video_widget.setStyleSheet("background-color: black;")
         layout.addWidget(self.video_widget, stretch=1)
 
-        # 2. Ползунок времени
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.sliderMoved.connect(self.set_position)
         layout.addWidget(self.slider)
 
-        # 3. Управление плеером (Play / Pause)
         controls_layout = QHBoxLayout()
         self.btn_play = QPushButton("▶ Play / Pause")
         self.btn_play.clicked.connect(self.toggle_play)
-
         self.lbl_time = QLabel("00:00:00 / 00:00:00")
-
         controls_layout.addWidget(self.btn_play)
         controls_layout.addWidget(self.lbl_time)
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
 
         times_layout = QHBoxLayout()
-
         self.btn_set_start = QPushButton("⬅ Начать отсюда")
         self.btn_set_start.setObjectName('SecondaryButton')
         self.btn_set_start.clicked.connect(self.set_start_time)
@@ -342,7 +243,6 @@ class VideoCutterDialog(QDialog):
         times_layout.addWidget(self.btn_set_end)
         layout.addLayout(times_layout)
 
-        # 5. Финальные кнопки обрезки
         btn_layout = QHBoxLayout()
         self.btn_cut = QPushButton("✂ Обрезать и сохранить")
         self.btn_cut.setObjectName('ActionButton')
@@ -403,19 +303,27 @@ class VideoCutterDialog(QDialog):
         self.end_input.setText(self.format_time(self.media_player.position()))
 
     def process_cut(self):
-        self.media_player.pause()  # Ставим на паузу перед обрезкой
+        self.media_player.pause()
         start_time = self.start_input.text().strip()
         end_time = self.end_input.text().strip()
 
         base, ext = os.path.splitext(self.filepath)
-        out_path = f"{base}_cut{ext}"
+        out_path = f"{base}_cut.mp4"
 
+        # САМЫЙ БРОНЕБОЙНЫЙ КОД FFMPEG ДЛЯ WINDOWS И TIKTOK
         cmd = [
             self.ffmpeg_path, '-y',
             '-i', self.filepath,
             '-ss', start_time,
             '-to', end_time,
-            '-c', 'copy',
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', # Округляем пиксели (спасает от сбоя кодека на мобильных видео)
+            '-c:v', 'libx264',                          # Перекодируем в самый совместимый формат
+            '-preset', 'fast',
+            '-crf', '22',                               # Отличное качество
+            '-pix_fmt', 'yuv420p',                      # Формат цвета для Windows Media Player
+            '-c:a', 'aac',                              # Перекодируем звук для идеальной синхронизации
+            '-b:a', '192k',
+            '-movflags', '+faststart',                  # Ставим метаданные в начало (убирает черный экран)
             out_path
         ]
 
@@ -425,18 +333,23 @@ class VideoCutterDialog(QDialog):
             self.btn_cut.setEnabled(False)
 
             subprocess.run(cmd, check=True, creationflags=flags)
-            QMessageBox.information(self, "Успех", "Видео успешно обрезано!\nСохранено рядом с оригиналом.")
+            QMessageBox.information(self, "Успех", "Видео обрезано и адаптировано под Windows!\nФайл: _cut.mp4")
 
-            self.media_player.setSource(QUrl())  # Освобождаем файл
+            self.media_player.setSource(QUrl())
             self.accept()
+        except subprocess.CalledProcessError as e:
+            QMessageBox.critical(self, "Ошибка FFmpeg", f"Сбой кодека:\n{e.stderr}")
+            self.btn_cut.setText("✂ Обрезать и сохранить")
+            self.btn_cut.setEnabled(True)
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось обрезать видео:\n{e}")
+            QMessageBox.critical(self, "Ошибка", f"Непредвиденная ошибка:\n{e}")
             self.btn_cut.setText("✂ Обрезать и сохранить")
             self.btn_cut.setEnabled(True)
 
     def closeEvent(self, event):
-        self.media_player.setSource(QUrl())  # Защита от блокировки файла
+        self.media_player.setSource(QUrl())
         super().closeEvent(event)
+
 
 class FilesTab(QWidget):
     def __init__(self, translator, parent=None):
