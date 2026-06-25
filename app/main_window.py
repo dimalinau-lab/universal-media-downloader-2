@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QSystemTrayIcon, QMenu)
 from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl, QTimer
 from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices, QAction
+from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices
 
 from .settings_tab import SettingsTab
 from .about_tab import AboutTab
@@ -23,7 +24,6 @@ from .theme_manager import ThemeManager
 from .flow_layout import FlowLayout
 from .update_checker import UpdateChecker
 from .files_tab import FilesTab
-from .local_api import LocalApiManager
 
 logger = logging.getLogger(__name__)
 
@@ -43,86 +43,9 @@ class MainWindow(QMainWindow):
         self.connect_signals()
         self.setAcceptDrops(True)
         self.translator.language_changed.connect(self.update_translations)
-        self.api_manager = LocalApiManager()
-        self.api_manager.signals.url_received.connect(self._on_api_url_received)
-        self.api_manager.start()
-
-        # --- ЗАПУСК ТРЕЯ ---
-        self.setup_tray_icon()
 
         QTimer.singleShot(500, self._check_first_launch)
         QTimer.singleShot(1000, self._startup_checks)
-
-    # ==========================
-    # --- ЛОГИКА СИСТЕМНОГО ТРЕЯ ---
-    # ==========================
-    def setup_tray_icon(self):
-        self.tray_icon = QSystemTrayIcon(self)
-
-        icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.ico')
-        if os.path.exists(icon_path):
-            self.tray_icon.setIcon(QIcon(icon_path))
-        else:
-            self.tray_icon.setIcon(
-                QIcon(os.path.join(os.path.dirname(__file__), '..', 'assets', 'icons', 'download.svg')))
-
-        tray_menu = QMenu()
-
-        self.show_action = QAction(self.translator.translate('show_app', 'Развернуть UMD'), self)
-        self.show_action.triggered.connect(self.show_normal_and_activate)
-
-        self.quit_action = QAction(self.translator.translate('exit', 'Выход'), self)
-        self.quit_action.triggered.connect(self.force_quit)
-
-        tray_menu.addAction(self.show_action)
-        tray_menu.addSeparator()
-        tray_menu.addAction(self.quit_action)
-
-        self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.activated.connect(self.tray_icon_activated)
-        self.tray_icon.show()
-
-    def tray_icon_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.show_normal_and_activate()
-
-    def show_normal_and_activate(self):
-        self.showNormal()
-        self.activateWindow()
-
-    def force_quit(self):
-        self.tray_icon.hide()
-        self.download_manager.stop_all()
-        self.thread_pool.waitForDone()
-        self.settings.sync()
-        QApplication.quit()
-
-    def closeEvent(self, event):
-        if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
-            self.hide()
-            if not self.settings.value('tray_message_shown', False, type=bool):
-                self.tray_icon.showMessage(
-                    "Universal Media Downloader",
-                    "Программа спрятана в трей и продолжает работу. Загрузки активны.",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    3000
-                )
-                self.settings.setValue('tray_message_shown', True)
-            event.ignore()
-        else:
-            self.force_quit()
-            event.accept()
-
-    # ==========================
-
-    def _on_api_url_received(self, url):
-        self.show_normal_and_activate()
-        self.download_manager.add_urls([url])
-        self._add_recent(url)
-        self._rebuild_recent_buttons()
-        self.page_stack.setCurrentIndex(0)
-        if not self.download_manager.is_downloading_active:
-            self.download_manager.start_all()
 
     def check_ffmpeg(self):
         project_root = os.path.dirname(os.path.abspath(__file__))
@@ -336,11 +259,11 @@ class MainWindow(QMainWindow):
         self.files_page = FilesTab(self.translator, self)
         self.about_page = AboutTab(self.translator, self)
 
-        self.page_stack.addWidget(self.downloads_page_stack)
-        self.page_stack.addWidget(self.history_page)
-        self.page_stack.addWidget(self.files_page)
-        self.page_stack.addWidget(self.settings_page)
-        self.page_stack.addWidget(self.about_page)
+        self.page_stack.addWidget(self.downloads_page_stack)  # 0
+        self.page_stack.addWidget(self.history_page)  # 1
+        self.page_stack.addWidget(self.files_page)  # 2
+        self.page_stack.addWidget(self.settings_page)  # 3
+        self.page_stack.addWidget(self.about_page)  # 4
 
         self.update_placeholder_visibility()
         self._rebuild_recent_buttons()
@@ -399,6 +322,14 @@ class MainWindow(QMainWindow):
         bottom_bar_layout.addWidget(self.status_label)
         main_layout.addWidget(bottom_bar)
 
+        bottom_bar_layout.addWidget(self.summary_info)
+        bottom_bar_layout.addSpacing(10)
+        bottom_bar_layout.addWidget(self.status_label)
+        main_layout.addWidget(bottom_bar)
+
+        self.init_tray()
+
+
     def connect_signals(self):
         self.btn_add.clicked.connect(self.on_add_link)
         self.url_input.returnPressed.connect(self.on_add_link)
@@ -415,6 +346,7 @@ class MainWindow(QMainWindow):
         self.btn_quality.clicked.connect(lambda: self.page_stack.setCurrentIndex(3))
         self.btn_downloads.clicked.connect(lambda: self.page_stack.setCurrentIndex(0))
         self.btn_history.clicked.connect(lambda: self.page_stack.setCurrentIndex(1))
+
 
         self.btn_files.clicked.connect(self._show_files_tab)
 
@@ -494,13 +426,14 @@ class MainWindow(QMainWindow):
         url = self.url_input.text().strip()
         if url:
             self.url_input.clear()
-            if 'list=' in url:
+            if 'list=' in url or '/playlist' in url:
                 self.status_label.setText("Анализ плейлиста...")
                 from .threads import PlaylistCheckWorker
                 worker = PlaylistCheckWorker(url)
                 worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
                 worker.signals.error.connect(lambda err: self._handle_link_error(err, url))
                 self.thread_pool.start(worker)
+
             else:
                 self.status_label.setText(self.translator.translate('waiting'))
                 self.download_manager.add_urls([url])
@@ -512,18 +445,21 @@ class MainWindow(QMainWindow):
     def _handle_link_info(self, info, original_url):
         self.status_label.setText(self.translator.translate('waiting'))
 
-        if info.get('_type') == 'playlist' and 'entries' in info:
-            entries = list(info['entries'])
-            if len(entries) > 1:
-                from .playlist_dialog import PlaylistDialog
-                dialog = PlaylistDialog(entries, self)
-                if dialog.exec():
-                    urls_to_add = dialog.selected_urls
-                    if urls_to_add:
-                        self.download_manager.add_urls(urls_to_add)
-                        self._add_recent(original_url)
-                        self._rebuild_recent_buttons()
-                return
+        if info and info.get('_type') == 'playlist':
+            raw_entries = info.get('entries')
+            if raw_entries is not None:
+                entries = [e for e in list(raw_entries) if e is not None]
+
+                if len(entries) > 0:
+                    from .playlist_dialog import PlaylistDialog
+                    dialog = PlaylistDialog(entries, self)
+                    if dialog.exec():
+                        urls_to_add = dialog.selected_urls
+                        if urls_to_add:
+                            self.download_manager.add_urls(urls_to_add)
+                            self._add_recent(original_url)
+                            self._rebuild_recent_buttons()
+                    return
 
         self.download_manager.add_urls([original_url])
         self._add_recent(original_url)
@@ -763,6 +699,15 @@ class MainWindow(QMainWindow):
                 self._add_recent(u)
             self._rebuild_recent_buttons()
 
+    def closeEvent(self, event):
+        event.ignore()
+        self.hide()
+        self.tray_icon.showMessage(
+            self.translator.translate('app_title', 'Universal Media Downloader'),
+            "Программа свернута в трей и продолжает работу",
+            QSystemTrayIcon.MessageIcon.Information,
+        )
+
     def _get_recent(self):
         raw = self.settings.value('recent_urls', '')
         items = []
@@ -845,3 +790,47 @@ class MainWindow(QMainWindow):
     def _show_files_tab(self):
         self.files_page.load_files()
         self.page_stack.setCurrentIndex(2)
+
+    def init_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+
+        icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.png')
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icons', 'download.svg')
+            self.tray_icon.setIcon(QIcon(icon_path))
+
+        tray_menu = QMenu()
+
+        show_action = QAction("Показать / Скрыть", self)
+        show_action.triggered.connect(self.toggle_window)
+
+        quit_action = QAction("Выход", self)
+        quit_action.triggered.connect(self.quit_app)
+
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.tray_activated)
+        self.tray_icon.show()
+
+    def toggle_window(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.activateWindow()
+
+    def tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.toggle_window()
+
+    def quit_app(self):
+        # Настоящий выход из программы
+        self.download_manager.stop_all()
+        self.thread_pool.waitForDone()
+        self.settings.sync()
+        QApplication.quit()

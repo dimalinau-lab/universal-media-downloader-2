@@ -75,6 +75,33 @@ class ThumbnailCache:
 thumbnail_cache = ThumbnailCache(max_size=100)
 
 
+class StreamAssembler(QRunnable):
+    def __init__(self, part_file, out_path, ffmpeg_path, task):
+        super().__init__()
+        self.part_file = part_file
+        self.out_path = out_path
+        self.ffmpeg_path = ffmpeg_path
+        self.task = task
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            self.task.update_progress(95, "Склейка стрима начата...")
+            cmd = [
+                self.ffmpeg_path, '-y', '-err_detect', 'ignore_err',
+                '-fflags', '+genpts', '-i', self.part_file,
+                '-c', 'copy', self.out_path
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            if os.path.exists(self.out_path):
+                self.task.set_completed(self.out_path)
+        except Exception as e:
+            logger.error(f"Ошибка в отдельном сборщике: {e}")
+            self.task.set_status(self.task.Status.ERROR)
+        finally:
+            self.signals.finished.emit()
+
 class WorkerSignals(QObject):
     info_fetched = pyqtSignal(dict)
     finished = pyqtSignal()
@@ -147,7 +174,6 @@ class ThumbnailWorker(QRunnable):
         except Exception as e:
             logger.debug(f"Failed to load thumbnail from {self.url}: {e}")
 
-
 class PlaylistCheckWorker(QRunnable):
     def __init__(self, url):
         super().__init__()
@@ -158,10 +184,11 @@ class PlaylistCheckWorker(QRunnable):
         try:
             ydl_opts = {
                 'quiet': True,
-                'extract_flat': True,
+                'extract_flat': 'in_playlist',
                 'skip_download': True,
                 'nocheckcertificate': True,
                 'ignoreerrors': True,
+                'noplaylist': False, #
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
@@ -182,140 +209,69 @@ class DownloadWorker(QRunnable):
         self.translator = translator
         self.signals = WorkerSignals()
         self._cancel_requested = False
-        self.is_stream_mode = False
 
         self._start_time = None
         self._monitor_running = False
-        self._monitor_thread = None
 
     def cancel(self):
+        print(f"[ОТЛАДКА] Пользователь нажал ОТМЕНУ для {self.task.url}")
         self._cancel_requested = True
         self._monitor_running = False
         self.task.request_stop()
 
-    def _monitor_progress(self):
+    def simple_progress_hook(self, d):
+        if self._cancel_requested or self.task.is_stop_requested():
+            raise yt_dlp.utils.DownloadCancelled("Остановлено юзером")
+
+        if d.get('status') == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            downloaded = d.get('downloaded_bytes', 0)
+            speed = d.get('_speed_str', 'N/A').strip()
+
+            if total > 0:
+                self.task.set_file_size(total)
+                percent = int((downloaded / total) * 90)
+                self.task.update_progress(percent, f"Скачивание: {percent}% | {speed}")
+            else:
+                mb = downloaded / (1024 * 1024)
+                self.task.update_progress(0, f"Скачивание: {mb:.1f} MB | {speed}")
+
+        elif d.get('status') == 'finished':
+            print(f"[ОТЛАДКА] [VOD] Поток скачан: {d.get('filename')}. Ждем склейку...")
+
+    def simple_pp_hook(self, d):
+        status = d.get('status')
+        pp = d.get('postprocessor')
+        print(f"[ОТЛАДКА] [VOD POSTPROCESSOR] {pp} -> {status}")
+
+        if status == 'started':
+            self.task.update_progress(95, "Склейка видео и звука...")
+        elif status == 'finished':
+            self.task.update_progress(99, "Сохранение...")
+
+    def _monitor_progress_twitch(self, target_file):
         last_size = 0
         last_time = time.time()
 
-        save_dir = self.task.save_path or self._default_save_path()
-        marker = f"[{self.task.video_id}]" if self.task.video_id else ""
-
-        while self._monitor_running and not self.task.is_stop_requested() and not self._cancel_requested:
+        while self._monitor_running and not self._cancel_requested and not self.task.is_stop_requested():
             try:
-                target_file = None
-                if marker:
-                    candidates = []
-                    for f in os.listdir(save_dir):
-                        if marker in f and not f.endswith('.fixed.mp4'):
-                            fp = os.path.join(save_dir, f)
-                            if os.path.isfile(fp):
-                                candidates.append(fp)
-                    if candidates:
-                        target_file = max(candidates, key=os.path.getmtime)
-
                 if target_file and os.path.exists(target_file):
                     size = os.path.getsize(target_file)
-
                     now = time.time()
-                    time_diff = now - last_time
-                    if time_diff > 0:
-                        speed_bps = (size - last_size) / time_diff
-                    else:
-                        speed_bps = 0
+                    diff = now - last_time
+                    speed_bps = (size - last_size) / diff if diff > 0 else 0
+                    last_size, last_time = size, now
 
-                    last_size = size
-                    last_time = now
-
-                    if speed_bps < 0: speed_bps = 0
-                    if speed_bps < 1024 * 1024:
-                        speed_str = f"{speed_bps / 1024:.1f} KB/s"
-                    else:
-                        speed_str = f"{speed_bps / (1024 * 1024):.2f} MB/s"
-
-                    elapsed = now - self._start_time
-                    h = int(elapsed // 3600)
-                    m = int((elapsed % 3600) // 60)
-                    s = int(elapsed % 60)
-                    time_str = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
-
+                    speed_str = f"{speed_bps / 1024:.1f} KB/s" if speed_bps < 1024 * 1024 else f"{speed_bps / (1024 * 1024):.2f} MB/s"
                     mb = size / (1024 * 1024)
                     size_str = f"{mb:.1f} MB" if mb < 1024 else f"{mb / 1024:.2f} GB"
 
-                    progress_text = f"🔴 Запись: {time_str} | {size_str} | {speed_str}"
-                    self.task.update_progress(0, progress_text)
+                    self.task.update_progress(0, f"🔴 Запись эфира: {size_str} | {speed_str}")
                 else:
-                    self.task.update_progress(0, "🔴 Подключение к эфиру...")
-
-            except Exception as e:
+                    self.task.update_progress(0, "🔴 Подключение к потоку...")
+            except:
                 pass
-
             time.sleep(1)
-
-    def progress_hook(self, d):
-        try:
-            if getattr(self, 'is_stream_mode', False):
-                return
-
-            if self.task.is_stop_requested() or self._cancel_requested:
-                raise yt_dlp.utils.DownloadCancelled("Download stopped by user.")
-
-            fn = d.get('filename')
-            tmp = d.get('tmpfilename')
-            if tmp or fn:
-                self.task.update_current_paths(tmpfilename=tmp, filename=fn)
-
-            if d.get('status') == 'downloading':
-                total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
-                downloaded = d.get('downloaded_bytes') or 0
-
-                speed_raw = d.get('_speed_str')
-                speed = str(speed_raw).strip() if speed_raw is not None else 'N/A'
-
-                if total_bytes and total_bytes > 0:
-                    self.task.set_file_size(total_bytes)
-                    raw_percent = (downloaded / total_bytes) * 100
-                    percent = int(raw_percent * 0.9)
-
-                    eta_raw = d.get('_eta_str')
-                    eta = str(eta_raw).strip() if eta_raw is not None else 'N/A'
-
-                    progress_text = f"{int(raw_percent)}% | {speed} | ETA: {eta}"
-                    self.task.update_progress(percent, progress_text)
-                else:
-                    mb = downloaded / (1024 * 1024)
-                    size_str = f"{mb:.1f} MB" if mb < 1024 else f"{mb / 1024:.2f} GB"
-                    progress_text = f"Скачано: {size_str} | {speed}"
-                    self.task.update_progress(0, progress_text)
-
-            elif d.get('status') == 'finished':
-                self.task.set_status(self.task.Status.PROCESSING)
-                self.task.update_progress(90, "Обработка...")
-                final_path = d.get('filename')
-                if final_path:
-                    self.task.update_current_paths(filename=final_path)
-
-        except yt_dlp.utils.DownloadCancelled:
-            raise
-        except Exception as e:
-            pass
-
-    def postprocessor_hook(self, d):
-        if self.task.is_stop_requested() or self._cancel_requested:
-            raise yt_dlp.utils.DownloadCancelled("Download stopped by user during processing.")
-
-        status = d.get('status')
-        pp_name = d.get('postprocessor', '')
-
-        if status == 'started':
-            self.task.update_progress(92, f"Конвертация ({pp_name})...")
-
-        elif status == 'finished':
-            self.task.update_progress(98, "Сохранение...")
-            info = d.get('info_dict', {})
-            new_filepath = info.get('filepath') or info.get('_filename')
-            if new_filepath:
-                self._target_out_path = new_filepath
-                self.task.update_current_paths(filename=new_filepath)
 
     def _default_save_path(self):
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -323,235 +279,232 @@ class DownloadWorker(QRunnable):
         os.makedirs(dl_dir, exist_ok=True)
         return dl_dir
 
-    def _cleanup_incomplete(self, save_path):
-        try:
-            paths = set()
-            if self.task.current_tmpfilename:
-                paths.add(self.task.current_tmpfilename)
-            if self.task.current_filename and os.path.exists(self.task.current_filename):
-                paths.add(self.task.current_filename)
-            if self.task.video_id:
-                marker = f"[{self.task.video_id}]"
-                for name in os.listdir(save_path):
-                    if marker in name:
-                        paths.add(os.path.join(save_path, name))
-            for pattern in ("*.part", "*.ytdl", "*.temp", "*.aria2", "*.fragment", "*.frag", "*.downloading"):
-                for p in glob.glob(os.path.join(save_path, pattern)):
-                    if self.task.video_id and f"[{self.task.video_id}]" not in os.path.basename(p):
-                        continue
-                    paths.add(p)
-            for p in list(paths):
-                try:
-                    if os.path.isfile(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
     def run(self):
-        self._target_out_path = None
-        self._monitor_running = False
+        print(f"\n[ОТЛАДКА] --- СТАРТ ЗАДАЧИ: {self.task.url} ---")
         try:
-            platform = self.task.platform.lower().replace(' ', '_').replace('(', '').replace(')', '')
-            quality_key = f'quality_{platform}'
-            chosen_format = self.settings.value(quality_key, 'bestvideo+bestaudio/best')
-
             save_path = self.settings.value('save_path', '')
             if not save_path or not os.path.isdir(save_path):
                 save_path = self._default_save_path()
             self.task.save_path = save_path
 
-            stream_choice = getattr(self.task, 'stream_mode_choice', None)
+            is_twitch = 'twitch.tv' in self.task.url.lower()
 
-            is_actual_live = False
-            if hasattr(self.task, 'info') and isinstance(self.task.info, dict):
-                live_status = self.task.info.get('live_status')
-                duration = self.task.info.get('duration')
-
-                if live_status in ('is_live', 'is_upcoming') or self.task.info.get('is_live') is True:
-                    is_actual_live = True
-                elif duration in (0, None):
-                    is_actual_live = True
-
-            if not is_actual_live and ('twitch.tv' in self.task.url.lower()):
-                is_actual_live = True
-
-            self.is_stream_mode = False
-            if stream_choice is not None:
-                self.is_stream_mode = True
-            elif is_actual_live:
-                self.is_stream_mode = True
-
-            if self.is_stream_mode and stream_choice is None:
-                stream_choice = 'from_now'
-                self.task.stream_mode_choice = stream_choice
-
-            self.task.is_stream_mode = self.is_stream_mode
-
-            ydl_opts = {
-                'outtmpl': os.path.join(save_path, '%(title)s [%(id)s].%(ext)s'),
-                'progress_hooks': [self.progress_hook],
-                'postprocessor_hooks': [self.postprocessor_hook],
-                'quiet': True,
-                'noprogress': True,
-                'ignoreerrors': False,
-                'overwrites': True,
-                'ffmpeg_location': self.ffmpeg_path,
-                'prefer_ffmpeg': False,
-                'legacyserverconnect': True,
-                'source_address': '0.0.0.0',
-                'socket_timeout': 30,
-                'retries': 15,
-                'fragment_retries': 15,
-                'skip_unavailable_fragments': True,
-                'hls_prefer_native': True,
-            }
-
-            if self.is_stream_mode:
-                if stream_choice == 'from_start':
-                    ydl_opts['wait_for_video'] = (20, 60)
-                    ydl_opts['live_from_start'] = True
-                    ydl_opts['format'] = chosen_format
-                    ydl_opts['merge_output_format'] = 'mp4'
-                elif stream_choice == 'from_now':
-                    ydl_opts['live_from_start'] = False
-                    ydl_opts['format'] = 'best'
-
-            is_audio_only = chosen_format in ['bestaudio/best', 'bestaudio'] or str(chosen_format).startswith(
-                'bestaudio')
-            video_only_mode = chosen_format == 'video_only_stripped'
-
-            if not self.is_stream_mode:
-                if is_audio_only:
-                    ydl_opts['format'] = 'bestaudio/best'
-                    ydl_opts['postprocessors'] = [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192'
-                    }]
-                elif video_only_mode:
-                    ydl_opts['format'] = 'bestvideo[ext=mp4]/bestvideo/best'
-                else:
-                    ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-                    ydl_opts['merge_output_format'] = 'mp4'
-
-            use_cookies = self.settings.value('use_cookies', False, type=bool)
-            if use_cookies:
-                source_type = self.settings.value('cookie_source_type', 'file')
-                if source_type == 'file':
-                    cookie_file = self.settings.value('cookies_path', '')
-                    if cookie_file and os.path.exists(cookie_file):
-                        ydl_opts['cookiefile'] = cookie_file
-                else:
-                    browser = self.settings.value('cookie_browser', 'none')
-                    if browser != 'none':
-                        ydl_opts['cookiesfrombrowser'] = (browser,)
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.task.url, download=False)
-                self._target_out_path = ydl.prepare_filename(info)
-
-                if self.task.is_stop_requested() or self._cancel_requested:
-                    raise yt_dlp.utils.DownloadCancelled("Download stopped before start.")
-
-                if self.is_stream_mode:
-                    self._start_time = time.time()
-                    self._monitor_running = True
-                    self._monitor_thread = threading.Thread(target=self._monitor_progress, daemon=True)
-                    self._monitor_thread.start()
-
-                    ydl.download([self.task.url])
-
-                    self._monitor_running = False
-                    if self.is_stream_mode:
-                        raise yt_dlp.utils.DownloadCancelled("Stream closed.")
-                    else:
-                        self.task.set_completed(self._target_out_path)
-
+            if is_twitch:
+                print("[ОТЛАДКА] Режим: СТРИМ TWITCH")
+                self._run_twitch_stream(save_path)
+            else:
+                print("[ОТЛАДКА] Режим: ОБЫЧНОЕ ВИДЕО (VOD)")
+                self._run_standard_vod(save_path)
 
         except yt_dlp.utils.DownloadCancelled:
+            print("[ОТЛАДКА] Загрузка отменена юзером/скриптом.")
+            self.task.set_status(self.task.Status.STOPPED)
+        except Exception as e:
+            import traceback
+            print(f"[ОТЛАДКА] КРИТИЧЕСКАЯ ОШИБКА В RUN: {traceback.format_exc()}")
+            self.signals.error.emit(str(e))
+        finally:
+            print(f"[ОТЛАДКА] --- ПОТОК ЗАВЕРШЕН: {self.task.url} ---\n")
+            self._monitor_running = False
+            self.signals.finished.emit()
+
+    def _run_standard_vod(self, save_path):
+        self.task.is_stream_mode = False
+        print(f"[ОТЛАДКА] [VOD] Папка сохранения: {save_path}")
+        self._start_time = time.time()
+
+        ydl_opts = {
+            'outtmpl': os.path.join(save_path, '%(title)s [%(id)s].%(ext)s'),
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+            'merge_output_format': 'mp4',
+            'ffmpeg_location': self.ffmpeg_path,
+            'progress_hooks': [self.simple_progress_hook],
+            'postprocessor_hooks': [self.simple_pp_hook],
+            'quiet': True,
+            'noprogress': True,
+            'noplaylist': True,
+            'ignoreerrors': True,
+            'postprocessors': []
+        }
+
+
+        use_cookies = self.settings.value('use_cookies', False, type=bool)
+        if use_cookies:
+            source_type = self.settings.value('cookie_source_type', 'file')
+            if source_type == 'file':
+                cookie_file = self.settings.value('cookies_path', '')
+                if cookie_file and os.path.exists(cookie_file):
+                    ydl_opts['cookiefile'] = cookie_file
+            else:
+                browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
+                if browser and browser != 'none':
+                    try:
+                        ydl_opts['cookiesfrombrowser'] = (browser,)
+                    except Exception as e:
+                        print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
+
+        # === 2. SPONSORBLOCK ===
+        if self.settings.value('sponsorblock_enabled', False, type=bool):
+            sb_categories = ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction']
+            ydl_opts['postprocessors'].append({
+                'key': 'SponsorBlock',
+                'categories': sb_categories,
+            })
+            ydl_opts['postprocessors'].append({
+                'key': 'ModifyChapters',
+                'remove_sponsor_segments': sb_categories,
+            })
+
+        # === 3. СУБТИТРЫ ===
+        if self.settings.value('subtitles_enabled', False, type=bool):
+            ydl_opts['writesubtitles'] = True
+            ydl_opts['writeautomaticsub'] = True
+            ydl_opts['subtitleslangs'] = ['ru', 'en']  # ФИКС 3: Убрал 'uk', так как он чаще всего крашит ютуб
+            ydl_opts['sleep_subtitles'] = 2
+
+            ydl_opts['postprocessors'].append({
+                'key': 'FFmpegEmbedSubtitle',
+                'when': 'post_process',
+            })
+
+        if not ydl_opts['postprocessors']:
+            del ydl_opts['postprocessors']
+
+        # === 4. ЗАПУСК СКАЧИВАНИЯ ===
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            print("[ОТЛАДКА] [VOD] yt-dlp: Начинаем скачивание...")
+            if self.task.is_stop_requested() or self._cancel_requested:
+                raise yt_dlp.utils.DownloadCancelled("Stopped")
+            ydl.download([self.task.url])
+            print("[ОТЛАДКА] [VOD] yt-dlp: Завершено.")
+        time.sleep(1.5)
+
+        video_id = getattr(self.task, 'video_id', None)
+        final_file = None
+        valid_exts = ('.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4a', '.mp3')
+
+        if video_id:
+            for f in os.listdir(save_path):
+                if f"[{video_id}]" in f and f.endswith(valid_exts):
+                    final_file = os.path.join(save_path, f)
+                    break
+
+
+        if not final_file:
+            list_of_files = [os.path.join(save_path, f) for f in os.listdir(save_path)
+                             if f.endswith(valid_exts) and not f.endswith('.part')]
+            if list_of_files:
+                latest_file = max(list_of_files, key=os.path.getmtime)
+                if os.path.getmtime(latest_file) >= (self._start_time - 10):
+                    final_file = latest_file
+
+        if final_file and os.path.exists(final_file) and os.path.getsize(final_file) > 1024:
+            print(f"[ОТЛАДКА] [VOD] Найден финальный файл: {final_file}")
+            self.task.update_progress(100, "Скачано ✓")
+            self.task.set_completed(final_file)
+        else:
+            raise Exception("Сбой скачивания. Файл не найден (возможно, блокировка 429).")
+
+    def _run_twitch_stream(self, save_path):
+        import re
+        self.task.is_stream_mode = True
+        self._start_time = time.time()
+
+        ydl_opts = {
+            'quiet': True,
+            'noprogress': True,
+            'format': 'best',
+        }
+        use_cookies = self.settings.value('use_cookies', False, type=bool)
+        if use_cookies:
+            source_type = self.settings.value('cookie_source_type', 'file')
+            if source_type == 'file':
+                cookie_file = self.settings.value('cookies_path', '')
+                if cookie_file and os.path.exists(cookie_file):
+                    ydl_opts['cookiefile'] = cookie_file
+            else:
+                browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
+                if browser and browser != 'none':
+                    try:
+                        ydl_opts['cookiesfrombrowser'] = (browser,)
+                    except Exception as e:
+                        print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
+
+        try:
+            print("[ОТЛАДКА] [TWITCH] Получаем прямую ссылку на поток (БЕЗ скачивания)...")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(self.task.url, download=False)
+                stream_url = info.get('url')
+                title = info.get('title', 'twitch_stream')
+                video_id = info.get('id', 'id')
+
+            if not stream_url:
+                raise Exception("Не удалось получить ссылку на поток")
+
+            safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip()
+            final_mp4 = os.path.join(save_path, f"{safe_title} [{video_id}].mp4")
+            temp_ts = os.path.join(save_path, f"{safe_title} [{video_id}].ts")
+
+            print(f"[ОТЛАДКА] [TWITCH] Прямая запись через FFmpeg в: {temp_ts}")
+
+            cmd = [
+                self.ffmpeg_path,
+                '-y',
+                '-i', stream_url,
+                '-c', 'copy',
+                temp_ts
+            ]
+
+            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+
+            self._monitor_running = True
+            threading.Thread(target=self._monitor_progress_twitch, args=(temp_ts,), daemon=True).start()
+
+            while process.poll() is None:
+                if self._cancel_requested or self.task.is_stop_requested():
+                    print("[ОТЛАДКА] [TWITCH] Команда СТОП! Жестко убиваем FFmpeg...")
+                    process.kill()
+                    process.wait()
+                    break
+                time.sleep(1)
 
             self._monitor_running = False
 
-            is_deleted = getattr(self.task, 'is_removed', False)
+            if getattr(self.task, 'is_removed', False):
+                print("[ОТЛАДКА] [TWITCH] Задача удалена из списка.")
+                if os.path.exists(temp_ts): os.remove(temp_ts)
+                self.task.set_status(self.task.Status.STOPPED)
+                return
 
-            if getattr(self, 'is_stream_mode', False) and self._target_out_path and not is_deleted:
+            if os.path.exists(temp_ts) and os.path.getsize(temp_ts) > 1024:
+                self.task.update_progress(98, "Формирование MP4 файла...")
+                print("[ОТЛАДКА] [TWITCH] Быстрая конвертация TS -> MP4...")
 
-                self.task.set_status(self.task.Status.PROCESSING)
+                remux_cmd = [
+                    self.ffmpeg_path, '-y',
+                    '-err_detect', 'ignore_err',
+                    '-i', temp_ts,
+                    '-c', 'copy',
+                    final_mp4
+                ]
+                subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
 
-                self.task.update_progress(95, "Остановлена запись. Ожидание завершения потока...")
+                if os.path.exists(final_mp4):
+                    try:
+                        os.remove(temp_ts)
+                    except:
+                        pass
+                    print("[ОТЛАДКА] [TWITCH] УСПЕХ! Стрим сохранен.")
+                    self.task.update_progress(100, "Скачано ✓")
+                    self.task.set_completed(final_mp4)
+                else:
+                    self.task.set_status(self.task.Status.ERROR)
+            else:
+                print("[ОТЛАДКА] [TWITCH] Временный файл пуст или не создан.")
+                self.task.set_status(self.task.Status.STOPPED)
 
-                # Ждем 3 секунды, чтобы процесс yt-dlp полностью отпустил файл
-
-                time.sleep(3.0)
-
-                recovered_path = None
-
-                try:
-
-                    save_dir = self.task.save_path or self._default_save_path()
-
-                    marker = f"[{self.task.video_id}]" if self.task.video_id else ""
-
-                    out_path = self._target_out_path
-
-                    if not out_path.endswith('.mp4'):
-                        out_path = os.path.splitext(out_path)[0] + '.mp4'
-
-                    # Ищем файл с расширением .part
-
-                    part_files = []
-
-                    if marker:
-
-                        for f in os.listdir(save_dir):
-
-                            if marker in f and f.endswith('.part'):
-                                fp = os.path.join(save_dir, f)
-
-                                part_files.append(fp)
-
-                    if part_files:
-
-                        best_file = part_files[0]
-
-                        # Сборка без FFmpeg-загрузчика, только конвертация (самый надежный путь)
-
-                        cmd = [self.ffmpeg_path, '-y', '-err_detect', 'ignore_err', '-i', best_file, '-c', 'copy',
-                               out_path]
-
-                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=40)
-
-                        if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
-
-                            recovered_path = out_path
-
-                        else:
-
-                            # Если FFmpeg не смог, просто перемещаем файл
-
-                            import shutil
-
-                            shutil.move(best_file, out_path)
-
-                            recovered_path = out_path
-
-
-                except Exception as e:
-
-                    logger.error(f"Ошибка склейки: {e}")
-
-                if recovered_path and os.path.exists(recovered_path):
-                    self.task.set_completed(recovered_path)
-
-                    return
-
-                    # Очистка если удалили задачу
-
-            if is_deleted:
-                path = self.task.save_path or self._default_save_path()
-
-                self._cleanup_incomplete(path)
-
-            self.task.set_status(self.task.Status.STOPPED)
+        except Exception as e:
+            print(f"[ОТЛАДКА] [TWITCH] Ошибка: {e}")
+            self._monitor_running = False
+            self.task.set_status(self.task.Status.ERROR)

@@ -61,7 +61,6 @@ class DownloadManager(QObject):
                 if direct_url:
                     url = direct_url  # Ссылка найдена, заменяем на видео!
                 else:
-                    # Ссылка не найдена. Останавливаемся, чтобы yt-dlp не выдавал ошибку HTML
                     task = DownloadTask(url)
                     task.set_error("Видео не найдено в коде страницы.")
                     self.tasks.append(task)
@@ -144,7 +143,6 @@ class DownloadManager(QObject):
             self.translator
         )
         self._workers[task] = worker
-        task.worker = worker  # ← ДОБАВЛЕНО: сохраняем ссылку в задаче
         worker.signals.finished.connect(lambda t=task: self.on_task_finished(t))
         worker.signals.error.connect(lambda error, t=task: self.on_task_error(t, error))
 
@@ -219,10 +217,8 @@ class DownloadManager(QObject):
 
         try:
             req = requests.get(url, headers=headers, timeout=15)
-            # Убираем экранирование слэшей и кавычек
             clean_text = req.text.replace('\\/', '/').replace('\\"', '"')
 
-            # --- ЧИТАЕМ ТВОИ НАСТРОЙКИ КАЧЕСТВА ---
             quality_setting = self.settings.value('quality_kinopub', '1080')
             target_res = 1080
             if '360' in quality_setting:
@@ -238,11 +234,8 @@ class DownloadManager(QObject):
             elif '2160' in quality_setting:
                 target_res = 2160
 
-            # 1. Поиск в формате веб-плееров: [1080p]https://...
             playerjs_links = re.findall(r'\[(\d+)p?\](https?://[^\s\'"<>\[\],]+\.(?:mp4|m3u8)[^\s\'"<>\[\],]*)',
                                         clean_text)
-
-            # 2. Поиск в формате JSON: "quality":"1080p", "url":"https://..."
             json_links = re.findall(
                 r'["\'](?:quality|label)["\']\s*:\s*["\'](\d+)p?["\'].*?["\'](?:url|file)["\']\s*:\s*["\'](https?://[^\s"<>]+)["\']',
                 clean_text)
@@ -250,15 +243,12 @@ class DownloadManager(QObject):
             all_tagged = playerjs_links + json_links
 
             if all_tagged:
-                # Отбираем те, что меньше или равны выбранному качеству
                 valid_links = [(int(res), link) for res, link in all_tagged if int(res) <= target_res]
                 if valid_links:
-                    # Сортируем от лучшего к худшему (берем максимум из доступных)
                     valid_links.sort(key=lambda x: x[0], reverse=True)
                     logger.info(f"KinoPub: По тегам найдено точное качество {valid_links[0][0]}p")
                     return valid_links[0][1]
 
-            # 3. Если тегов нет, собираем все ссылки и угадываем по названию файла
             streams = re.findall(r'(https?://[^\s\'"<>\[\],]+\.(?:m3u8|mp4)[^\s\'"<>\[\],]*)', clean_text)
             if streams:
                 unique_streams = list(set(streams))
@@ -272,7 +262,6 @@ class DownloadManager(QObject):
 
                 if filtered:
                     filtered.sort(key=lambda x: x[0], reverse=True)
-                    # Если разрешение нигде не написано (у всех 0), ищем плейлист manifest
                     if filtered[0][0] == 0:
                         manifests = [x[1] for x in filtered if 'manifest' in x[1] or 'master' in x[1]]
                         if manifests:

@@ -122,11 +122,9 @@ class DownloadItemWidget(QWidget):
         return is_stream and is_running and not is_stopped
 
     def on_start_clicked(self):
-        # --- ФИКС: Сбрасываем флаг остановки перед новым запуском! ---
         if hasattr(self.task, '_stop_event'):
             self.task._stop_event.clear()
 
-        is_youtube = 'youtube.com' in self.task.url or 'youtu.be' in self.task.url
         is_live = False
 
         if hasattr(self.task, 'info') and isinstance(self.task.info, dict):
@@ -146,24 +144,8 @@ class DownloadItemWidget(QWidget):
                                     "Этот Twitch канал сейчас не в эфире. Скачивание невозможно.")
                 return
             is_live = True
-
-        if is_live and getattr(self.task, 'stream_mode_choice', None) is None:
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("Запись прямого эфира")
-            msg_box.setText("Обнаружена трансляция!\nКак вы хотите ее записать?")
-
-            btn_start = msg_box.addButton("С самого начала", QMessageBox.ButtonRole.YesRole)
-            btn_now = msg_box.addButton("С текущего момента", QMessageBox.ButtonRole.NoRole)
-            btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-
-            msg_box.exec()
-
-            if msg_box.clickedButton() == btn_start:
-                self.task.stream_mode_choice = 'from_start'
-            elif msg_box.clickedButton() == btn_now:
-                self.task.stream_mode_choice = 'from_now'
-            else:
-                return
+        if is_live:
+            self.task.stream_mode_choice = 'from_now'
 
         self.start_or_retry_requested.emit()
 

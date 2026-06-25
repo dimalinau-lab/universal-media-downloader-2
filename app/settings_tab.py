@@ -148,11 +148,6 @@ class SettingsTab(QWidget):
         group_box.setObjectName('SettingsGroup')
         v_layout = QVBoxLayout(group_box)
 
-        # --- НОВАЯ КНОПКА: РАДАР СТРИМОВ ---
-        self.stream_radar_checkbox = QCheckBox("📡 Радар стримов (Ожидать начала трансляции)")
-        self.stream_radar_checkbox.setProperty("text_key", "stream_radar")
-        v_layout.addWidget(self.stream_radar_checkbox)
-
         self.sponsorblock_checkbox = QCheckBox("Вырезать спонсорскую рекламу (SponsorBlock)")
         self.sponsorblock_checkbox.setProperty("text_key", "sponsorblock")
 
@@ -277,12 +272,9 @@ class SettingsTab(QWidget):
         self.theme_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.parallel_downloads_spin.valueChanged.connect(self.on_setting_changed)
         self.save_path_btn.clicked.connect(self.on_select_save_path)
-
-        self.stream_radar_checkbox.stateChanged.connect(self.on_setting_changed)  # ПОДКЛЮЧЕНО
         self.subtitles_checkbox.stateChanged.connect(self.on_setting_changed)
         self.sponsorblock_checkbox.stateChanged.connect(self.on_setting_changed)
         self.cookies_checkbox.stateChanged.connect(self.on_setting_changed)
-
         self.rb_cookie_file.toggled.connect(self.on_setting_changed)
         self.cookies_btn.clicked.connect(self.on_select_cookies_file)
         self.cookie_browser_combo.currentIndexChanged.connect(self.on_setting_changed)
@@ -293,12 +285,9 @@ class SettingsTab(QWidget):
         self.theme_combo.currentIndexChanged.disconnect()
         self.parallel_downloads_spin.valueChanged.disconnect()
         self.save_path_btn.clicked.disconnect()
-
-        self.stream_radar_checkbox.stateChanged.disconnect()  # ОТКЛЮЧЕНО
         self.subtitles_checkbox.stateChanged.disconnect()
         self.sponsorblock_checkbox.stateChanged.disconnect()
         self.cookies_checkbox.stateChanged.disconnect()
-
         self.rb_cookie_file.toggled.disconnect()
         self.cookies_btn.clicked.disconnect()
         self.cookie_browser_combo.currentIndexChanged.disconnect()
@@ -370,9 +359,6 @@ class SettingsTab(QWidget):
         else:
             self.save_path_lbl.setText(self.translator.translate('folder_not_selected'))
 
-        # --- ЗАГРУЗКА РАДАРА ---
-        self.stream_radar_checkbox.setChecked(self.settings.value('wait_for_stream', False, type=bool))
-
         self.subtitles_checkbox.setChecked(self.settings.value('subtitles_enabled', False, type=bool))
         self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
@@ -408,9 +394,6 @@ class SettingsTab(QWidget):
         self.settings.setValue('theme', self.theme_combo.currentData())
         self.settings.setValue('parallel_downloads', self.parallel_downloads_spin.value())
         self.parent_window.thread_pool.setMaxThreadCount(self.parallel_downloads_spin.value())
-
-        # --- СОХРАНЕНИЕ РАДАРА ---
-        self.settings.setValue('wait_for_stream', self.stream_radar_checkbox.isChecked())
 
         self.settings.setValue('subtitles_enabled', self.subtitles_checkbox.isChecked())
         self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
