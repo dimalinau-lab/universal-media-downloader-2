@@ -82,8 +82,8 @@ class LocalFileItemWidget(QWidget):
         self.url_label = QLabel(self.filepath)
         self.url_label.setObjectName('UrlLabel')
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.url_label.setWordWrap(True)  # Разрешаем перенос длинного пути
-        self.url_label.setMinimumWidth(50)  # Разрешаем элементу сжиматься, чтобы не выталкивать кнопки
+        self.url_label.setWordWrap(True)
+        self.url_label.setMinimumWidth(50)
 
         status_layout = QHBoxLayout()
         self.status_label = QLabel()

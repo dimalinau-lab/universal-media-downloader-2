@@ -127,7 +127,7 @@ class SettingsTab(QWidget):
         v_layout.setSpacing(12)
         v_layout.setContentsMargins(16, 24, 16, 16)
 
-        # Тема
+
         theme_layout = QHBoxLayout()
         self.theme_label = BodyLabel()
         self.theme_label.setProperty("text_key", "select_theme")
@@ -140,7 +140,7 @@ class SettingsTab(QWidget):
         theme_layout.addWidget(self.theme_combo)
         v_layout.addLayout(theme_layout)
 
-        # Параллельные загрузки
+
         parallel_layout = QHBoxLayout()
         self.parallel_label = BodyLabel()
         self.parallel_label.setProperty("text_key", "parallel_downloads")

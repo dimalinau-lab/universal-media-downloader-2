@@ -31,7 +31,6 @@ class DownloadItemWidget(QWidget):
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(15)
 
-        # Увеличили миниатюру до формата 16:9
         self.thumbnail_label = QLabel()
         self.thumbnail_label.setFixedSize(144, 81)
         self.thumbnail_label.setObjectName('Thumbnail')
@@ -42,18 +41,16 @@ class DownloadItemWidget(QWidget):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(6)
 
-        # Жирный и красивый шрифт для заголовка
         self.title_label = StrongBodyLabel(self.task.title)
         self.title_label.setObjectName('TitleLabel')
         self.title_label.setWordWrap(True)
 
-        # Уменьшенный, приглушенный шрифт для ссылки
+
         self.url_label = CaptionLabel(self.task.url)
         self.url_label.setObjectName('UrlLabel')
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.url_label.setStyleSheet("color: #888888;")
 
-        # Тонкий и плавный прогресс-бар Windows 11
         self.progress_bar = ProgressBar()
         self.progress_bar.setFixedHeight(6)
         self.progress_bar.setValue(0)

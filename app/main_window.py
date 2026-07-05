@@ -81,7 +81,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # === ВЕРХНЯЯ ПАНЕЛЬ ===
         top_bar = QWidget()
         top_bar.setObjectName('TopBar')
         top_bar_layout = QHBoxLayout(top_bar)
@@ -111,7 +110,7 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(self.btn_notes)
         main_layout.addWidget(top_bar)
 
-        # === ЦЕНТРАЛЬНАЯ ЧАСТЬ (САЙДБАР + КОНТЕНТ) ===
+
         content_layout = QHBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
@@ -174,7 +173,6 @@ class MainWindow(QMainWindow):
         self.downloads_list.setObjectName('DownloadsList')
         self.downloads_list.setSpacing(5)
 
-        # === НОВАЯ ПУСТАЯ КАРТОЧКА ЗАГРУЗОК ===
         self.empty_widget = QWidget()
         empty_layout = QVBoxLayout(self.empty_widget)
         empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -271,7 +269,6 @@ class MainWindow(QMainWindow):
 
         empty_layout.addWidget(empty_card, 0, Qt.AlignmentFlag.AlignCenter)
 
-        # === СБОРКА СТРАНИЦ ===
         self.downloads_page_stack.addWidget(self.empty_widget)
         self.downloads_page_stack.addWidget(self.downloads_list)
 
@@ -293,7 +290,6 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.page_stack, 1)
         main_layout.addLayout(content_layout)
 
-        # === НИЖНЯЯ ПАНЕЛЬ ===
         bottom_bar = QWidget()
         bottom_bar.setObjectName('BottomBar')
         bottom_bar_layout = QHBoxLayout(bottom_bar)
@@ -846,7 +842,6 @@ class MainWindow(QMainWindow):
             self.toggle_window()
 
     def quit_app(self):
-        # Настоящий выход из программы
         self.download_manager.stop_all()
         self.thread_pool.waitForDone()
         self.settings.sync()
