@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QDialog, QLineEdit, QSlider)
 from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject
 from PyQt6.QtGui import QDesktopServices, QPixmap
-from qfluentwidgets import TransparentToolButton, FluentIcon
+from qfluentwidgets import (TransparentToolButton, FluentIcon, Slider,
+                            PushButton, PrimaryPushButton, LineEdit, BodyLabel)
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
@@ -81,6 +82,8 @@ class LocalFileItemWidget(QWidget):
         self.url_label = QLabel(self.filepath)
         self.url_label.setObjectName('UrlLabel')
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.url_label.setWordWrap(True)  # Разрешаем перенос длинного пути
+        self.url_label.setMinimumWidth(50)  # Разрешаем элементу сжиматься, чтобы не выталкивать кнопки
 
         status_layout = QHBoxLayout()
         self.status_label = QLabel()
@@ -203,38 +206,61 @@ class VideoCutterDialog(QDialog):
 
     def initUI(self):
         self.setWindowTitle("Визуальная обрезка видео")
-        self.setMinimumSize(720, 480)
+        self.setMinimumSize(760, 500)
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(15)
 
         self.video_widget = QVideoWidget()
-        self.video_widget.setStyleSheet("background-color: black;")
+        self.video_widget.setStyleSheet("background-color: black; border-radius: 8px;")
         layout.addWidget(self.video_widget, stretch=1)
 
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = Slider(Qt.Orientation.Horizontal)
         self.slider.sliderMoved.connect(self.set_position)
         layout.addWidget(self.slider)
 
         controls_layout = QHBoxLayout()
-        self.btn_play = QPushButton("▶ Play / Pause")
+        self.btn_play = PushButton("▶ Play / Pause")
         self.btn_play.clicked.connect(self.toggle_play)
-        self.lbl_time = QLabel("00:00:00 / 00:00:00")
+
+        self.lbl_time = BodyLabel("00:00:00 / 00:00:00")
+
+        self.btn_mute = TransparentToolButton(FluentIcon.VOLUME)
+        self.btn_mute.setFixedSize(32, 32)
+        self.btn_mute.clicked.connect(self.toggle_mute)
+
+        self.volume_slider = Slider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(50)
+        self.volume_slider.setFixedWidth(100)
+        self.volume_slider.valueChanged.connect(self.set_volume)
+
         controls_layout.addWidget(self.btn_play)
+        controls_layout.addSpacing(15)
         controls_layout.addWidget(self.lbl_time)
         controls_layout.addStretch()
+        controls_layout.addWidget(self.btn_mute)
+        controls_layout.addWidget(self.volume_slider)
         layout.addLayout(controls_layout)
 
         times_layout = QHBoxLayout()
-        self.btn_set_start = QPushButton("⬅ Начать отсюда")
-        self.btn_set_start.setObjectName('SecondaryButton')
-        self.btn_set_start.clicked.connect(self.set_start_time)
-        self.start_input = QLineEdit("00:00:00")
-        self.start_input.setFixedWidth(80)
 
-        self.btn_set_end = QPushButton("Закончить здесь ➡")
-        self.btn_set_end.setObjectName('SecondaryButton')
+        self.btn_set_start = PushButton("⬅ Начать отсюда")
+        self.btn_set_start.clicked.connect(self.set_start_time)
+
+        self.start_input = LineEdit()
+        self.start_input.setText("00:00:00")
+        self.start_input.setFixedWidth(110)
+        self.start_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.btn_set_end = PushButton("Закончить здесь ➡")
         self.btn_set_end.clicked.connect(self.set_end_time)
-        self.end_input = QLineEdit("00:00:00")
-        self.end_input.setFixedWidth(80)
+
+        self.end_input = LineEdit()
+        self.end_input.setText("00:00:00")
+        self.end_input.setFixedWidth(110)
+        self.end_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         times_layout.addWidget(self.btn_set_start)
         times_layout.addWidget(self.start_input)
@@ -244,12 +270,11 @@ class VideoCutterDialog(QDialog):
         layout.addLayout(times_layout)
 
         btn_layout = QHBoxLayout()
-        self.btn_cut = QPushButton("✂ Обрезать и сохранить")
-        self.btn_cut.setObjectName('ActionButton')
+
+        self.btn_cut = PrimaryPushButton("✂ Обрезать и сохранить")
         self.btn_cut.clicked.connect(self.process_cut)
 
-        self.btn_cancel = QPushButton("Отмена")
-        self.btn_cancel.setObjectName('SecondaryButton')
+        self.btn_cancel = PushButton("Отмена")
         self.btn_cancel.clicked.connect(self.reject)
 
         btn_layout.addStretch()
@@ -260,6 +285,9 @@ class VideoCutterDialog(QDialog):
     def init_player(self):
         self.media_player = QMediaPlayer()
         self.audio_output = QAudioOutput()
+
+        self.audio_output.setVolume(0.5)
+
         self.media_player.setAudioOutput(self.audio_output)
         self.media_player.setVideoOutput(self.video_widget)
 
@@ -267,6 +295,26 @@ class VideoCutterDialog(QDialog):
         self.media_player.durationChanged.connect(self.duration_changed)
 
         self.media_player.setSource(QUrl.fromLocalFile(self.filepath))
+
+        self.is_muted = False
+        self.last_volume = 50
+
+    def set_volume(self, value):
+        volume = value / 100.0
+        self.audio_output.setVolume(volume)
+        if value > 0:
+            self.is_muted = False
+            self.btn_mute.setIcon(FluentIcon.VOLUME.icon())
+        else:
+            self.is_muted = True
+            self.btn_mute.setIcon(FluentIcon.MUTE.icon())
+
+    def toggle_mute(self):
+        if self.is_muted:
+            self.volume_slider.setValue(self.last_volume if self.last_volume > 0 else 50)
+        else:
+            self.last_volume = self.volume_slider.value()
+            self.volume_slider.setValue(0)
 
     def toggle_play(self):
         if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -310,20 +358,19 @@ class VideoCutterDialog(QDialog):
         base, ext = os.path.splitext(self.filepath)
         out_path = f"{base}_cut.mp4"
 
-        # САМЫЙ БРОНЕБОЙНЫЙ КОД FFMPEG ДЛЯ WINDOWS И TIKTOK
         cmd = [
             self.ffmpeg_path, '-y',
             '-i', self.filepath,
             '-ss', start_time,
             '-to', end_time,
-            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', # Округляем пиксели (спасает от сбоя кодека на мобильных видео)
-            '-c:v', 'libx264',                          # Перекодируем в самый совместимый формат
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+            '-c:v', 'libx264',
             '-preset', 'fast',
-            '-crf', '22',                               # Отличное качество
-            '-pix_fmt', 'yuv420p',                      # Формат цвета для Windows Media Player
-            '-c:a', 'aac',                              # Перекодируем звук для идеальной синхронизации
+            '-crf', '22',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
             '-b:a', '192k',
-            '-movflags', '+faststart',                  # Ставим метаданные в начало (убирает черный экран)
+            '-movflags', '+faststart',
             out_path
         ]
 
@@ -333,7 +380,7 @@ class VideoCutterDialog(QDialog):
             self.btn_cut.setEnabled(False)
 
             subprocess.run(cmd, check=True, creationflags=flags)
-            QMessageBox.information(self, "Успех", "Видео обрезано и адаптировано под Windows!\nФайл: _cut.mp4")
+            QMessageBox.information(self, "Успех", "Видео обрезано и сохранено!\nФайл: _cut.mp4")
 
             self.media_player.setSource(QUrl())
             self.accept()

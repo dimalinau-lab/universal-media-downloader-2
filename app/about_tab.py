@@ -74,15 +74,10 @@ class AboutTab(QWidget):
         buttons_layout.setSpacing(16)
         buttons_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.btn_telegram = QPushButton()
-        self.btn_telegram.setObjectName('AboutButton')
-        self.btn_telegram.clicked.connect(self.on_telegram_clicked)
-
         self.btn_support = QPushButton()
         self.btn_support.setObjectName('AboutButton')
         self.btn_support.clicked.connect(self.on_support_clicked)
 
-        buttons_layout.addWidget(self.btn_telegram)
         buttons_layout.addWidget(self.btn_support)
 
         layout.addLayout(buttons_layout)
@@ -93,7 +88,6 @@ class AboutTab(QWidget):
     def update_translations(self):
         self.lbl_title.setText(self.translator.translate('app_title'))
         self.lbl_desc.setText(self.translator.translate('description'))
-        self.btn_telegram.setText(self.translator.translate('Telegram', 'Telegram'))
         self.btn_support.setText(self.translator.translate('support_author', 'Поддержать автора'))
 
 
@@ -102,17 +96,15 @@ class AboutTab(QWidget):
             lang = self.parent_window.settings.value('language', 'ru')
 
         if lang == 'en':
-            self.lbl_version.setText("Version: 2.4")
+            self.lbl_version.setText("Version: 2.5")
             self.lbl_author.setText("Author: Magerko\nModified by: MrPablo")
         elif lang == 'uk':
-            self.lbl_version.setText("Версія: 2.4")
+            self.lbl_version.setText("Версія: 2.5")
             self.lbl_author.setText("Автор: Magerko\nДоповнено: MrPablo")
         else:
-            self.lbl_version.setText("Версия: 2.4")
+            self.lbl_version.setText("Версия: 2.5")
             self.lbl_author.setText("Автор: Magerko\nДополнено: MrPablo")
 
-    def on_telegram_clicked(self):
-        QDesktopServices.openUrl(QUrl('https://t.me/mcodeg'))
 
     def on_support_clicked(self):
         QDesktopServices.openUrl(QUrl('https://donatepay.eu/don/34347'))

@@ -3,7 +3,9 @@ import os
 import subprocess
 import logging
 import json
-from qfluentwidgets import LineEdit, TransparentToolButton, FluentIcon, setTheme, Theme
+from qfluentwidgets import (LineEdit, TransparentToolButton, PrimaryPushButton,
+                            PushButton, SubtitleLabel, BodyLabel, CaptionLabel,
+                            FluentIcon, setTheme, Theme)
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QProgressBar, QLabel,
                              QFileDialog, QMessageBox, QComboBox,
@@ -79,6 +81,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        # === ВЕРХНЯЯ ПАНЕЛЬ ===
         top_bar = QWidget()
         top_bar.setObjectName('TopBar')
         top_bar_layout = QHBoxLayout(top_bar)
@@ -108,6 +111,7 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(self.btn_notes)
         main_layout.addWidget(top_bar)
 
+        # === ЦЕНТРАЛЬНАЯ ЧАСТЬ (САЙДБАР + КОНТЕНТ) ===
         content_layout = QHBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
@@ -119,17 +123,28 @@ class MainWindow(QMainWindow):
         nav_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self.btn_downloads = QPushButton(self.translator.translate('loader_tab_title'))
+        self.btn_downloads.setIcon(FluentIcon.DOWNLOAD.icon())
         self.btn_downloads.setObjectName('NavButton')
+
         self.btn_history = QPushButton(self.translator.translate('history', 'History'))
+        self.btn_history.setIcon(FluentIcon.HISTORY.icon())
         self.btn_history.setObjectName('NavButton')
 
         self.btn_files = QPushButton(self.translator.translate('files_tab', 'Файлы'))
+        self.btn_files.setIcon(FluentIcon.FOLDER.icon())
         self.btn_files.setObjectName('NavButton')
 
         self.btn_settings = QPushButton(self.translator.translate('settings'))
+        self.btn_settings.setIcon(FluentIcon.SETTING.icon())
         self.btn_settings.setObjectName('NavButton')
+
         self.btn_about = QPushButton(self.translator.translate('about'))
+        self.btn_about.setIcon(FluentIcon.INFO.icon())
         self.btn_about.setObjectName('NavButton')
+
+        for btn in [self.btn_downloads, self.btn_history, self.btn_files, self.btn_settings, self.btn_about]:
+            btn.setFixedSize(160, 40)
+            btn.setStyleSheet("text-align: left; padding-left: 15px;")
 
         nav_layout.addWidget(self.btn_downloads)
         nav_layout.addWidget(self.btn_history)
@@ -159,14 +174,17 @@ class MainWindow(QMainWindow):
         self.downloads_list.setObjectName('DownloadsList')
         self.downloads_list.setSpacing(5)
 
+        # === НОВАЯ ПУСТАЯ КАРТОЧКА ЗАГРУЗОК ===
         self.empty_widget = QWidget()
         empty_layout = QVBoxLayout(self.empty_widget)
         empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         empty_card = QFrame()
         empty_card.setObjectName('EmptyCard')
+        empty_card.setMinimumWidth(550)
         card_layout = QVBoxLayout(empty_card)
-        card_layout.setSpacing(10)
+        card_layout.setContentsMargins(30, 30, 30, 30)
+        card_layout.setSpacing(15)
 
         title_row = QHBoxLayout()
         title_row.setAlignment(Qt.AlignmentFlag.AlignHCenter)
@@ -176,59 +194,60 @@ class MainWindow(QMainWindow):
         if os.path.exists(rocket_gif):
             self.rocket_movie = QMovie(rocket_gif)
             self.rocket_label.setMovie(self.rocket_movie)
-            self.rocket_label.setFixedSize(24, 24)
+            self.rocket_label.setFixedSize(32, 32)
             self.rocket_movie.start()
         else:
             self.rocket_label.setText('🚀')
-        self.empty_title = QLabel(
+            self.rocket_label.setStyleSheet("font-size: 24px;")
+
+        self.empty_title = SubtitleLabel(
             self.translator.translate('no_downloads_placeholder', 'Add links to start downloading'))
-        self.empty_title.setObjectName('EmptyTitle')
         self.empty_title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         title_row.addWidget(self.rocket_label)
-        title_row.addSpacing(6)
+        title_row.addSpacing(10)
         title_row.addWidget(self.empty_title)
 
-        bullets = QWidget()
-        bullets.setObjectName('BulletsBox')
-        bullets_layout = QVBoxLayout(bullets)
-        bullets_layout.setContentsMargins(0, 0, 0, 0)
-        bullets_layout.setSpacing(4)
-        self.empty_b1 = QLabel(
+        bullets_layout = QVBoxLayout()
+        bullets_layout.setContentsMargins(0, 5, 0, 5)
+        bullets_layout.setSpacing(8)
+        bullets_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self.empty_b1 = BodyLabel(
             '• ' + self.translator.translate('empty_tip_dragdrop', 'Drag & drop links or .txt file here'))
-        self.empty_b2 = QLabel('• ' + self.translator.translate('empty_tip_paste', 'Paste from clipboard'))
-        self.empty_b3 = QLabel(
+        self.empty_b2 = BodyLabel('• ' + self.translator.translate('empty_tip_paste', 'Paste from clipboard'))
+        self.empty_b3 = BodyLabel(
             '• ' + self.translator.translate('empty_tip_support', 'Supported: YouTube, TikTok, Instagram, VK, RuTube…'))
         for l in (self.empty_b1, self.empty_b2, self.empty_b3):
-            l.setObjectName('EmptyListItem')
-        bullets_layout.addWidget(self.empty_b1)
-        bullets_layout.addWidget(self.empty_b2)
-        bullets_layout.addWidget(self.empty_b3)
+            l.setStyleSheet("color: #888888;")
+            bullets_layout.addWidget(l)
 
         self.quick_actions = QWidget()
         self.quick_actions.setObjectName('QuickActions')
         qa_layout = QHBoxLayout(self.quick_actions)
-        qa_layout.setContentsMargins(0, 10, 0, 0)
-        qa_layout.setSpacing(8)
-        self.btn_paste = QPushButton('📋 ' + self.translator.translate('paste_from_clipboard', 'Paste'))
-        self.btn_paste.setObjectName('SecondaryButton')
-        self.btn_import = QPushButton('📁 ' + self.translator.translate('load_from_file'))
-        self.btn_import.setObjectName('SecondaryButton')
-        self.btn_quality = QPushButton('⚙️ ' + self.translator.translate('open_quality_settings', 'Quality settings'))
-        self.btn_quality.setObjectName('SecondaryButton')
+        qa_layout.setContentsMargins(0, 15, 0, 0)
+        qa_layout.setSpacing(12)
+        qa_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self.btn_paste = PushButton(self.translator.translate('paste_from_clipboard', 'Paste'))
+        self.btn_paste.setIcon(FluentIcon.PASTE.icon())
+        self.btn_import = PushButton(self.translator.translate('load_from_file'))
+        self.btn_import.setIcon(FluentIcon.FOLDER.icon())
+        self.btn_quality = PushButton(self.translator.translate('open_quality_settings', 'Quality settings'))
+        self.btn_quality.setIcon(FluentIcon.SETTING.icon())
+
         qa_layout.addWidget(self.btn_paste)
         qa_layout.addWidget(self.btn_import)
         qa_layout.addWidget(self.btn_quality)
 
         self.recent_container = QWidget()
         rc_layout = QVBoxLayout(self.recent_container)
-        rc_layout.setContentsMargins(0, 6, 0, 0)
-        rc_layout.setSpacing(6)
+        rc_layout.setContentsMargins(0, 15, 0, 0)
+        rc_layout.setSpacing(10)
         recent_label_layout = QHBoxLayout()
-        self.recent_label = QLabel(self.translator.translate('recent', 'Recent') + ':')
+        self.recent_label = BodyLabel(self.translator.translate('recent', 'Recent') + ':')
 
-        self.btn_clear_recent = QPushButton('🗑️')
-        self.btn_clear_recent.setObjectName('SecondaryButton')
-        self.btn_clear_recent.setFixedSize(28, 28)
+        self.btn_clear_recent = TransparentToolButton(FluentIcon.DELETE)
+        self.btn_clear_recent.setFixedSize(32, 32)
         self.btn_clear_recent.setToolTip(self.translator.translate('clear_history'))
 
         recent_label_layout.addWidget(self.recent_label)
@@ -236,21 +255,23 @@ class MainWindow(QMainWindow):
         recent_label_layout.addWidget(self.btn_clear_recent)
 
         rc_layout.addLayout(recent_label_layout)
-        self.recent_buttons_layout = FlowLayout(h_spacing=6, v_spacing=6)
+        self.recent_buttons_layout = FlowLayout(h_spacing=8, v_spacing=8)
         rc_layout.addLayout(self.recent_buttons_layout)
 
-        self.hint_label = QLabel(self.translator.translate('empty_hint', "Press Enter or ➕ to add"))
-        self.hint_label.setObjectName('HintLabel')
+        self.hint_label = CaptionLabel(self.translator.translate('empty_hint', "Press Enter or ➕ to add"))
+        self.hint_label.setStyleSheet("color: #666666;")
         self.hint_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         card_layout.addLayout(title_row)
-        card_layout.addWidget(bullets)
+        card_layout.addLayout(bullets_layout)
         card_layout.addWidget(self.quick_actions)
         card_layout.addWidget(self.recent_container)
+        card_layout.addSpacing(10)
         card_layout.addWidget(self.hint_label)
 
-        empty_layout.addWidget(empty_card, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addWidget(empty_card, 0, Qt.AlignmentFlag.AlignCenter)
 
+        # === СБОРКА СТРАНИЦ ===
         self.downloads_page_stack.addWidget(self.empty_widget)
         self.downloads_page_stack.addWidget(self.downloads_list)
 
@@ -259,11 +280,11 @@ class MainWindow(QMainWindow):
         self.files_page = FilesTab(self.translator, self)
         self.about_page = AboutTab(self.translator, self)
 
-        self.page_stack.addWidget(self.downloads_page_stack)  # 0
-        self.page_stack.addWidget(self.history_page)  # 1
-        self.page_stack.addWidget(self.files_page)  # 2
-        self.page_stack.addWidget(self.settings_page)  # 3
-        self.page_stack.addWidget(self.about_page)  # 4
+        self.page_stack.addWidget(self.downloads_page_stack)
+        self.page_stack.addWidget(self.history_page)
+        self.page_stack.addWidget(self.files_page)
+        self.page_stack.addWidget(self.settings_page)
+        self.page_stack.addWidget(self.about_page)
 
         self.update_placeholder_visibility()
         self._rebuild_recent_buttons()
@@ -272,36 +293,34 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.page_stack, 1)
         main_layout.addLayout(content_layout)
 
+        # === НИЖНЯЯ ПАНЕЛЬ ===
         bottom_bar = QWidget()
         bottom_bar.setObjectName('BottomBar')
         bottom_bar_layout = QHBoxLayout(bottom_bar)
         bottom_bar_layout.setContentsMargins(15, 5, 15, 5)
 
-        icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icons')
         self.download_button = QPushButton(self.translator.translate('download_all'))
-        self.download_button.setIcon(QIcon(os.path.join(icon_path, 'download.svg')))
+        self.download_button.setIcon(FluentIcon.DOWNLOAD.icon())
         self.download_button.setObjectName('ActionButton')
 
         self.threads_label = QLabel("")
         self.threads_label.setObjectName('StatusLabel')
 
         self.stop_button = QPushButton(self.translator.translate('stop'))
-        self.stop_button.setIcon(QIcon(os.path.join(icon_path, 'stop.svg')))
-        self.stop_button.setObjectName('ActionButton')
+        self.stop_button.setIcon(FluentIcon.PAUSE.icon())
+        self.stop_button.setObjectName('SecondaryButton')
         self.stop_button.setEnabled(False)
 
         self.clear_button = QPushButton(self.translator.translate('clear_completed'))
-        self.clear_button.setIcon(QIcon(os.path.join(icon_path, 'clear.svg')))
-        self.clear_button.setObjectName('ActionButton')
+        self.clear_button.setIcon(FluentIcon.DELETE.icon())
+        self.clear_button.setObjectName('SecondaryButton')
 
-        self.btn_open_save = QToolButton()
-        self.btn_open_save.setObjectName('SecondaryButton')
-        self.btn_open_save.setText('📂')
+        self.btn_open_save = TransparentToolButton(FluentIcon.FOLDER)
+        self.btn_open_save.setFixedSize(36, 36)
         self.btn_open_save.setToolTip(self.translator.translate('open_save_folder'))
 
-        self.btn_open_logs = QToolButton()
-        self.btn_open_logs.setObjectName('SecondaryButton')
-        self.btn_open_logs.setText('🧾')
+        self.btn_open_logs = TransparentToolButton(FluentIcon.DOCUMENT)
+        self.btn_open_logs.setFixedSize(36, 36)
         self.btn_open_logs.setToolTip(self.translator.translate('open_logs'))
 
         self.summary_info = QLabel("")
@@ -320,11 +339,7 @@ class MainWindow(QMainWindow):
         bottom_bar_layout.addWidget(self.summary_info)
         bottom_bar_layout.addSpacing(10)
         bottom_bar_layout.addWidget(self.status_label)
-        main_layout.addWidget(bottom_bar)
 
-        bottom_bar_layout.addWidget(self.summary_info)
-        bottom_bar_layout.addSpacing(10)
-        bottom_bar_layout.addWidget(self.status_label)
         main_layout.addWidget(bottom_bar)
 
         self.init_tray()
@@ -377,6 +392,8 @@ class MainWindow(QMainWindow):
         self.btn_history.setText(self.translator.translate('history', 'History'))
         self.btn_files.setText(self.translator.translate('files_tab', 'Файлы'))
         self.btn_about.setText(self.translator.translate('about'))
+
+
         self.btn_add.setToolTip(self.translator.translate('add_link'))
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
         self.btn_notes.setToolTip(self.translator.translate('notes', 'Примечания'))
@@ -387,9 +404,9 @@ class MainWindow(QMainWindow):
         self.empty_b2.setText('• ' + self.translator.translate('empty_tip_paste', 'Paste from clipboard'))
         self.empty_b3.setText(
             '• ' + self.translator.translate('empty_tip_support', 'Supported: YouTube, TikTok, Instagram, VK, RuTube…'))
-        self.btn_paste.setText('📋 ' + self.translator.translate('paste_from_clipboard', 'Paste'))
-        self.btn_import.setText('📁 ' + self.translator.translate('load_from_file'))
-        self.btn_quality.setText('⚙️ ' + self.translator.translate('open_quality_settings', 'Quality settings'))
+        self.btn_paste.setText(self.translator.translate('paste_from_clipboard', 'Paste'))
+        self.btn_import.setText(self.translator.translate('load_from_file'))
+        self.btn_quality.setText(self.translator.translate('open_quality_settings', 'Quality settings'))
         self.hint_label.setText(self.translator.translate('empty_hint', "Press Enter or ➕ to add"))
         self.btn_open_save.setToolTip(self.translator.translate('open_save_folder'))
         self.btn_open_logs.setToolTip(self.translator.translate('open_logs'))

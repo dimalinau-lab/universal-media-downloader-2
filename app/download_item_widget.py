@@ -1,10 +1,11 @@
 import os
 import logging
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QProgressBar, QMenu, QMessageBox
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QMenu, QMessageBox
 from PyQt6.QtGui import QPixmap, QAction, QIcon
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from qfluentwidgets import TransparentToolButton, FluentIcon
+from qfluentwidgets import TransparentToolButton, FluentIcon, ProgressBar, StrongBodyLabel, BodyLabel, CaptionLabel
 from .download_task import DownloadTask
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,41 +28,44 @@ class DownloadItemWidget(QWidget):
 
     def initUI(self):
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(15)
 
+        # Увеличили миниатюру до формата 16:9
         self.thumbnail_label = QLabel()
-        self.thumbnail_label.setFixedSize(128, 72)
+        self.thumbnail_label.setFixedSize(144, 81)
         self.thumbnail_label.setObjectName('Thumbnail')
         self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumbnail_label.setStyleSheet("background-color: #2b2b2b; border-radius: 8px;")
         main_layout.addWidget(self.thumbnail_label)
 
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(5)
+        info_layout.setSpacing(6)
 
-        self.title_label = QLabel(self.task.title)
+        # Жирный и красивый шрифт для заголовка
+        self.title_label = StrongBodyLabel(self.task.title)
         self.title_label.setObjectName('TitleLabel')
         self.title_label.setWordWrap(True)
 
-        self.url_label = QLabel(self.task.url)
+        # Уменьшенный, приглушенный шрифт для ссылки
+        self.url_label = CaptionLabel(self.task.url)
         self.url_label.setObjectName('UrlLabel')
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.url_label.setStyleSheet("color: #888888;")
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedHeight(8)
-        self.progress_bar.setTextVisible(False)
+        # Тонкий и плавный прогресс-бар Windows 11
+        self.progress_bar = ProgressBar()
+        self.progress_bar.setFixedHeight(6)
         self.progress_bar.setValue(0)
-        self.progress_bar.setObjectName('ItemProgressBar')
 
         status_layout = QHBoxLayout()
 
-        self.status_label = QLabel()
+        self.status_label = BodyLabel()
         self.status_label.setObjectName('StatusLabelItem')
 
-        self.size_label = QLabel()
+        self.size_label = StrongBodyLabel()
         self.size_label.setObjectName('SizeLabelItem')
-        self.size_label.setStyleSheet("color: #007acc; font-weight: bold; font-size: 13px;")
+        self.size_label.setStyleSheet("color: #007acc;")
         self.size_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
         status_layout.addWidget(self.status_label)
@@ -70,8 +74,10 @@ class DownloadItemWidget(QWidget):
 
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.url_label)
+        info_layout.addSpacing(4)
         info_layout.addWidget(self.progress_bar)
         info_layout.addLayout(status_layout)
+        info_layout.addStretch()
 
         main_layout.addLayout(info_layout, 1)
 

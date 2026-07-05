@@ -2,12 +2,12 @@ import os
 import logging
 import subprocess
 import platform
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout,
-                             QPushButton, QFileDialog, QCheckBox, QComboBox,
-                             QGridLayout, QFormLayout, QGroupBox, QSpinBox, QRadioButton, QWidget as QtWidget,
-                             QAbstractSpinBox)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
+                             QFileDialog, QGridLayout, QGroupBox, QLabel, QComboBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
+from qfluentwidgets import (SwitchButton, ComboBox, SpinBox, RadioButton,
+                            PushButton, BodyLabel, FluentIcon)
 from .translation import Translator
 from .theme_manager import ThemeManager
 
@@ -80,7 +80,6 @@ class SettingsTab(QWidget):
                     return True
                 if os.path.exists(os.path.join(base_path, f"{name}.exe")):
                     return True
-
         return False
 
     def _check_browser_macos(self, names):
@@ -109,7 +108,7 @@ class SettingsTab(QWidget):
     def initUI(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        main_layout.setSpacing(20)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self.create_general_settings(main_layout)
@@ -124,21 +123,34 @@ class SettingsTab(QWidget):
         group_box = QGroupBox()
         group_box.setProperty("title_key", "general_settings")
         group_box.setObjectName('SettingsGroup')
-        form_layout = QFormLayout(group_box)
+        v_layout = QVBoxLayout(group_box)
+        v_layout.setSpacing(12)
+        v_layout.setContentsMargins(16, 24, 16, 16)
 
-        self.theme_combo = QComboBox()
+        # Тема
+        theme_layout = QHBoxLayout()
+        self.theme_label = BodyLabel()
+        self.theme_label.setProperty("text_key", "select_theme")
+        self.theme_combo = ComboBox()
         self.theme_combo.addItem('Dark', userData='dark')
         self.theme_combo.addItem('Light', userData='light')
-        self.theme_label = QLabel()
-        self.theme_label.setProperty("text_key", "select_theme")
-        form_layout.addRow(self.theme_label, self.theme_combo)
+        self.theme_combo.setFixedWidth(160)
+        theme_layout.addWidget(self.theme_label)
+        theme_layout.addStretch()
+        theme_layout.addWidget(self.theme_combo)
+        v_layout.addLayout(theme_layout)
 
-        self.parallel_downloads_spin = QSpinBox()
-        self.parallel_downloads_spin.setRange(1, 10)
-        self.parallel_downloads_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
-        self.parallel_label = QLabel()
+        # Параллельные загрузки
+        parallel_layout = QHBoxLayout()
+        self.parallel_label = BodyLabel()
         self.parallel_label.setProperty("text_key", "parallel_downloads")
-        form_layout.addRow(self.parallel_label, self.parallel_downloads_spin)
+        self.parallel_downloads_spin = SpinBox()
+        self.parallel_downloads_spin.setRange(1, 10)
+        self.parallel_downloads_spin.setFixedWidth(160)
+        parallel_layout.addWidget(self.parallel_label)
+        parallel_layout.addStretch()
+        parallel_layout.addWidget(self.parallel_downloads_spin)
+        v_layout.addLayout(parallel_layout)
 
         layout.addWidget(group_box)
 
@@ -147,70 +159,116 @@ class SettingsTab(QWidget):
         group_box.setProperty("title_key", "download_settings")
         group_box.setObjectName('SettingsGroup')
         v_layout = QVBoxLayout(group_box)
+        v_layout.setSpacing(15)
+        v_layout.setContentsMargins(16, 24, 16, 16)
 
-        self.sponsorblock_checkbox = QCheckBox("Вырезать спонсорскую рекламу (SponsorBlock)")
-        self.sponsorblock_checkbox.setProperty("text_key", "sponsorblock")
+        # Sponsorblock
+        sb_layout = QHBoxLayout()
+        sb_lbl = BodyLabel()
+        sb_lbl.setProperty("text_key", "sponsorblock")
+        self.sponsorblock_checkbox = SwitchButton()
+        self.sponsorblock_checkbox.setOnText("Вкл")
+        self.sponsorblock_checkbox.setOffText("Выкл")
+        sb_layout.addWidget(sb_lbl)
+        sb_layout.addStretch()
+        sb_layout.addWidget(self.sponsorblock_checkbox)
+        v_layout.addLayout(sb_layout)
 
-        v_layout.addWidget(self.sponsorblock_checkbox)
+        # Субтитры
+        sub_layout = QHBoxLayout()
+        sub_lbl = BodyLabel()
+        sub_lbl.setProperty("text_key", "download_subtitles")
+        self.subtitles_checkbox = SwitchButton()
+        self.subtitles_checkbox.setOnText("Вкл")
+        self.subtitles_checkbox.setOffText("Выкл")
+        sub_layout.addWidget(sub_lbl)
+        sub_layout.addStretch()
+        sub_layout.addWidget(self.subtitles_checkbox)
+        v_layout.addLayout(sub_layout)
+
+        # Путь сохранения
         save_path_layout = QHBoxLayout()
-        self.save_path_btn = QPushButton()
-        self.save_path_btn.setObjectName('SecondaryButton')
-        self.save_path_btn.setProperty("text_key", "select_save_folder")
-        self.save_path_lbl = QLabel()
+        save_path_lbl_title = BodyLabel()
+        save_path_lbl_title.setProperty("text_key", "select_save_folder")
+
+        self.save_path_lbl = BodyLabel()
         self.save_path_lbl.setOpenExternalLinks(True)
         self.save_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        self.save_path_lbl.setWordWrap(True)
+        self.save_path_lbl.setStyleSheet("color: #005fb8;")
+
+        self.save_path_btn = PushButton("Изменить")
+        self.save_path_btn.setIcon(FluentIcon.FOLDER.icon())
+
+        save_path_layout.addWidget(save_path_lbl_title)
+        save_path_layout.addSpacing(10)
+        save_path_layout.addWidget(self.save_path_lbl)
+        save_path_layout.addStretch()
         save_path_layout.addWidget(self.save_path_btn)
-        save_path_layout.addWidget(self.save_path_lbl, 1)
         v_layout.addLayout(save_path_layout)
 
-        self.subtitles_checkbox = QCheckBox()
-        self.subtitles_checkbox.setProperty("text_key", "download_subtitles")
-        v_layout.addWidget(self.subtitles_checkbox)
+        # Куки
+        cookies_layout = QHBoxLayout()
+        cookies_lbl = BodyLabel()
+        cookies_lbl.setProperty("text_key", "use_cookies")
+        self.cookies_checkbox = SwitchButton()
+        self.cookies_checkbox.setOnText("Вкл")
+        self.cookies_checkbox.setOffText("Выкл")
+        cookies_layout.addWidget(cookies_lbl)
+        cookies_layout.addStretch()
+        cookies_layout.addWidget(self.cookies_checkbox)
+        v_layout.addLayout(cookies_layout)
 
-        self.cookies_checkbox = QCheckBox()
-        self.cookies_checkbox.setProperty("text_key", "use_cookies")
-        v_layout.addWidget(self.cookies_checkbox)
-
+        # Опции куки
         self.cookies_options_widget = QWidget()
-        cookies_layout = QVBoxLayout(self.cookies_options_widget)
-        cookies_layout.setContentsMargins(20, 0, 0, 0)
-        self.rb_cookie_file = QRadioButton()
+        co_layout = QVBoxLayout(self.cookies_options_widget)
+        co_layout.setContentsMargins(20, 0, 0, 0)
+        co_layout.setSpacing(10)
+
+        # Файл куки
+        file_opt_layout = QHBoxLayout()
+        self.rb_cookie_file = RadioButton()
         self.rb_cookie_file.setProperty("text_key", "cookie_file")
-        self.rb_cookie_browser = QRadioButton()
+        self.cookies_lbl = BodyLabel()
+        self.cookies_lbl.setStyleSheet("color: #005fb8;")
+        self.cookies_btn = PushButton("Выбрать файл")
+        self.cookies_btn.setIcon(FluentIcon.DOCUMENT.icon())
+
+        file_opt_layout.addWidget(self.rb_cookie_file)
+        file_opt_layout.addSpacing(10)
+        file_opt_layout.addWidget(self.cookies_lbl)
+        file_opt_layout.addStretch()
+        file_opt_layout.addWidget(self.cookies_btn)
+        co_layout.addLayout(file_opt_layout)
+
+        # Браузер куки
+        browser_opt_layout = QHBoxLayout()
+        self.rb_cookie_browser = RadioButton()
         self.rb_cookie_browser.setProperty("text_key", "cookie_browser")
-
-        self.cookie_file_widget = QWidget()
-        file_layout = QHBoxLayout(self.cookie_file_widget)
-        file_layout.setContentsMargins(0, 0, 0, 0)
-        self.cookies_btn = QPushButton()
-        self.cookies_btn.setObjectName('SecondaryButton')
-        self.cookies_btn.setProperty("text_key", "select_cookies_file")
-        self.cookies_lbl = QLabel()
-        self.cookies_lbl.setOpenExternalLinks(True)
-        self.cookies_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        file_layout.addWidget(self.cookies_btn)
-        file_layout.addWidget(self.cookies_lbl, 1)
-
-        self.cookie_browser_combo = QComboBox()
+        self.cookie_browser_combo = ComboBox()
+        self.cookie_browser_combo.setFixedWidth(200)
         for browser in self.available_browsers:
             display_name = browser.capitalize() if browser != 'none' else 'None'
-            self.cookie_browser_combo.addItem(display_name, browser)
+            self.cookie_browser_combo.addItem(display_name, userData=browser)
 
-        cookies_layout.addWidget(self.rb_cookie_file)
-        cookies_layout.addWidget(self.cookie_file_widget)
-        cookies_layout.addWidget(self.rb_cookie_browser)
-        cookies_layout.addWidget(self.cookie_browser_combo)
+        browser_opt_layout.addWidget(self.rb_cookie_browser)
+        browser_opt_layout.addStretch()
+        browser_opt_layout.addWidget(self.cookie_browser_combo)
+        co_layout.addLayout(browser_opt_layout)
+
         v_layout.addWidget(self.cookies_options_widget)
-
         layout.addWidget(group_box)
 
     def create_quality_settings(self, layout):
         group_box = QGroupBox()
         group_box.setProperty("title_key", "quality_settings")
         group_box.setObjectName('SettingsGroup')
+
         grid_layout = QGridLayout(group_box)
-        grid_layout.setSpacing(10)
+        grid_layout.setSpacing(12)
+        # Магия сетки: делаем пустые колонки (2 и 5), которые будут "пружинить"
+        # и прижимать настройки влево, не разрывая их
+        grid_layout.setColumnStretch(2, 1)
+        grid_layout.setColumnStretch(5, 1)
 
         platforms = ['YouTube', 'RuTube', 'TikTok', 'Instagram', 'VK', 'PornHub', 'Facebook', 'X (Twitter)',
                      'Kinopoisk', 'Twitch', 'Kick', 'KinoPub']
@@ -220,23 +278,27 @@ class SettingsTab(QWidget):
         for platform in platforms:
             platform_label = self._platform_label(platform)
             combo = QComboBox()
+            combo.setMinimumWidth(140)
             self.quality_combos[platform] = combo
 
-            grid_layout.addWidget(platform_label, row, col * 2)
-            grid_layout.addWidget(combo, row, col * 2 + 1)
+            # Смещаем индекс колонки в сетке (0-1 для первой группы, 3-4 для второй)
+            grid_col_offset = col * 3
+
+            grid_layout.addWidget(platform_label, row, grid_col_offset)
+            grid_layout.addWidget(combo, row, grid_col_offset + 1)
 
             col += 1
-            if col > 2:
+            if col > 1:  # Держим строго 2 столбца
                 col = 0
                 row += 1
 
         layout.addWidget(group_box)
 
     def _platform_label(self, name):
-        w = QtWidget()
+        w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(6)
+        h.setSpacing(8)
         pic = QLabel()
         logos_dir = os.path.join(os.path.dirname(__file__), '..', 'assets', 'logos')
         fname_map = {
@@ -247,7 +309,7 @@ class SettingsTab(QWidget):
             'VK': 'vk.png',
             'PornHub': 'pornhub.png',
             'Facebook': 'facebook.png',
-            'X (Twitter)': 'x.png',
+            'X (Twitter)': 'x_(twitter).png',
             'Kinopoisk': 'kinopoisk.png',
             'Twitch': 'twitch.png',
             'Kick': 'kick.png',
@@ -258,23 +320,22 @@ class SettingsTab(QWidget):
             pm = QPixmap(fpath)
             if not pm.isNull():
                 pic.setPixmap(pm.scaled(
-                    16, 16,
+                    18, 18,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation
                 ))
         lbl = QLabel(f"{name}:")
         h.addWidget(pic)
         h.addWidget(lbl)
-        h.addStretch(1)
         return w
 
     def connect_signals(self):
         self.theme_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.parallel_downloads_spin.valueChanged.connect(self.on_setting_changed)
         self.save_path_btn.clicked.connect(self.on_select_save_path)
-        self.subtitles_checkbox.stateChanged.connect(self.on_setting_changed)
-        self.sponsorblock_checkbox.stateChanged.connect(self.on_setting_changed)
-        self.cookies_checkbox.stateChanged.connect(self.on_setting_changed)
+        self.subtitles_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.sponsorblock_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.cookies_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.rb_cookie_file.toggled.connect(self.on_setting_changed)
         self.cookies_btn.clicked.connect(self.on_select_cookies_file)
         self.cookie_browser_combo.currentIndexChanged.connect(self.on_setting_changed)
@@ -285,9 +346,9 @@ class SettingsTab(QWidget):
         self.theme_combo.currentIndexChanged.disconnect()
         self.parallel_downloads_spin.valueChanged.disconnect()
         self.save_path_btn.clicked.disconnect()
-        self.subtitles_checkbox.stateChanged.disconnect()
-        self.sponsorblock_checkbox.stateChanged.disconnect()
-        self.cookies_checkbox.stateChanged.disconnect()
+        self.subtitles_checkbox.checkedChanged.disconnect()
+        self.sponsorblock_checkbox.checkedChanged.disconnect()
+        self.cookies_checkbox.checkedChanged.disconnect()
         self.rb_cookie_file.toggled.disconnect()
         self.cookies_btn.clicked.disconnect()
         self.cookie_browser_combo.currentIndexChanged.disconnect()
@@ -295,40 +356,38 @@ class SettingsTab(QWidget):
             combo.currentIndexChanged.disconnect()
 
     def populate_youtube_qualities(self, cbox):
-        cbox.addItem(self.translator.translate('video_best_quality'), 'bestvideo+bestaudio/best')
-        cbox.addItem(self.translator.translate('audio_only'), 'bestaudio/best')
-        cbox.addItem('144p', 'bestvideo[height<=144]+bestaudio/best')
-        cbox.addItem('240p', 'bestvideo[height<=240]+bestaudio/best')
-        cbox.addItem('360p', 'bestvideo[height<=360]+bestaudio/best')
-        cbox.addItem('480p', 'bestvideo[height<=480]+bestaudio/best')
-        cbox.addItem('720p (HD)', 'bestvideo[height<=720]+bestaudio/best')
-        cbox.addItem('1080p (Full HD)', 'bestvideo[height<=1080]+bestaudio/best')
-        cbox.addItem('1440p (2K)', 'bestvideo[height<=1440]+bestaudio/best')
-        cbox.addItem('2160p (4K)', 'bestvideo[height<=2160]+bestaudio/best')
+        cbox.addItem(self.translator.translate('video_best_quality'), userData='bestvideo+bestaudio/best')
+        cbox.addItem(self.translator.translate('audio_only'), userData='bestaudio/best')
+        cbox.addItem('144p', userData='bestvideo[height<=144]+bestaudio/best')
+        cbox.addItem('240p', userData='bestvideo[height<=240]+bestaudio/best')
+        cbox.addItem('360p', userData='bestvideo[height<=360]+bestaudio/best')
+        cbox.addItem('480p', userData='bestvideo[height<=480]+bestaudio/best')
+        cbox.addItem('720p (HD)', userData='bestvideo[height<=720]+bestaudio/best')
+        cbox.addItem('1080p (Full HD)', userData='bestvideo[height<=1080]+bestaudio/best')
+        cbox.addItem('1440p (2K)', userData='bestvideo[height<=1440]+bestaudio/best')
+        cbox.addItem('2160p (4K)', userData='bestvideo[height<=2160]+bestaudio/best')
 
     def populate_generic_qualities(self, cbox):
-        cbox.addItem(self.translator.translate('best_quality'), 'best')
-        cbox.addItem(self.translator.translate('audio_only'), 'bestaudio/best')
-        cbox.addItem(self.translator.translate('video_only'), 'video_only_stripped')
-        cbox.addItem(self.translator.translate('worst_quality'), 'worst')
+        cbox.addItem(self.translator.translate('best_quality'), userData='best')
+        cbox.addItem(self.translator.translate('audio_only'), userData='bestaudio/best')
+        cbox.addItem(self.translator.translate('video_only'), userData='video_only_stripped')
+        cbox.addItem(self.translator.translate('worst_quality'), userData='worst')
 
     def update_translations(self):
         widgets_with_keys = self.findChildren(QWidget)
         for widget in widgets_with_keys:
             key = widget.property("text_key")
-            if key:
-                if isinstance(widget, (QPushButton, QCheckBox, QRadioButton, QLabel)):
-                    widget.setText(self.translator.translate(key))
+            if key and hasattr(widget, 'setText'):
+                widget.setText(self.translator.translate(key))
 
             title_key = widget.property("title_key")
-            if title_key:
-                if isinstance(widget, QGroupBox):
-                    widget.setTitle(self.translator.translate(title_key))
+            if title_key and hasattr(widget, 'setTitle'):
+                widget.setTitle(self.translator.translate(title_key))
 
-        for platform, combo in self.quality_combos.items():
+        for platform_name, combo in self.quality_combos.items():
             current_data = combo.currentData()
             combo.clear()
-            if platform in ['YouTube', 'KinoPub']:
+            if platform_name in ['YouTube', 'KinoPub']:
                 self.populate_youtube_qualities(combo)
             else:
                 self.populate_generic_qualities(combo)
@@ -339,6 +398,7 @@ class SettingsTab(QWidget):
             self.save_path_lbl.setText(f'<a href="file:///{save_path}">{save_path}</a>')
         else:
             self.save_path_lbl.setText(self.translator.translate('folder_not_selected'))
+
         cookies_path = self.settings.value('cookies_path', '')
         if cookies_path:
             self.cookies_lbl.setText(f'<a href="file:///{cookies_path}">{cookies_path}</a>')
@@ -374,17 +434,13 @@ class SettingsTab(QWidget):
             self.cookies_lbl.setText(self.translator.translate('file_not_selected'))
 
         cookie_browser = self.settings.value('cookie_browser', 'none')
-        idx = self.cookie_browser_combo.findData(cookie_browser)
-        if idx >= 0:
-            self.cookie_browser_combo.setCurrentIndex(idx)
-        else:
-            self.cookie_browser_combo.setCurrentIndex(0)
+        self.set_combo_by_data(self.cookie_browser_combo, cookie_browser)
 
         self.update_cookie_widgets_state()
 
-        for platform, combo in self.quality_combos.items():
-            key = f"quality_{platform.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
-            default_quality = 'bestvideo+bestaudio/best' if platform == 'YouTube' else 'best'
+        for platform_name, combo in self.quality_combos.items():
+            key = f"quality_{platform_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
+            default_quality = 'bestvideo+bestaudio/best' if platform_name == 'YouTube' else 'best'
             quality = self.settings.value(key, default_quality)
             self.set_combo_by_data(combo, quality)
 
@@ -408,8 +464,8 @@ class SettingsTab(QWidget):
             self.settings.setValue('cookie_source', browser_value)
             self.settings.setValue('cookie_browser', browser_value)
 
-        for platform, combo in self.quality_combos.items():
-            key = f"quality_{platform.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
+        for platform_name, combo in self.quality_combos.items():
+            key = f"quality_{platform_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
             self.settings.setValue(key, combo.currentData())
 
         self.settings.sync()
@@ -423,7 +479,8 @@ class SettingsTab(QWidget):
         self.cookies_options_widget.setEnabled(use_cookies)
         if use_cookies:
             is_file = self.rb_cookie_file.isChecked()
-            self.cookie_file_widget.setEnabled(is_file)
+            self.rb_cookie_file.setEnabled(True)
+            self.cookies_btn.setEnabled(is_file)
             self.cookie_browser_combo.setEnabled(not is_file)
 
     def on_select_save_path(self):
@@ -442,6 +499,7 @@ class SettingsTab(QWidget):
             self.settings.sync()
 
     def set_combo_by_data(self, combo, data):
-        index = combo.findData(data)
-        if index != -1:
-            combo.setCurrentIndex(index)
+        for i in range(combo.count()):
+            if combo.itemData(i) == data:
+                combo.setCurrentIndex(i)
+                break
