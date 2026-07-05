@@ -151,6 +151,18 @@ class SettingsTab(QWidget):
         parallel_layout.addStretch()
         parallel_layout.addWidget(self.parallel_downloads_spin)
         v_layout.addLayout(parallel_layout)
+        # Настройка работы в трее
+        tray_layout = QHBoxLayout()
+        self.tray_label = BodyLabel()
+        self.tray_label.setProperty("text_key", "tray")
+        self.tray_label.setText("Сворачивать в трей при закрытии")
+        self.tray_checkbox = SwitchButton()
+        self.tray_checkbox.setOnText("Вкл")
+        self.tray_checkbox.setOffText("Выкл")
+        tray_layout.addWidget(self.tray_label)
+        tray_layout.addStretch()
+        tray_layout.addWidget(self.tray_checkbox)
+        v_layout.addLayout(tray_layout)
 
         layout.addWidget(group_box)
 
@@ -339,6 +351,7 @@ class SettingsTab(QWidget):
         self.rb_cookie_file.toggled.connect(self.on_setting_changed)
         self.cookies_btn.clicked.connect(self.on_select_cookies_file)
         self.cookie_browser_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.tray_checkbox.checkedChanged.connect(self.on_setting_changed)
         for combo in self.quality_combos.values():
             combo.currentIndexChanged.connect(self.on_setting_changed)
 
@@ -352,6 +365,7 @@ class SettingsTab(QWidget):
         self.rb_cookie_file.toggled.disconnect()
         self.cookies_btn.clicked.disconnect()
         self.cookie_browser_combo.currentIndexChanged.disconnect()
+        self.tray_checkbox.checkedChanged.disconnect()
         for combo in self.quality_combos.values():
             combo.currentIndexChanged.disconnect()
 
@@ -422,7 +436,7 @@ class SettingsTab(QWidget):
         self.subtitles_checkbox.setChecked(self.settings.value('subtitles_enabled', False, type=bool))
         self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
-
+        self.tray_checkbox.setChecked(self.settings.value('close_to_tray', True, type=bool))
         cookie_source_type = self.settings.value('cookie_source_type', 'file')
         self.rb_cookie_file.setChecked(cookie_source_type == 'file')
         self.rb_cookie_browser.setChecked(cookie_source_type == 'browser')
@@ -454,6 +468,7 @@ class SettingsTab(QWidget):
         self.settings.setValue('subtitles_enabled', self.subtitles_checkbox.isChecked())
         self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
         self.settings.setValue('use_cookies', self.cookies_checkbox.isChecked())
+        self.settings.setValue('close_to_tray', self.tray_checkbox.isChecked())
 
         if self.rb_cookie_file.isChecked():
             self.settings.setValue('cookie_source_type', 'file')

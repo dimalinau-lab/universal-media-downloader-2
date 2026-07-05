@@ -713,13 +713,18 @@ class MainWindow(QMainWindow):
             self._rebuild_recent_buttons()
 
     def closeEvent(self, event):
-        event.ignore()
-        self.hide()
-        self.tray_icon.showMessage(
-            self.translator.translate('app_title', 'Universal Media Downloader'),
-            "Программа свернута в трей и продолжает работу",
-            QSystemTrayIcon.MessageIcon.Information,
-        )
+        close_to_tray = self.settings.value('close_to_tray', True, type=bool)
+
+        if close_to_tray:
+            event.ignore()
+            self.hide()
+            self.tray_icon.showMessage(
+                self.translator.translate('app_title', 'Universal Media Downloader'),
+                "Программа свернута в трей и продолжает работу",
+                QSystemTrayIcon.MessageIcon.Information,
+            )
+        else:
+            self.quit_app()
 
     def _get_recent(self):
         raw = self.settings.value('recent_urls', '')

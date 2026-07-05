@@ -111,5 +111,6 @@
   "failed_to_delete": "Failed to delete file:\n{error}",
   "download_subtitles": "Download subtitles (if available)",
   "sponsorblock": "Remove sponsor segments (SponsorBlock)",
-  "use_cookies": "Use Cookies"
+  "use_cookies": "Use Cookies",
+  "tray": "Tray"
 }

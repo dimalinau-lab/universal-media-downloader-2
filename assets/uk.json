@@ -111,5 +111,6 @@
   "failed_to_delete": "Не вдалося видалити файл:\n{error}",
   "download_subtitles": "Завантажувати субтитри (якщо доступні)",
   "sponsorblock": "Вирізати спонсорську рекламу (SponsorBlock)",
-  "use_cookies": "Використовувати Cookies"
+  "use_cookies": "Використовувати Cookies",
+  "tray": "Трей"
 }
