@@ -26,7 +26,8 @@ from .theme_manager import ThemeManager
 from .flow_layout import FlowLayout
 from .update_checker import UpdateChecker
 from .files_tab import FilesTab
-
+from .telegram_bot import TelegramBotManager
+from .telegram_tab import TelegramTab
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +42,18 @@ class MainWindow(QMainWindow):
         self.thread_pool.setMaxThreadCount(max(parallel_downloads + 6, 8))
         self.download_manager = DownloadManager(self.settings, self.ffmpeg_path, self.thread_pool, self.translator)
         self.update_checker = UpdateChecker(self, self.translator, self.settings, self.thread_pool)
+        self.bot_manager = TelegramBotManager(self.settings)
+        self.bot_manager.signals.url_received.connect(self._on_bot_url_received)
+
+        # --- ЗАЩИТА ОТ КРИВОГО ТОКЕНА ---
+        saved_token = self.settings.value('tg_bot_token', '')
+        if saved_token:
+            try:
+                self.bot_manager.start_bot(saved_token)
+            except Exception as e:
+                logger.error(f"Ошибка запуска бота (кривой токен): {e}")
+                self.settings.remove('tg_bot_token')  # Удаляем сломанный токен из памяти
+        # --------------------------------
         self.initUI()
         self.connect_signals()
         self.setAcceptDrops(True)
@@ -141,6 +154,11 @@ class MainWindow(QMainWindow):
         self.btn_about.setIcon(FluentIcon.INFO.icon())
         self.btn_about.setObjectName('NavButton')
 
+        self.btn_telegram = QPushButton(self.translator.translate('tg_tab_title', 'Telegram Бот'))
+        self.btn_telegram.setIcon(FluentIcon.MESSAGE.icon())
+        self.btn_telegram.setObjectName('NavButton')
+        self.btn_telegram.setFixedSize(160, 40)
+        self.btn_telegram.setStyleSheet("text-align: left; padding-left: 15px;")
         for btn in [self.btn_downloads, self.btn_history, self.btn_files, self.btn_settings, self.btn_about]:
             btn.setFixedSize(160, 40)
             btn.setStyleSheet("text-align: left; padding-left: 15px;")
@@ -148,6 +166,7 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(self.btn_downloads)
         nav_layout.addWidget(self.btn_history)
         nav_layout.addWidget(self.btn_files)
+        nav_layout.addWidget(self.btn_telegram)
         nav_layout.addWidget(self.btn_settings)
         nav_layout.addWidget(self.btn_about)
         nav_layout.addStretch()
@@ -275,13 +294,15 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsTab(self.translator, self)
         self.history_page = HistoryTab(self.translator, self)
         self.files_page = FilesTab(self.translator, self)
+        self.telegram_page = TelegramTab(self.translator, self.bot_manager, self.settings, self)  # <---
         self.about_page = AboutTab(self.translator, self)
 
-        self.page_stack.addWidget(self.downloads_page_stack)
-        self.page_stack.addWidget(self.history_page)
-        self.page_stack.addWidget(self.files_page)
-        self.page_stack.addWidget(self.settings_page)
-        self.page_stack.addWidget(self.about_page)
+        self.page_stack.addWidget(self.downloads_page_stack)  # 0
+        self.page_stack.addWidget(self.history_page)  # 1
+        self.page_stack.addWidget(self.files_page)  # 2
+        self.page_stack.addWidget(self.telegram_page)  # 3 <---
+        self.page_stack.addWidget(self.settings_page)  # 4
+        self.page_stack.addWidget(self.about_page)  # 5
 
         self.update_placeholder_visibility()
         self._rebuild_recent_buttons()
@@ -354,15 +375,13 @@ class MainWindow(QMainWindow):
         self.btn_paste.clicked.connect(self.on_paste_from_clipboard)
         self.btn_import.clicked.connect(self.on_load_from_file)
 
-        self.btn_quality.clicked.connect(lambda: self.page_stack.setCurrentIndex(3))
         self.btn_downloads.clicked.connect(lambda: self.page_stack.setCurrentIndex(0))
         self.btn_history.clicked.connect(lambda: self.page_stack.setCurrentIndex(1))
+        self.btn_files.clicked.connect(self._show_files_tab)  # 2
+        self.btn_telegram.clicked.connect(lambda: self.page_stack.setCurrentIndex(3))  # 3
+        self.btn_settings.clicked.connect(lambda: self.page_stack.setCurrentIndex(4))  # 4
+        self.btn_about.clicked.connect(lambda: self.page_stack.setCurrentIndex(5))  # 5
 
-
-        self.btn_files.clicked.connect(self._show_files_tab)
-
-        self.btn_settings.clicked.connect(lambda: self.page_stack.setCurrentIndex(3))
-        self.btn_about.clicked.connect(lambda: self.page_stack.setCurrentIndex(4))
 
         self.history_page.redownload_requested.connect(self._redownload_from_history)
         self.btn_open_save.clicked.connect(self.open_save_folder)
@@ -388,7 +407,7 @@ class MainWindow(QMainWindow):
         self.btn_history.setText(self.translator.translate('history', 'History'))
         self.btn_files.setText(self.translator.translate('files_tab', 'Файлы'))
         self.btn_about.setText(self.translator.translate('about'))
-
+        self.btn_telegram.setText(self.translator.translate('tg_tab_title', 'Telegram Бот'))
 
         self.btn_add.setToolTip(self.translator.translate('add_link'))
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
@@ -421,6 +440,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'files_page') and hasattr(self.files_page, 'update_translations'):
             self.files_page.update_translations()
 
+        if hasattr(self, 'telegram_page') and hasattr(self.telegram_page, 'update_translations'):
+            self.telegram_page.update_translations()
+
     def on_language_change(self, index):
         language_map = {0: 'en', 1: 'ru', 2: 'uk'}
         selected_lang = language_map.get(index, 'ru')
@@ -434,6 +456,18 @@ class MainWindow(QMainWindow):
         self.settings.setValue('theme', theme)
         self.settings.sync()
         ThemeManager(self.settings).apply_theme()
+
+    def _on_bot_url_received(self, url):
+        """Обработчик ссылок, присланных из Telegram бота"""
+        # Создаем список ожидания, если его еще нет
+        if not hasattr(self, '_bot_pending_urls'):
+            self._bot_pending_urls = []
+
+        self._bot_pending_urls.append(url)  # Запоминаем, что ссылка от бота
+
+        self.download_manager.add_urls([url])
+        self._add_recent(url)
+        self._rebuild_recent_buttons()
 
     def on_add_link(self):
         url = self.url_input.text().strip()
@@ -524,6 +558,7 @@ class MainWindow(QMainWindow):
 
     def add_download_item_widget(self, task):
         item_widget = DownloadItemWidget(task, self.translator)
+        task.is_from_bot = getattr(self, '_is_adding_from_bot', False)
         list_item = QListWidgetItem(self.downloads_list)
         list_item.setSizeHint(item_widget.sizeHint())
         self.downloads_list.addItem(list_item)
@@ -799,11 +834,22 @@ class MainWindow(QMainWindow):
             file_path=task.final_filepath
         )
 
-    def _on_task_status_changed(self, task, status):
-        from .download_task import DownloadTask
-        final_statuses = [DownloadTask.Status.COMPLETED, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED]
-        if status in final_statuses:
-            self._save_to_history(task)
+    def _on_bot_url_received(self, url):
+        """Обработчик ссылок, присланных из Telegram бота"""
+        self._is_adding_from_bot = True  # Ставим железный флаг
+        self.download_manager.add_urls([url])
+        self._is_adding_from_bot = False  # Снимаем флаг
+
+        self._add_recent(url)
+        self._rebuild_recent_buttons()
+
+        if self.isHidden() and hasattr(self, 'tray_icon'):
+            self.tray_icon.showMessage(
+                "Ссылка от бота",
+                f"Получена ссылка, начинаю анализ:\n{url}",
+                QSystemTrayIcon.MessageIcon.Information,
+                3000
+            )
 
     def _show_files_tab(self):
         self.files_page.load_files()
@@ -851,3 +897,30 @@ class MainWindow(QMainWindow):
         self.thread_pool.waitForDone()
         self.settings.sync()
         QApplication.quit()
+
+    def _on_task_status_changed(self, task, status):
+        from .download_task import DownloadTask
+
+        # 1. Данные получены -> Автоматически начинаем скачивать
+        if status == DownloadTask.Status.PENDING:
+            if getattr(task, 'is_from_bot', False):
+                if hasattr(self, 'bot_manager'):
+                    self.bot_manager.send_message(f"🔄 Данные получены! Начинаю скачивание:\n{task.title}")
+                self.download_manager.start_or_retry_task(task)
+
+        # 2. Произошла ошибка -> Пишем в Телеграм
+        elif status == DownloadTask.Status.ERROR:
+            if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
+                self.bot_manager.send_message(
+                    f"❌ Ошибка скачивания:\n{task.title or task.url}\nПричина: {task.error_message}")
+            self._save_to_history(task)
+
+        # 3. Скачивание завершено -> Радуем пользователя
+        elif status == DownloadTask.Status.COMPLETED:
+            if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
+                self.bot_manager.send_message(f"✅ Успешно скачано на ПК:\n{task.title}")
+            self._save_to_history(task)
+
+        # 4. Остановлено вручную
+        elif status == DownloadTask.Status.STOPPED:
+            self._save_to_history(task)

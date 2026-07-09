@@ -285,6 +285,7 @@ class SettingsTab(QWidget):
         speed_layout.addStretch()
         speed_layout.addWidget(self.speed_combo)
         v_layout.addLayout(speed_layout)
+
     def create_quality_settings(self, layout):
         group_box = QGroupBox()
         group_box.setProperty("title_key", "quality_settings")
@@ -292,10 +293,12 @@ class SettingsTab(QWidget):
 
         grid_layout = QGridLayout(group_box)
         grid_layout.setSpacing(12)
-        # Магия сетки: делаем пустые колонки (2 и 5), которые будут "пружинить"
-        # и прижимать настройки влево, не разрывая их
+
+        # Магия сетки: делаем пустые колонки (2, 5 и 8), которые будут "пружинить"
+        # и прижимать настройки, распределяя их ровно на 3 столбца
         grid_layout.setColumnStretch(2, 1)
         grid_layout.setColumnStretch(5, 1)
+        grid_layout.setColumnStretch(8, 1)
 
         platforms = ['YouTube', 'RuTube', 'TikTok', 'Instagram', 'VK', 'PornHub', 'Facebook', 'X (Twitter)',
                      'Kinopoisk', 'Twitch', 'Kick', 'KinoPub']
@@ -308,14 +311,14 @@ class SettingsTab(QWidget):
             combo.setMinimumWidth(140)
             self.quality_combos[platform] = combo
 
-            # Смещаем индекс колонки в сетке (0-1 для первой группы, 3-4 для второй)
+            # Смещаем индекс колонки в сетке (0-1 для первой группы, 3-4 для второй, 6-7 для третьей)
             grid_col_offset = col * 3
 
             grid_layout.addWidget(platform_label, row, grid_col_offset)
             grid_layout.addWidget(combo, row, grid_col_offset + 1)
 
             col += 1
-            if col > 1:  # Держим строго 2 столбца
+            if col > 2:  # <--- ИЗМЕНЕНИЕ ЗДЕСЬ: ТЕПЕРЬ ДЕРЖИМ СТРОГО 3 СТОЛБЦА
                 col = 0
                 row += 1
 

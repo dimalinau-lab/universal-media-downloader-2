@@ -89,21 +89,8 @@ class AboutTab(QWidget):
         self.lbl_title.setText(self.translator.translate('app_title'))
         self.lbl_desc.setText(self.translator.translate('description'))
         self.btn_support.setText(self.translator.translate('support_author', 'Поддержать автора'))
-
-
-        lang = 'ru'
-        if self.parent_window and hasattr(self.parent_window, 'settings'):
-            lang = self.parent_window.settings.value('language', 'ru')
-
-        if lang == 'en':
-            self.lbl_version.setText("Version: 2.5")
-            self.lbl_author.setText("Author: Magerko\nModified by: MrPablo")
-        elif lang == 'uk':
-            self.lbl_version.setText("Версія: 2.5")
-            self.lbl_author.setText("Автор: Magerko\nДоповнено: MrPablo")
-        else:
-            self.lbl_version.setText("Версия: 2.5")
-            self.lbl_author.setText("Автор: Magerko\nДополнено: MrPablo")
+        self.lbl_version.setText(self.translator.translate('about_version', 'Версия: 2.5'))
+        self.lbl_author.setText(self.translator.translate('about_author', 'Автор: Magerko\nДополнено: MrPablo'))
 
 
     def on_support_clicked(self):
