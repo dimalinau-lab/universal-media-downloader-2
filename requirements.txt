@@ -3,3 +3,4 @@ requests
 yt-dlp[curl-cffi]
 packaging
 PyQt-Fluent-Widgets
+pyTelegramBotAPI
