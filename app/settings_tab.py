@@ -270,6 +270,21 @@ class SettingsTab(QWidget):
         v_layout.addWidget(self.cookies_options_widget)
         layout.addWidget(group_box)
 
+        # Ограничение скорости
+        speed_layout = QHBoxLayout()
+        self.speed_label = BodyLabel()
+        self.speed_label.setProperty("text_key", "speed_limit")
+        self.speed_combo = ComboBox()
+        self.speed_combo.setFixedWidth(160)
+        self.speed_combo.addItem("Без ограничений", userData=0)
+        self.speed_combo.addItem("1 МБ/с", userData=1024 * 1024)
+        self.speed_combo.addItem("3 МБ/с", userData=3 * 1024 * 1024)
+        self.speed_combo.addItem("5 МБ/с", userData=5 * 1024 * 1024)
+        self.speed_combo.addItem("10 МБ/с", userData=10 * 1024 * 1024)
+        speed_layout.addWidget(self.speed_label)
+        speed_layout.addStretch()
+        speed_layout.addWidget(self.speed_combo)
+        v_layout.addLayout(speed_layout)
     def create_quality_settings(self, layout):
         group_box = QGroupBox()
         group_box.setProperty("title_key", "quality_settings")
@@ -352,6 +367,7 @@ class SettingsTab(QWidget):
         self.cookies_btn.clicked.connect(self.on_select_cookies_file)
         self.cookie_browser_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.tray_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.speed_combo.currentIndexChanged.connect(self.on_setting_changed)
         for combo in self.quality_combos.values():
             combo.currentIndexChanged.connect(self.on_setting_changed)
 
@@ -366,6 +382,7 @@ class SettingsTab(QWidget):
         self.cookies_btn.clicked.disconnect()
         self.cookie_browser_combo.currentIndexChanged.disconnect()
         self.tray_checkbox.checkedChanged.disconnect()
+        self.speed_combo.currentIndexChanged.disconnect()
         for combo in self.quality_combos.values():
             combo.currentIndexChanged.disconnect()
 
@@ -452,6 +469,9 @@ class SettingsTab(QWidget):
 
         self.update_cookie_widgets_state()
 
+        speed_val = self.settings.value('speed_limit', 0, type=int)
+        self.set_combo_by_data(self.speed_combo, speed_val)
+
         for platform_name, combo in self.quality_combos.items():
             key = f"quality_{platform_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
             default_quality = 'bestvideo+bestaudio/best' if platform_name == 'YouTube' else 'best'
@@ -469,7 +489,7 @@ class SettingsTab(QWidget):
         self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
         self.settings.setValue('use_cookies', self.cookies_checkbox.isChecked())
         self.settings.setValue('close_to_tray', self.tray_checkbox.isChecked())
-
+        self.settings.setValue('speed_limit', self.speed_combo.currentData())
         if self.rb_cookie_file.isChecked():
             self.settings.setValue('cookie_source_type', 'file')
             self.settings.setValue('cookie_source', 'file')

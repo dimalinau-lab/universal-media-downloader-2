@@ -112,5 +112,6 @@
   "download_subtitles": "Скачивать субтитры (если доступны)",
   "sponsorblock": "Вырезать спонсорскую рекламу (SponsorBlock)",
   "use_cookies": "Использовать Cookies",
-  "tray": "Трей"
+  "tray": "Трей",
+  "speed_limit": "Ограничение скорости"
 }

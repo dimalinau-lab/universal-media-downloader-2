@@ -325,8 +325,12 @@ class DownloadWorker(QRunnable):
             'noplaylist': True,
             'ignoreerrors': True,
             'postprocessors': []
-        }
 
+        }
+        # Применяем ограничение скорости, если оно задано
+        speed_limit = self.settings.value('speed_limit', 0, type=int)
+        if speed_limit > 0:
+            ydl_opts['ratelimit'] = speed_limit
 
         use_cookies = self.settings.value('use_cookies', False, type=bool)
         if use_cookies:

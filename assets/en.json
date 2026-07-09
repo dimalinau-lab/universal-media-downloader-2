@@ -112,5 +112,6 @@
   "download_subtitles": "Download subtitles (if available)",
   "sponsorblock": "Remove sponsor segments (SponsorBlock)",
   "use_cookies": "Use Cookies",
-  "tray": "Tray"
+  "tray": "Tray",
+  "speed_limit": "Speed limit"
 }
