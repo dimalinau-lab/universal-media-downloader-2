@@ -460,9 +460,15 @@ The code must behave correctly under such conditions.
 </p>
 <a name="Robustness"></a>
 <p>The code must treat as untrusted any bytestream received from a caller or read
-from a file, network, etc. It must not misbehave when arbitrary data is sent to
-it - typically it should print an error message and return
-<code class="code">AVERROR_INVALIDDATA</code> on encountering invalid input data.
+from a file, network, etc. Arbitrary input must never cause unsafe
+behavior or a security issue.
+</p>
+<p>Common real-world errors of common formats and codecs should be detected where practical,
+reported where appropriate, and handled to produce the best output possible,
+for example through error concealment.
+</p>
+<p>All errors must still be handled safely, but if they are detected,
+reporting or how they are handled is left to the implementation.
 </p>
 <a name="Memory-allocation"></a>
 <p>The code must use the <code class="code">av_malloc()</code> family of functions from
@@ -537,6 +543,11 @@ the commit log mailing list easier. This also helps in case of debugging
 later on.
 Also if you have doubts about splitting or not splitting, do not hesitate to
 ask/discuss it on the developer mailing list.
+</p>
+<a name="Bug-fixes-intended-for-backporting-should-stay-focused_002e"></a>
+<p>Keep bug fixes as small as possible while fully fixing the reported issue.
+Changes not needed for correctness or robustness should be submitted separately,
+especially if they increase complexity or affect backporting.
 </p>
 <a name="Cosmetic-changes-should-be-kept-in-separate-patches_002e"></a>
 <p>We refuse source indentation and other cosmetic changes if they are mixed
@@ -833,11 +844,16 @@ extension) and might work with other applications.
 and execute &rsquo;Send&rsquo;.
 </p>
 <a name="Reviews"></a>
-<p>Your patch will be reviewed on the mailing list. You will likely be asked
+<p>Your patch or pull request will be reviewed on the mailing list or on
+code.ffmpeg.org. You will likely be asked
 to make some changes and are expected to send in an improved version that
 incorporates the requests from the review. This process may go through
 several iterations. Once your patch is deemed good enough, some developer
 will pick it up and commit it to the official FFmpeg tree.
+If you want an LLM-based review, add
+<a class="url" href="https://code.ffmpeg.org/Forgejo_Fairy">Forgejo Fairy</a> as a reviewer
+to your pull request. Issues with Fairy herself can be reported at her
+<a class="url" href="https://code.ffmpeg.org/michaelni/Fairies">repository</a>.
 </p>
 <p>Give us a few days to react. But if some time passes without reaction,
 send a reminder by email. Your patch should eventually be dealt with.

@@ -85,6 +85,7 @@
     <li><a id="toc-libopencore_002damrnb" href="#libopencore_002damrnb">5.7 libopencore-amrnb</a></li>
     <li><a id="toc-libopencore_002damrwb" href="#libopencore_002damrwb">5.8 libopencore-amrwb</a></li>
     <li><a id="toc-libopus" href="#libopus">5.9 libopus</a></li>
+    <li><a id="toc-pcm_005fdvda" href="#pcm_005fdvda">5.10 pcm_dvda</a></li>
   </ul></li>
   <li><a id="toc-Subtitles-Decoders" href="#Subtitles-Decoders">6 Subtitles Decoders</a>
   <ul class="toc-numbered-mark">
@@ -2076,6 +2077,15 @@ configuration. You need to explicitly configure the build with
 </p>
 <p>An FFmpeg native decoder for Opus exists, so users can decode Opus
 without this library.
+</p>
+<a name="pcm_005fdvda"></a>
+<h3 class="section">5.10 pcm_dvda<span class="pull-right"><a class="anchor hidden-xs" href="#pcm_005fdvda" aria-hidden="true">#</a> <a class="anchor hidden-xs"href="#toc-pcm_005fdvda" aria-hidden="true">TOC</a></span></h3>
+
+<p>PCM DVD-Audio decoder.
+</p>
+<p>Decodes the LPCM variant stored in DVD-Audio AOB files. Unlike DVD-Video
+LPCM it supports sample rates up to 192 kHz and allows splitting the
+channels into two groups with different quantization.
 </p>
 
 <a name="Subtitles-Decoders"></a>

@@ -95,3 +95,5 @@ coverage.xml
 # Environment variables
 .env
 .env.local
+# Папка с профилем браузера (содержит личные куки и данные входа)
+browser_profile/

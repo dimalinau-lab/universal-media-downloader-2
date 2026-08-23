@@ -7,6 +7,7 @@ import time
 import hashlib
 import yt_dlp
 import threading
+import re
 from PyQt6.QtCore import QRunnable, pyqtSignal, QObject
 from PyQt6.QtGui import QPixmap, QImage
 import requests
@@ -102,6 +103,7 @@ class StreamAssembler(QRunnable):
         finally:
             self.signals.finished.emit()
 
+
 class WorkerSignals(QObject):
     info_fetched = pyqtSignal(dict)
     finished = pyqtSignal()
@@ -123,8 +125,14 @@ class InfoWorker(QRunnable):
                 'quiet': True,
                 'skip_download': True,
                 'nocheckcertificate': True,
+                'ignoreerrors': True,
                 'enable_js': True,
                 'remote_components': {'ejs:github': True},
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': 'https://vi3000.top/',
+                    'Origin': 'https://vi3000.top'
+                }
             }
             use_cookies = self.settings.value('use_cookies', False, type=bool)
             if use_cookies:
@@ -174,6 +182,7 @@ class ThumbnailWorker(QRunnable):
         except Exception as e:
             logger.debug(f"Failed to load thumbnail from {self.url}: {e}")
 
+
 class PlaylistCheckWorker(QRunnable):
     def __init__(self, url):
         super().__init__()
@@ -188,7 +197,7 @@ class PlaylistCheckWorker(QRunnable):
                 'skip_download': True,
                 'nocheckcertificate': True,
                 'ignoreerrors': True,
-                'noplaylist': False, #
+                'noplaylist': False,
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
@@ -302,7 +311,7 @@ class DownloadWorker(QRunnable):
         except Exception as e:
             import traceback
             print(f"[ОТЛАДКА] КРИТИЧЕСКАЯ ОШИБКА В RUN: {traceback.format_exc()}")
-            self.signals.error.emit(str(e))
+            self.signals.error.emit(f"Ошибка загрузчика: {str(e)}")
         finally:
             print(f"[ОТЛАДКА] --- ПОТОК ЗАВЕРШЕН: {self.task.url} ---\n")
             self._monitor_running = False
@@ -313,8 +322,18 @@ class DownloadWorker(QRunnable):
         print(f"[ОТЛАДКА] [VOD] Папка сохранения: {save_path}")
         self._start_time = time.time()
 
+        base_title = getattr(self.task, 'custom_title', self.task.title)
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", base_title).strip()
+        safe_title = safe_title[:150]
+
+        out_template = os.path.join(save_path, f'{safe_title}.%(ext)s')
+
+        referer_url = 'https://kinopub.me/'
+        if 'nip.io' in self.task.url or 'voidboost' in self.task.url or 'alloha' in self.task.url:
+            referer_url = 'https://vi3000.top/'
+
         ydl_opts = {
-            'outtmpl': os.path.join(save_path, '%(title)s [%(id)s].%(ext)s'),
+            'outtmpl': out_template,
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
             'merge_output_format': 'mp4',
             'ffmpeg_location': self.ffmpeg_path,
@@ -323,11 +342,25 @@ class DownloadWorker(QRunnable):
             'quiet': True,
             'noprogress': True,
             'noplaylist': True,
-            'ignoreerrors': True,
-            'postprocessors': []
+            'ignoreerrors': False,
+            'nocheckcertificate': True,
 
+            # --- ЗАЩИТА ОТ РАЗРЫВА СОЕДИНЕНИЯ С СЕРВЕРОМ ---
+            'retries': 30,  # Количество попыток переподключения
+            'fragment_retries': 30,  # Количество попыток для отдельных фрагментов
+            'file_access_retries': 10,  # Попытки доступа к файлу
+            'continuedl': True,  # Обязательно докачивать файл при обрыве
+            # -----------------------------------------------
+
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Referer': referer_url,
+                'Origin': referer_url.strip('/')
+            },
+            'postprocessors': []
         }
-        # Применяем ограничение скорости, если оно задано
+
         speed_limit = self.settings.value('speed_limit', 0, type=int)
         if speed_limit > 0:
             ydl_opts['ratelimit'] = speed_limit
@@ -347,7 +380,6 @@ class DownloadWorker(QRunnable):
                     except Exception as e:
                         print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
 
-        # === 2. SPONSORBLOCK ===
         if self.settings.value('sponsorblock_enabled', False, type=bool):
             sb_categories = ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction']
             ydl_opts['postprocessors'].append({
@@ -359,11 +391,10 @@ class DownloadWorker(QRunnable):
                 'remove_sponsor_segments': sb_categories,
             })
 
-        # === 3. СУБТИТРЫ ===
         if self.settings.value('subtitles_enabled', False, type=bool):
             ydl_opts['writesubtitles'] = True
             ydl_opts['writeautomaticsub'] = True
-            ydl_opts['subtitleslangs'] = ['ru', 'en']  # ФИКС 3: Убрал 'uk', так как он чаще всего крашит ютуб
+            ydl_opts['subtitleslangs'] = ['ru', 'en']
             ydl_opts['sleep_subtitles'] = 2
 
             ydl_opts['postprocessors'].append({
@@ -374,7 +405,7 @@ class DownloadWorker(QRunnable):
         if not ydl_opts['postprocessors']:
             del ydl_opts['postprocessors']
 
-        # === 4. ЗАПУСК СКАЧИВАНИЯ ===
+        # === ЗАПУСК СКАЧИВАНИЯ ===
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             print("[ОТЛАДКА] [VOD] yt-dlp: Начинаем скачивание...")
             if self.task.is_stop_requested() or self._cancel_requested:
@@ -383,17 +414,16 @@ class DownloadWorker(QRunnable):
             print("[ОТЛАДКА] [VOD] yt-dlp: Завершено.")
         time.sleep(1.5)
 
-        video_id = getattr(self.task, 'video_id', None)
         final_file = None
         valid_exts = ('.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4a', '.mp3')
 
-        if video_id:
-            for f in os.listdir(save_path):
-                if f"[{video_id}]" in f and f.endswith(valid_exts):
-                    final_file = os.path.join(save_path, f)
-                    break
+        # Ищем файл по нашему названию
+        for f in os.listdir(save_path):
+            if f.startswith(safe_title) and f.endswith(valid_exts) and not f.endswith('.part'):
+                final_file = os.path.join(save_path, f)
+                break
 
-
+        # Запасной план: ищем последний скачанный
         if not final_file:
             list_of_files = [os.path.join(save_path, f) for f in os.listdir(save_path)
                              if f.endswith(valid_exts) and not f.endswith('.part')]
@@ -407,7 +437,7 @@ class DownloadWorker(QRunnable):
             self.task.update_progress(100, "Скачано ✓")
             self.task.set_completed(final_file)
         else:
-            raise Exception("Сбой скачивания. Файл не найден (возможно, блокировка 429).")
+            raise Exception("Сбой скачивания: Файл пуст или yt-dlp не смог обработать поток.")
 
     def _run_twitch_stream(self, save_path):
         import re
@@ -440,14 +470,16 @@ class DownloadWorker(QRunnable):
                 info = ydl.extract_info(self.task.url, download=False)
                 stream_url = info.get('url')
                 title = info.get('title', 'twitch_stream')
-                video_id = info.get('id', 'id')
+
+            if hasattr(self.task, 'custom_title') and self.task.custom_title:
+                title = self.task.custom_title
 
             if not stream_url:
                 raise Exception("Не удалось получить ссылку на поток")
 
-            safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip()
-            final_mp4 = os.path.join(save_path, f"{safe_title} [{video_id}].mp4")
-            temp_ts = os.path.join(save_path, f"{safe_title} [{video_id}].ts")
+            safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip()[:150]
+            final_mp4 = os.path.join(save_path, f"{safe_title}.mp4")
+            temp_ts = os.path.join(save_path, f"{safe_title}.ts")
 
             print(f"[ОТЛАДКА] [TWITCH] Прямая запись через FFmpeg в: {temp_ts}")
 
