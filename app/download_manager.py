@@ -15,6 +15,7 @@ from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 from .threads import InfoWorker, DownloadWorker, ThumbnailWorker
 from .download_task import DownloadTask
@@ -28,8 +29,10 @@ def get_base_dir():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
+# === ОКНО ВЫБОРА ===
 class EpisodeSelectionDialog(QDialog):
-    def __init__(self, voiceovers, seasons, episodes, is_movie=False, parent=None):
+    # Добавили параметр qualities
+    def __init__(self, voiceovers, seasons, episodes, qualities, is_movie=False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Параметры загрузки")
         self.setModal(True)
@@ -37,6 +40,13 @@ class EpisodeSelectionDialog(QDialog):
         self.download_all = False
 
         layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Выберите качество:"))
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(qualities)
+        if qualities:
+            self.quality_combo.setCurrentText(qualities[0])  # Ставим лучшее по умолчанию
+        layout.addWidget(self.quality_combo)
 
         layout.addWidget(QLabel("Выберите озвучку:"))
         self.voiceover_combo = QComboBox()
@@ -77,6 +87,8 @@ class EpisodeSelectionDialog(QDialog):
         self.download_all = True
         self.accept()
 
+
+# ==================================
 
 class DownloadManager(QObject):
     task_added = pyqtSignal(DownloadTask)
@@ -289,13 +301,15 @@ class DownloadManager(QObject):
         return [t for t in self.tasks if
                 t.status in (DownloadTask.Status.COMPLETED, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED)]
 
-    def _extract_best_link(self, streams_raw):
+    def _extract_best_link(self, streams_raw, target_res=None):
         if not streams_raw:
             return None
-        quality_setting = self.settings.value('quality_kinopub', '1080')
-        target_res = 1080
-        for q in [360, 480, 720, 1080, 1440, 2160]:
-            if str(q) in str(quality_setting): target_res = q
+
+        if target_res is None:
+            quality_setting = self.settings.value('quality_kinopub', '1080')
+            target_res = 1080
+            for q in [360, 480, 720, 1080, 1440, 2160]:
+                if str(q) in str(quality_setting): target_res = q
 
         links = re.findall(r'\[(\d+)p?[^\]]*\](https?://[^\s,\[\]]+)', streams_raw)
         if links:
@@ -321,18 +335,17 @@ class DownloadManager(QObject):
             options.add_argument('--log-level=3')
             options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
 
-            # --- ИСПРАВЛЕНИЕ: ЖЕСТКАЯ ПРИВЯЗКА ПУТИ И ОТКАЗ ОТ WEBDRIVER_MANAGER ---
             profile_dir = os.path.join(get_base_dir(), 'browser_profile')
-            os.makedirs(profile_dir, exist_ok=True)  # Принудительно создаем папку
+            os.makedirs(profile_dir, exist_ok=True)
             options.add_argument(f"user-data-dir={profile_dir}")
 
-            service = Service()  # Оставляем пустым, Selenium 4 скачает драйвер сам!
+            service = Service()
             service.creation_flags = subprocess.CREATE_NO_WINDOW
 
             try:
                 driver = webdriver.Edge(service=service, options=options)
             except Exception as e:
-                print(f"\n[ОТЛАДКА] Профиль заблокирован. Запускаю чистый браузер...\nОшибка: {e}")
+                logger.warning(f"Профиль браузера заблокирован, запускаю без профиля: {e}")
                 fallback_options = Options()
                 fallback_options.add_argument('--log-level=3')
                 driver = webdriver.Edge(service=service, options=fallback_options)
@@ -382,7 +395,7 @@ class DownloadManager(QObject):
         except Exception as e:
             import traceback
             err = traceback.format_exc()
-            print(f"\n[!!! КРИТИЧЕСКАЯ ОШИБКА БРАУЗЕРА !!!]\n{err}\n")
+            logger.error(f"Ошибка Lampa сканера: {err}")
             try:
                 if driver: driver.quit()
             except:
@@ -455,6 +468,48 @@ class DownloadManager(QObject):
             if not seasons: seasons = [{'name': '1 Сезон', 'id': '1'}]
             if not episodes: episodes = [{'name': 'Полный фильм', 'id': '1', 'season_id': '1'}]
 
+            # --- ПРОБНЫЙ ЗАПРОС ДЛЯ ПАРСИНГА ДОСТУПНОГО КАЧЕСТВА ---
+            available_qualities = ["1080", "720", "480", "360"]
+            sample_streams_raw = None
+
+            if post_id:
+                sample_voice = voiceovers[0]['id'] if voiceovers else ''
+                ajax_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}/ajax/get_cdn_series/"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': url,
+                    'Origin': f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+                }
+                data = {'id': post_id, 'translator_id': sample_voice}
+
+                if is_movie:
+                    data['action'] = 'get_movie'
+                else:
+                    data['action'] = 'get_cdn_series'
+                    data['season'] = seasons[0]['id'] if seasons else '1'
+                    data['episode'] = episodes[0]['id'] if episodes else '1'
+
+                try:
+                    ajax_req = session.post(ajax_url, headers=headers, data=data, timeout=10)
+                    if ajax_req.status_code == 200:
+                        sample_streams_raw = ajax_req.json().get('url', '').replace('\\/', '/')
+                except Exception as e:
+                    logger.debug(f"Failed to fetch sample stream: {e}")
+
+            if not sample_streams_raw:
+                streams_match = re.search(r'"streams"\s*:\s*"([^"]+)"', page_source)
+                if streams_match:
+                    sample_streams_raw = streams_match.group(1).replace('\\/', '/')
+
+            if sample_streams_raw:
+                q_matches = re.findall(r'\[(\d+)p?[^\]]*\]', sample_streams_raw)
+                if q_matches:
+                    # Убираем дубликаты и сортируем по убыванию
+                    unique_q = sorted(list(set(int(q) for q in q_matches)), reverse=True)
+                    available_qualities = [str(q) for q in unique_q]
+            # --------------------------------------------------------
+
             results = []
 
             if post_id:
@@ -462,7 +517,7 @@ class DownloadManager(QObject):
                 s_names = [s['name'] for s in seasons]
                 e_names = [e['name'] for e in episodes]
 
-                dialog = EpisodeSelectionDialog(v_names, s_names, e_names, is_movie=is_movie)
+                dialog = EpisodeSelectionDialog(v_names, s_names, e_names, available_qualities, is_movie=is_movie)
 
                 if dialog.exec():
                     v_index = dialog.voiceover_combo.currentIndex()
@@ -471,6 +526,7 @@ class DownloadManager(QObject):
 
                     selected_voice = voiceovers[v_index]['id']
                     selected_season = seasons[s_index]['id']
+                    selected_quality = int(dialog.quality_combo.currentText())
 
                     safe_v_name = re.sub(r'[\\/*?:"<>|]', "", voiceovers[v_index]['name'])
                     safe_s_name = re.sub(r'[\\/*?:"<>|]', "", seasons[s_index]['name'])
@@ -507,7 +563,7 @@ class DownloadManager(QObject):
                         ajax_req = session.post(ajax_url, headers=headers, data=data, timeout=15)
                         if ajax_req.status_code == 200:
                             streams_raw = ajax_req.json().get('url', '').replace('\\/', '/')
-                            best_link = self._extract_best_link(streams_raw)
+                            best_link = self._extract_best_link(streams_raw, target_res=selected_quality)
 
                             if best_link:
                                 safe_e_name = re.sub(r'[\\/*?:"<>|]', "", ep['name'])
@@ -535,7 +591,6 @@ class DownloadManager(QObject):
             import traceback
             err = traceback.format_exc()
             logger.error(f"Глобальная ошибка сканера: {err}")
-            print(f"\n[!!! КРИТИЧЕСКАЯ ОШИБКА БРАУЗЕРА !!!]\n{err}\n")
             try:
                 if driver: driver.quit()
             except:
