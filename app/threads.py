@@ -46,31 +46,37 @@ class ThumbnailCache:
         self._cache = {}
         self._order = []
         self._max_size = max_size
+        self._lock = threading.Lock()
 
     def _get_key(self, url):
         return hashlib.md5(url.encode()).hexdigest()
 
     def get(self, url):
-        key = self._get_key(url)
-        if key in self._cache:
-            self._order.remove(key)
-            self._order.append(key)
-            return self._cache[key]
-        return None
+        with self._lock:
+            key = self._get_key(url)
+            if key in self._cache:
+                if key in self._order:
+                    self._order.remove(key)
+                self._order.append(key)
+                return self._cache[key]
+            return None
 
-    def set(self, url, pixmap):
-        key = self._get_key(url)
-        if key in self._cache:
-            self._order.remove(key)
-        elif len(self._cache) >= self._max_size:
-            oldest = self._order.pop(0)
-            del self._cache[oldest]
-        self._cache[key] = pixmap
-        self._order.append(key)
+    def set(self, url, image):
+        with self._lock:
+            key = self._get_key(url)
+            if key in self._cache:
+                if key in self._order:
+                    self._order.remove(key)
+            elif len(self._cache) >= self._max_size and self._order:
+                oldest = self._order.pop(0)
+                self._cache.pop(oldest, None)
+            self._cache[key] = image
+            self._order.append(key)
 
     def clear(self):
-        self._cache.clear()
-        self._order.clear()
+        with self._lock:
+            self._cache.clear()
+            self._order.clear()
 
 
 thumbnail_cache = ThumbnailCache(max_size=100)
@@ -90,7 +96,7 @@ class StreamAssembler(QRunnable):
             self.task.update_progress(95, "Склейка стрима начата...")
             cmd = [
                 self.ffmpeg_path, '-y', '-err_detect', 'ignore_err',
-                '-fflags', '+genpts', '-i', self.part_file,
+                '-fflags', '+genpts', '-threads', '0', '-i', self.part_file,
                 '-c', 'copy', self.out_path
             ]
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -109,7 +115,7 @@ class WorkerSignals(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
     progress = pyqtSignal(int, str)
-    thumbnail_loaded = pyqtSignal(QPixmap)
+    thumbnail_loaded = pyqtSignal(QImage)
 
 
 class InfoWorker(QRunnable):
@@ -148,9 +154,22 @@ class InfoWorker(QRunnable):
                             ydl_opts['cookiesfrombrowser'] = (browser,)
                         except Exception as e:
                             logger.warning(f"Browser {browser} not available for cookies: {e}")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.url, download=False)
-                self.signals.info_fetched.emit(info)
+
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(self.url, download=False)
+                    self.signals.info_fetched.emit(info)
+            except Exception as e:
+                err_str = str(e).lower()
+                if ('cookie' in err_str or 'dpapi' in err_str) and ('cookiesfrombrowser' in ydl_opts or 'cookiefile' in ydl_opts):
+                    logger.warning(f"Cookie extraction failed ({e}), retrying without cookies...")
+                    ydl_opts.pop('cookiesfrombrowser', None)
+                    ydl_opts.pop('cookiefile', None)
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(self.url, download=False)
+                        self.signals.info_fetched.emit(info)
+                else:
+                    raise
         except Exception as e:
             logger.error(f"InfoWorker error for {self.url}: {e}")
             self.signals.error.emit(str(e))
@@ -176,9 +195,8 @@ class ThumbnailWorker(QRunnable):
             image = QImage()
             image.loadFromData(response.content)
             if not image.isNull():
-                pixmap = QPixmap.fromImage(image)
-                thumbnail_cache.set(self.url, pixmap)
-                self.signals.thumbnail_loaded.emit(pixmap)
+                thumbnail_cache.set(self.url, image)
+                self.signals.thumbnail_loaded.emit(image)
         except Exception as e:
             logger.debug(f"Failed to load thumbnail from {self.url}: {e}")
 
@@ -221,6 +239,7 @@ class DownloadWorker(QRunnable):
 
         self._start_time = None
         self._monitor_running = False
+        self._last_downloaded_filename = None
 
     def cancel(self):
         print(f"[ОТЛАДКА] Пользователь нажал ОТМЕНУ для {self.task.url}")
@@ -236,17 +255,22 @@ class DownloadWorker(QRunnable):
             total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
             downloaded = d.get('downloaded_bytes', 0)
             speed = d.get('_speed_str', 'N/A').strip()
+            eta = d.get('_eta_str')
+            eta_part = f" • ост. {eta}" if eta else ""
 
             if total > 0:
                 self.task.set_file_size(total)
                 percent = int((downloaded / total) * 90)
-                self.task.update_progress(percent, f"Скачивание: {percent}% | {speed}")
+                self.task.update_progress(percent, f"Скачивание: {percent}% • {speed}{eta_part}")
             else:
                 mb = downloaded / (1024 * 1024)
-                self.task.update_progress(0, f"Скачивание: {mb:.1f} MB | {speed}")
+                self.task.update_progress(0, f"Скачивание: {mb:.1f} MB • {speed}{eta_part}")
 
         elif d.get('status') == 'finished':
-            print(f"[ОТЛАДКА] [VOD] Поток скачан: {d.get('filename')}. Ждем склейку...")
+            fn = d.get('filename')
+            if fn:
+                self._last_downloaded_filename = fn
+            print(f"[ОТЛАДКА] [VOD] Поток скачан: {fn}. Ждем склейку...")
 
     def simple_pp_hook(self, d):
         status = d.get('status')
@@ -256,6 +280,10 @@ class DownloadWorker(QRunnable):
         if status == 'started':
             self.task.update_progress(95, "Склейка видео и звука...")
         elif status == 'finished':
+            info_dict = d.get('info_dict', {})
+            pp_file = info_dict.get('filepath') or info_dict.get('_filename')
+            if pp_file:
+                self._last_downloaded_filename = pp_file
             self.task.update_progress(99, "Сохранение...")
 
     def _monitor_progress_twitch(self, target_file):
@@ -275,9 +303,9 @@ class DownloadWorker(QRunnable):
                     mb = size / (1024 * 1024)
                     size_str = f"{mb:.1f} MB" if mb < 1024 else f"{mb / 1024:.2f} GB"
 
-                    self.task.update_progress(0, f"🔴 Запись эфира: {size_str} | {speed_str}")
+                    self.task.update_progress(0, f"Запись эфира: {size_str} | {speed_str}")
                 else:
-                    self.task.update_progress(0, "🔴 Подключение к потоку...")
+                    self.task.update_progress(0, "Подключение к потоку...")
             except:
                 pass
             time.sleep(1)
@@ -317,6 +345,56 @@ class DownloadWorker(QRunnable):
             self._monitor_running = False
             self.signals.finished.emit()
 
+    def _resolve_format_and_pps(self):
+        u = self.task.url.lower()
+        platform_key = None
+        if 'youtube.com' in u or 'youtu.be' in u:
+            platform_key = 'quality_youtube'
+        elif 'rutube.ru' in u:
+            platform_key = 'quality_rutube'
+        elif 'tiktok.com' in u:
+            platform_key = 'quality_tiktok'
+        elif 'instagram.com' in u:
+            platform_key = 'quality_instagram'
+        elif 'vk.com' in u or 'vkvideo.ru' in u:
+            platform_key = 'quality_vk'
+        elif 'pornhub.com' in u:
+            platform_key = 'quality_pornhub'
+        elif 'facebook.com' in u or 'fb.watch' in u:
+            platform_key = 'quality_facebook'
+        elif 'twitter.com' in u or 'x.com' in u:
+            platform_key = 'quality_x_twitter'
+        elif 'kinopoisk.ru' in u:
+            platform_key = 'quality_kinopoisk'
+        elif 'twitch.tv' in u:
+            platform_key = 'quality_twitch'
+        elif 'kick.com' in u:
+            platform_key = 'quality_kick'
+        elif 'kinopub' in u or 'kino.pub' in u or 'rezka' in u or 'voidboost' in u:
+            platform_key = 'quality_kinopub'
+
+        fmt = self.settings.value(platform_key, '') if platform_key else ''
+        pps = []
+        merge_fmt = 'mp4'
+
+        if not fmt:
+            fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+        elif fmt == 'bestaudio/best':
+            merge_fmt = None
+            pps.append({
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            })
+        elif fmt == 'video_only_stripped':
+            fmt = 'bestvideo/best'
+        elif fmt == 'worst':
+            fmt = 'worstvideo+worstaudio/worst'
+        elif fmt == 'best':
+            fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+
+        return fmt, merge_fmt, pps
+
     def _run_standard_vod(self, save_path):
         self.task.is_stream_mode = False
         print(f"[ОТЛАДКА] [VOD] Папка сохранения: {save_path}")
@@ -328,14 +406,20 @@ class DownloadWorker(QRunnable):
 
         out_template = os.path.join(save_path, f'{safe_title}.%(ext)s')
 
-        referer_url = 'https://kinopub.me/'
-        if 'nip.io' in self.task.url or 'voidboost' in self.task.url or 'alloha' in self.task.url:
-            referer_url = 'https://vi3000.top/'
+        referer_url = getattr(self.task, 'referer', None)
+        if not referer_url:
+            if 'nip.io' in self.task.url or 'alloha' in self.task.url:
+                referer_url = 'https://vi3000.top/'
+            elif 'voidboost' in self.task.url:
+                referer_url = 'https://kinopub.me/'
+            else:
+                referer_url = 'https://kinopub.me/'
+
+        fmt, merge_fmt, extra_pps = self._resolve_format_and_pps()
 
         ydl_opts = {
             'outtmpl': out_template,
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
-            'merge_output_format': 'mp4',
+            'format': fmt,
             'ffmpeg_location': self.ffmpeg_path,
             'progress_hooks': [self.simple_progress_hook],
             'postprocessor_hooks': [self.simple_pp_hook],
@@ -358,12 +442,30 @@ class DownloadWorker(QRunnable):
                 'Referer': referer_url,
                 'Origin': referer_url.strip('/')
             },
-            'postprocessors': []
+            'postprocessors': list(extra_pps)
         }
+        if merge_fmt:
+            ydl_opts['merge_output_format'] = merge_fmt
 
         speed_limit = self.settings.value('speed_limit', 0, type=int)
         if speed_limit > 0:
             ydl_opts['ratelimit'] = speed_limit
+
+        # Ускорение скачивания: многопоточная загрузка фрагментов HLS/DASH потоков (Rezka, Lampa, Rutube, YouTube)
+        concurrent_frags = self.settings.value('concurrent_fragments', 8, type=int)
+        if concurrent_frags > 1:
+            ydl_opts['concurrent_fragment_downloads'] = concurrent_frags
+
+        # Оптимизация сети, сетевых буферов и устойчивость к обрывам
+        ydl_opts['buffersize'] = 1024 * 1024  # 1 MB сетевой буфер
+        ydl_opts['http_chunk_size'] = 10 * 1024 * 1024  # 10 MB чанки для потоков
+        ydl_opts['socket_timeout'] = 30
+        ydl_opts['extractor_retries'] = 5
+
+        # Многопоточный FFmpeg для быстрой склейки
+        ydl_opts['postprocessor_args'] = {
+            'ffmpeg': ['-threads', '0']
+        }
 
         use_cookies = self.settings.value('use_cookies', False, type=bool)
         if use_cookies:
@@ -405,25 +507,55 @@ class DownloadWorker(QRunnable):
         if not ydl_opts['postprocessors']:
             del ydl_opts['postprocessors']
 
+
         # === ЗАПУСК СКАЧИВАНИЯ ===
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            print("[ОТЛАДКА] [VOD] yt-dlp: Начинаем скачивание...")
-            if self.task.is_stop_requested() or self._cancel_requested:
-                raise yt_dlp.utils.DownloadCancelled("Stopped")
-            ydl.download([self.task.url])
-            print("[ОТЛАДКА] [VOD] yt-dlp: Завершено.")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                print("[ОТЛАДКА] [VOD] yt-dlp: Начинаем скачивание...")
+                if self.task.is_stop_requested() or self._cancel_requested:
+                    raise yt_dlp.utils.DownloadCancelled("Stopped")
+                ydl.download([self.task.url])
+                print("[ОТЛАДКА] [VOD] yt-dlp: Завершено.")
+        except yt_dlp.utils.DownloadCancelled:
+            raise
+        except Exception as e:
+            err_str = str(e).lower()
+            if ('cookie' in err_str or 'dpapi' in err_str) and ('cookiesfrombrowser' in ydl_opts or 'cookiefile' in ydl_opts):
+                print(f"[ОТЛАДКА] Сбой из-за куки ({e}), повторяем скачивание без куки...")
+                ydl_opts.pop('cookiesfrombrowser', None)
+                ydl_opts.pop('cookiefile', None)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    if self.task.is_stop_requested() or self._cancel_requested:
+                        raise yt_dlp.utils.DownloadCancelled("Stopped")
+                    ydl.download([self.task.url])
+                    print("[ОТЛАДКА] [VOD] yt-dlp (без куки): Завершено.")
+            else:
+                raise
         time.sleep(1.5)
 
         final_file = None
         valid_exts = ('.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4a', '.mp3')
 
-        # Ищем файл по нашему названию
-        for f in os.listdir(save_path):
-            if f.startswith(safe_title) and f.endswith(valid_exts) and not f.endswith('.part'):
-                final_file = os.path.join(save_path, f)
-                break
+        # 1. Приоритет: точный файл, перехваченный через хуки yt-dlp
+        if getattr(self, '_last_downloaded_filename', None):
+            candidate = self._last_downloaded_filename
+            if os.path.exists(candidate) and not candidate.endswith('.part') and os.path.getsize(candidate) > 1024:
+                final_file = candidate
+            else:
+                base_cand, _ = os.path.splitext(candidate)
+                for ext in valid_exts:
+                    if os.path.exists(base_cand + ext) and os.path.getsize(base_cand + ext) > 1024:
+                        final_file = base_cand + ext
+                        break
 
-        # Запасной план: ищем последний скачанный
+        # 2. Поиск по целевому названию в папке сохранения
+        if not final_file:
+            for f in os.listdir(save_path):
+                if f.startswith(safe_title) and f.endswith(valid_exts) and not f.endswith('.part'):
+                    final_file = os.path.join(save_path, f)
+                    break
+
+        # 3. Запасной план: поиск самого свежего подходящего файла
         if not final_file:
             list_of_files = [os.path.join(save_path, f) for f in os.listdir(save_path)
                              if f.endswith(valid_exts) and not f.endswith('.part')]
@@ -434,7 +566,7 @@ class DownloadWorker(QRunnable):
 
         if final_file and os.path.exists(final_file) and os.path.getsize(final_file) > 1024:
             print(f"[ОТЛАДКА] [VOD] Найден финальный файл: {final_file}")
-            self.task.update_progress(100, "Скачано ✓")
+            self.task.update_progress(100, "Скачано")
             self.task.set_completed(final_file)
         else:
             raise Exception("Сбой скачивания: Файл пуст или yt-dlp не смог обработать поток.")
@@ -464,12 +596,24 @@ class DownloadWorker(QRunnable):
                     except Exception as e:
                         print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
 
+
         try:
             print("[ОТЛАДКА] [TWITCH] Получаем прямую ссылку на поток (БЕЗ скачивания)...")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.task.url, download=False)
-                stream_url = info.get('url')
-                title = info.get('title', 'twitch_stream')
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(self.task.url, download=False)
+            except Exception as e:
+                err_str = str(e).lower()
+                if ('cookie' in err_str or 'dpapi' in err_str) and ('cookiesfrombrowser' in ydl_opts or 'cookiefile' in ydl_opts):
+                    print(f"[ОТЛАДКА] [TWITCH] Сбой из-за куки ({e}), повторяем без куки...")
+                    ydl_opts.pop('cookiesfrombrowser', None)
+                    ydl_opts.pop('cookiefile', None)
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(self.task.url, download=False)
+                else:
+                    raise
+            stream_url = info.get('url')
+            title = info.get('title', 'twitch_stream')
 
             if hasattr(self.task, 'custom_title') and self.task.custom_title:
                 title = self.task.custom_title
@@ -532,7 +676,7 @@ class DownloadWorker(QRunnable):
                     except:
                         pass
                     print("[ОТЛАДКА] [TWITCH] УСПЕХ! Стрим сохранен.")
-                    self.task.update_progress(100, "Скачано ✓")
+                    self.task.update_progress(100, "Скачано")
                     self.task.set_completed(final_mp4)
                 else:
                     self.task.set_status(self.task.Status.ERROR)

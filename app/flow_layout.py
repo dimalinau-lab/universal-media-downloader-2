@@ -12,8 +12,11 @@ class FlowLayout(QLayout):
             self.setContentsMargins(margin, margin, margin, margin)
 
     def __del__(self):
-        while self.count():
-            self.takeAt(0)
+        try:
+            while self.count():
+                self.takeAt(0)
+        except Exception:
+            pass
 
     def addItem(self, item):
         self._items.append(item)
@@ -72,7 +75,8 @@ class FlowLayout(QLayout):
         size = QSize()
         for item in self._items:
             size = size.expandedTo(item.minimumSize())
-        size += QSize(2 * self.contentsMargins().top(), 2 * self.contentsMargins().top())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
         return size
 
     def _do_layout(self, rect, test_only):

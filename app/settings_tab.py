@@ -1,17 +1,67 @@
 import os
+import re
 import logging
 import subprocess
 import platform
+import urllib.parse
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
-                             QFileDialog, QGridLayout, QGroupBox, QLabel, QComboBox)
-from PyQt6.QtCore import Qt
+                             QFileDialog, QGridLayout, QGroupBox, QLabel, QComboBox,
+                             QMessageBox, QApplication)
+from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from qfluentwidgets import (SwitchButton, ComboBox, SpinBox, RadioButton,
-                            PushButton, BodyLabel, FluentIcon)
+from qfluentwidgets import (SwitchButton, ComboBox, SpinBox, DoubleSpinBox, RadioButton,
+                             PushButton, BodyLabel, CaptionLabel, FluentIcon, SingleDirectionScrollArea, LineEdit)
 from .translation import Translator
 from .theme_manager import ThemeManager
 
 logger = logging.getLogger(__name__)
+
+SPEED_PRESETS = [
+    (0, "speed_unlimited", "Без ограничений"),
+    (256 * 1024, None, "256 КБ/с"),
+    (512 * 1024, None, "512 КБ/с"),
+    (1024 * 1024, None, "1 МБ/с"),
+    (2 * 1024 * 1024, None, "2 МБ/с"),
+    (3 * 1024 * 1024, None, "3 МБ/с"),
+    (5 * 1024 * 1024, None, "5 МБ/с"),
+    (8 * 1024 * 1024, None, "8 МБ/с"),
+    (10 * 1024 * 1024, None, "10 МБ/с"),
+    (15 * 1024 * 1024, None, "15 МБ/с"),
+    (20 * 1024 * 1024, None, "20 МБ/с"),
+    (30 * 1024 * 1024, None, "30 МБ/с"),
+    (50 * 1024 * 1024, None, "50 МБ/с"),
+    (100 * 1024 * 1024, None, "100 МБ/с"),
+    (200 * 1024 * 1024, None, "200 МБ/с"),
+    (-1, "speed_custom", "Своё значение..."),
+]
+
+
+class CookieTestThread(QThread):
+    result_ready = pyqtSignal(bool, str)
+
+    def __init__(self, browser, parent=None):
+        super().__init__(parent)
+        self.browser = browser
+
+    def run(self):
+        try:
+            import yt_dlp.cookies
+            jar = yt_dlp.cookies.extract_cookies_from_browser(self.browser)
+            count = len(list(jar))
+            if count > 0:
+                self.result_ready.emit(True, f"Успешно! Найдено {count} cookies в {self.browser.capitalize()}.")
+            else:
+                self.result_ready.emit(True, f"Браузер {self.browser.capitalize()} доступен (активных cookies не найдено).")
+        except Exception as e:
+            err_str = str(e)
+            if 'DPAPI' in err_str or 'decrypt' in err_str.lower():
+                msg = f"Защита App-Bound Encryption (Chrome 127+) блокирует прямое чтение. Чтобы не закрывать браузер, выберите «Файл cookie» выше (через cookies.txt)."
+            elif 'locked' in err_str.lower() or 'could not copy' in err_str.lower():
+                msg = f"{self.browser.capitalize()} запущен и блокирует базу. Чтобы не закрывать браузер, выберите «Файл cookie» выше (через cookies.txt)."
+            else:
+                msg = f"Не удалось прочитать: {err_str}"
+            self.result_ready.emit(False, msg)
+
 
 
 class SettingsTab(QWidget):
@@ -106,14 +156,33 @@ class SettingsTab(QWidget):
         return False
 
     def initUI(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(20)
+        # Внешний контейнер для страницы настроек
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # Скролл-область Fluent UI: предотвращает сжатие и наложение элементов на экранах ноутбуков
+        self.scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical, parent=self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.enableTransparentBackground()
+        self.scroll_area.setStyleSheet("SingleDirectionScrollArea, QScrollArea { border: none; background: transparent; }")
+
+        # Внутренний виджет, растягивающийся на полную высоту содержимого
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName('SettingsScrollContent')
+        self.scroll_content.setStyleSheet("#SettingsScrollContent { background: transparent; }")
+
+        main_layout = QVBoxLayout(self.scroll_content)
+        main_layout.setContentsMargins(20, 15, 20, 25)
+        main_layout.setSpacing(18)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self.create_general_settings(main_layout)
         self.create_download_settings(main_layout)
         self.create_quality_settings(main_layout)
+
+        self.scroll_area.setWidget(self.scroll_content)
+        outer_layout.addWidget(self.scroll_area)
 
         self.update_translations()
         self.connect_signals()
@@ -124,9 +193,8 @@ class SettingsTab(QWidget):
         group_box.setProperty("title_key", "general_settings")
         group_box.setObjectName('SettingsGroup')
         v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(12)
-        v_layout.setContentsMargins(16, 24, 16, 16)
-
+        v_layout.setSpacing(14)
+        v_layout.setContentsMargins(16, 22, 16, 16)
 
         theme_layout = QHBoxLayout()
         self.theme_label = BodyLabel()
@@ -140,7 +208,6 @@ class SettingsTab(QWidget):
         theme_layout.addWidget(self.theme_combo)
         v_layout.addLayout(theme_layout)
 
-
         parallel_layout = QHBoxLayout()
         self.parallel_label = BodyLabel()
         self.parallel_label.setProperty("text_key", "parallel_downloads")
@@ -151,6 +218,7 @@ class SettingsTab(QWidget):
         parallel_layout.addStretch()
         parallel_layout.addWidget(self.parallel_downloads_spin)
         v_layout.addLayout(parallel_layout)
+
         # Настройка работы в трее
         tray_layout = QHBoxLayout()
         self.tray_label = BodyLabel()
@@ -164,6 +232,19 @@ class SettingsTab(QWidget):
         tray_layout.addWidget(self.tray_checkbox)
         v_layout.addLayout(tray_layout)
 
+        # Портативный режим (data/settings.ini)
+        portable_layout = QHBoxLayout()
+        self.portable_label = BodyLabel()
+        self.portable_label.setProperty("text_key", "portable_mode")
+        self.portable_label.setText("Портативный режим (хранить настройки в data/)")
+        self.portable_checkbox = SwitchButton()
+        self.portable_checkbox.setOnText("Вкл")
+        self.portable_checkbox.setOffText("Выкл")
+        portable_layout.addWidget(self.portable_label)
+        portable_layout.addStretch()
+        portable_layout.addWidget(self.portable_checkbox)
+        v_layout.addLayout(portable_layout)
+
         layout.addWidget(group_box)
 
     def create_download_settings(self, layout):
@@ -171,8 +252,8 @@ class SettingsTab(QWidget):
         group_box.setProperty("title_key", "download_settings")
         group_box.setObjectName('SettingsGroup')
         v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(15)
-        v_layout.setContentsMargins(16, 24, 16, 16)
+        v_layout.setSpacing(14)
+        v_layout.setContentsMargins(16, 22, 16, 16)
 
         # Sponsorblock
         sb_layout = QHBoxLayout()
@@ -213,8 +294,7 @@ class SettingsTab(QWidget):
 
         save_path_layout.addWidget(save_path_lbl_title)
         save_path_layout.addSpacing(10)
-        save_path_layout.addWidget(self.save_path_lbl)
-        save_path_layout.addStretch()
+        save_path_layout.addWidget(self.save_path_lbl, 1)
         save_path_layout.addWidget(self.save_path_btn)
         v_layout.addLayout(save_path_layout)
 
@@ -247,8 +327,7 @@ class SettingsTab(QWidget):
 
         file_opt_layout.addWidget(self.rb_cookie_file)
         file_opt_layout.addSpacing(10)
-        file_opt_layout.addWidget(self.cookies_lbl)
-        file_opt_layout.addStretch()
+        file_opt_layout.addWidget(self.cookies_lbl, 1)
         file_opt_layout.addWidget(self.cookies_btn)
         co_layout.addLayout(file_opt_layout)
 
@@ -267,24 +346,78 @@ class SettingsTab(QWidget):
         browser_opt_layout.addWidget(self.cookie_browser_combo)
         co_layout.addLayout(browser_opt_layout)
 
+        # Тестирование чтения cookies
+        cookie_test_layout = QHBoxLayout()
+        self.btn_test_cookies = PushButton("Проверить cookies")
+        self.btn_test_cookies.setIcon(FluentIcon.ACCEPT.icon())
+        self.btn_cookie_help = PushButton("Без закрытия браузера")
+        self.btn_cookie_help.setIcon(FluentIcon.HELP.icon())
+        self.btn_cookie_help.clicked.connect(self.show_cookie_help_dialog)
+        self.lbl_cookie_status = BodyLabel("")
+        self.lbl_cookie_status.setWordWrap(True)
+        self.lbl_cookie_status.setStyleSheet("color: #888888; font-size: 12px;")
+        cookie_test_layout.addWidget(self.btn_test_cookies)
+        cookie_test_layout.addWidget(self.btn_cookie_help)
+        cookie_test_layout.addSpacing(10)
+        cookie_test_layout.addWidget(self.lbl_cookie_status, 1)
+        co_layout.addLayout(cookie_test_layout)
+
         v_layout.addWidget(self.cookies_options_widget)
-        layout.addWidget(group_box)
 
         # Ограничение скорости
         speed_layout = QHBoxLayout()
         self.speed_label = BodyLabel()
         self.speed_label.setProperty("text_key", "speed_limit")
         self.speed_combo = ComboBox()
-        self.speed_combo.setFixedWidth(160)
-        self.speed_combo.addItem("Без ограничений", userData=0)
-        self.speed_combo.addItem("1 МБ/с", userData=1024 * 1024)
-        self.speed_combo.addItem("3 МБ/с", userData=3 * 1024 * 1024)
-        self.speed_combo.addItem("5 МБ/с", userData=5 * 1024 * 1024)
-        self.speed_combo.addItem("10 МБ/с", userData=10 * 1024 * 1024)
+        self.speed_combo.setFixedWidth(170)
+        self.populate_speed_presets()
         speed_layout.addWidget(self.speed_label)
         speed_layout.addStretch()
         speed_layout.addWidget(self.speed_combo)
         v_layout.addLayout(speed_layout)
+
+        # Кастомная скорость (показывается при выборе "Своё значение...")
+        self.custom_speed_widget = QWidget()
+        custom_speed_layout = QHBoxLayout(self.custom_speed_widget)
+        custom_speed_layout.setContentsMargins(20, 0, 0, 0)
+        custom_speed_layout.setSpacing(10)
+
+        custom_lbl = BodyLabel()
+        custom_lbl.setProperty("text_key", "custom_speed_label")
+        self.custom_speed_spin = DoubleSpinBox()
+        self.custom_speed_spin.setRange(0.1, 9999.0)
+        self.custom_speed_spin.setValue(10.0)
+        self.custom_speed_spin.setSingleStep(1.0)
+        self.custom_speed_spin.setDecimals(1)
+        self.custom_speed_spin.setFixedWidth(110)
+
+        self.custom_speed_unit = ComboBox()
+        self.custom_speed_unit.setFixedWidth(90)
+        self.custom_speed_unit.addItem("МБ/с", userData="MB")
+        self.custom_speed_unit.addItem("КБ/с", userData="KB")
+
+        custom_speed_layout.addWidget(custom_lbl)
+        custom_speed_layout.addStretch()
+        custom_speed_layout.addWidget(self.custom_speed_spin)
+        custom_speed_layout.addWidget(self.custom_speed_unit)
+        v_layout.addWidget(self.custom_speed_widget)
+        self.custom_speed_widget.setVisible(False)
+
+        # Параллельные фрагменты HLS/DASH (yt-dlp)
+        frag_layout = QHBoxLayout()
+        self.frag_label = BodyLabel()
+        self.frag_label.setProperty("text_key", "concurrent_fragments_label")
+        self.frag_spin = SpinBox()
+        self.frag_spin.setRange(1, 16)
+        self.frag_spin.setValue(8)
+        self.frag_spin.setFixedWidth(110)
+        frag_layout.addWidget(self.frag_label)
+        frag_layout.addStretch()
+        frag_layout.addWidget(self.frag_spin)
+        v_layout.addLayout(frag_layout)
+
+        layout.addWidget(group_box)
+
 
     def create_quality_settings(self, layout):
         group_box = QGroupBox()
@@ -292,10 +425,11 @@ class SettingsTab(QWidget):
         group_box.setObjectName('SettingsGroup')
 
         grid_layout = QGridLayout(group_box)
+        grid_layout.setContentsMargins(16, 22, 16, 16)
         grid_layout.setSpacing(12)
+        grid_layout.setVerticalSpacing(10)
+        grid_layout.setHorizontalSpacing(16)
 
-        # Магия сетки: делаем пустые колонки (2, 5 и 8), которые будут "пружинить"
-        # и прижимать настройки, распределяя их ровно на 3 столбца
         grid_layout.setColumnStretch(2, 1)
         grid_layout.setColumnStretch(5, 1)
         grid_layout.setColumnStretch(8, 1)
@@ -308,17 +442,16 @@ class SettingsTab(QWidget):
         for platform in platforms:
             platform_label = self._platform_label(platform)
             combo = QComboBox()
-            combo.setMinimumWidth(140)
+            combo.setMinimumWidth(130)
             self.quality_combos[platform] = combo
 
-            # Смещаем индекс колонки в сетке (0-1 для первой группы, 3-4 для второй, 6-7 для третьей)
             grid_col_offset = col * 3
 
             grid_layout.addWidget(platform_label, row, grid_col_offset)
             grid_layout.addWidget(combo, row, grid_col_offset + 1)
 
             col += 1
-            if col > 2:  # <--- ИЗМЕНЕНИЕ ЗДЕСЬ: ТЕПЕРЬ ДЕРЖИМ СТРОГО 3 СТОЛБЦА
+            if col > 2:
                 col = 0
                 row += 1
 
@@ -371,23 +504,43 @@ class SettingsTab(QWidget):
         self.cookie_browser_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.tray_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.speed_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.custom_speed_spin.valueChanged.connect(self.on_setting_changed)
+        self.custom_speed_unit.currentIndexChanged.connect(self.on_setting_changed)
+        self.frag_spin.valueChanged.connect(self.on_setting_changed)
+        self.portable_checkbox.checkedChanged.connect(self.on_portable_toggled)
+        self.btn_test_cookies.clicked.connect(self.on_test_cookies_clicked)
         for combo in self.quality_combos.values():
             combo.currentIndexChanged.connect(self.on_setting_changed)
 
     def disconnect_signals(self):
-        self.theme_combo.currentIndexChanged.disconnect()
-        self.parallel_downloads_spin.valueChanged.disconnect()
-        self.save_path_btn.clicked.disconnect()
-        self.subtitles_checkbox.checkedChanged.disconnect()
-        self.sponsorblock_checkbox.checkedChanged.disconnect()
-        self.cookies_checkbox.checkedChanged.disconnect()
-        self.rb_cookie_file.toggled.disconnect()
-        self.cookies_btn.clicked.disconnect()
-        self.cookie_browser_combo.currentIndexChanged.disconnect()
-        self.tray_checkbox.checkedChanged.disconnect()
-        self.speed_combo.currentIndexChanged.disconnect()
+        signals_to_disconnect = [
+            self.theme_combo.currentIndexChanged,
+            self.parallel_downloads_spin.valueChanged,
+            self.save_path_btn.clicked,
+            self.subtitles_checkbox.checkedChanged,
+            self.sponsorblock_checkbox.checkedChanged,
+            self.cookies_checkbox.checkedChanged,
+            self.rb_cookie_file.toggled,
+            self.cookies_btn.clicked,
+            self.cookie_browser_combo.currentIndexChanged,
+            self.tray_checkbox.checkedChanged,
+            self.speed_combo.currentIndexChanged,
+            self.custom_speed_spin.valueChanged,
+            self.custom_speed_unit.currentIndexChanged,
+            self.frag_spin.valueChanged,
+            self.portable_checkbox.checkedChanged,
+            self.btn_test_cookies.clicked,
+        ]
+        for s in signals_to_disconnect:
+            try:
+                s.disconnect()
+            except Exception:
+                pass
         for combo in self.quality_combos.values():
-            combo.currentIndexChanged.disconnect()
+            try:
+                combo.currentIndexChanged.disconnect()
+            except Exception:
+                pass
 
     def populate_youtube_qualities(self, cbox):
         cbox.addItem(self.translator.translate('video_best_quality'), userData='bestvideo+bestaudio/best')
@@ -407,6 +560,15 @@ class SettingsTab(QWidget):
         cbox.addItem(self.translator.translate('video_only'), userData='video_only_stripped')
         cbox.addItem(self.translator.translate('worst_quality'), userData='worst')
 
+    def populate_speed_presets(self):
+        curr_data = self.speed_combo.currentData() if self.speed_combo.count() > 0 else None
+        self.speed_combo.clear()
+        for bytes_val, key, default_text in SPEED_PRESETS:
+            label = self.translator.translate(key, default_text) if key else default_text
+            self.speed_combo.addItem(label, userData=bytes_val)
+        if curr_data is not None:
+            self.set_combo_by_data(self.speed_combo, curr_data)
+
     def update_translations(self):
         widgets_with_keys = self.findChildren(QWidget)
         for widget in widgets_with_keys:
@@ -417,6 +579,8 @@ class SettingsTab(QWidget):
             title_key = widget.property("title_key")
             if title_key and hasattr(widget, 'setTitle'):
                 widget.setTitle(self.translator.translate(title_key))
+
+        self.populate_speed_presets()
 
         for platform_name, combo in self.quality_combos.items():
             current_data = combo.currentData()
@@ -457,9 +621,9 @@ class SettingsTab(QWidget):
         self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
         self.tray_checkbox.setChecked(self.settings.value('close_to_tray', True, type=bool))
-        cookie_source_type = self.settings.value('cookie_source_type', 'file')
+        cookie_source_type = self.settings.value('cookie_source_type', 'browser')
         self.rb_cookie_file.setChecked(cookie_source_type == 'file')
-        self.rb_cookie_browser.setChecked(cookie_source_type == 'browser')
+        self.rb_cookie_browser.setChecked(cookie_source_type != 'file')
 
         cookies_path = self.settings.value('cookies_path', '')
         if cookies_path:
@@ -472,8 +636,38 @@ class SettingsTab(QWidget):
 
         self.update_cookie_widgets_state()
 
+        # Portable
+        self.portable_checkbox.setChecked(self.settings.value('portable_mode', False, type=bool))
+
+
+
         speed_val = self.settings.value('speed_limit', 0, type=int)
-        self.set_combo_by_data(self.speed_combo, speed_val)
+        matched = False
+        for idx in range(self.speed_combo.count()):
+            data = self.speed_combo.itemData(idx)
+            if data == speed_val and data != -1:
+                self.speed_combo.setCurrentIndex(idx)
+                self.custom_speed_widget.setVisible(False)
+                matched = True
+                break
+        if not matched and speed_val > 0:
+            for idx in range(self.speed_combo.count()):
+                if self.speed_combo.itemData(idx) == -1:
+                    self.speed_combo.setCurrentIndex(idx)
+                    break
+            self.custom_speed_widget.setVisible(True)
+            if speed_val >= 1024 * 1024:
+                self.custom_speed_spin.setValue(round(speed_val / (1024.0 * 1024.0), 2))
+                self.custom_speed_unit.setCurrentIndex(0)
+            else:
+                self.custom_speed_spin.setValue(round(speed_val / 1024.0, 1))
+                self.custom_speed_unit.setCurrentIndex(1)
+        elif not matched and speed_val <= 0:
+            self.speed_combo.setCurrentIndex(0)
+            self.custom_speed_widget.setVisible(False)
+
+        concurrent_frags = self.settings.value('concurrent_fragments', 8, type=int)
+        self.frag_spin.setValue(max(1, min(16, concurrent_frags)))
 
         for platform_name, combo in self.quality_combos.items():
             key = f"quality_{platform_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
@@ -486,13 +680,29 @@ class SettingsTab(QWidget):
     def on_setting_changed(self):
         self.settings.setValue('theme', self.theme_combo.currentData())
         self.settings.setValue('parallel_downloads', self.parallel_downloads_spin.value())
-        self.parent_window.thread_pool.setMaxThreadCount(self.parallel_downloads_spin.value())
+        self.parent_window.thread_pool.setMaxThreadCount(max(self.parallel_downloads_spin.value() + 8, 10))
 
         self.settings.setValue('subtitles_enabled', self.subtitles_checkbox.isChecked())
         self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
         self.settings.setValue('use_cookies', self.cookies_checkbox.isChecked())
         self.settings.setValue('close_to_tray', self.tray_checkbox.isChecked())
-        self.settings.setValue('speed_limit', self.speed_combo.currentData())
+
+        selected_speed_data = self.speed_combo.currentData()
+        if selected_speed_data == -1:
+            self.custom_speed_widget.setVisible(True)
+            unit = self.custom_speed_unit.currentData()
+            val = self.custom_speed_spin.value()
+            multiplier = (1024 * 1024) if unit == "MB" else 1024
+            speed_in_bytes = int(val * multiplier)
+            self.settings.setValue('speed_limit', speed_in_bytes)
+        else:
+            self.custom_speed_widget.setVisible(False)
+            speed_in_bytes = selected_speed_data or 0
+            self.settings.setValue('speed_limit', speed_in_bytes)
+
+        self.settings.setValue('concurrent_fragments', self.frag_spin.value())
+        if hasattr(self.parent_window, 'update_quick_speed_display'):
+            self.parent_window.update_quick_speed_display()
         if self.rb_cookie_file.isChecked():
             self.settings.setValue('cookie_source_type', 'file')
             self.settings.setValue('cookie_source', 'file')
@@ -512,6 +722,8 @@ class SettingsTab(QWidget):
         if self.sender() == self.theme_combo:
             ThemeManager(self.settings).apply_theme()
 
+
+
     def update_cookie_widgets_state(self):
         use_cookies = self.cookies_checkbox.isChecked()
         self.cookies_options_widget.setEnabled(use_cookies)
@@ -520,6 +732,96 @@ class SettingsTab(QWidget):
             self.rb_cookie_file.setEnabled(True)
             self.cookies_btn.setEnabled(is_file)
             self.cookie_browser_combo.setEnabled(not is_file)
+            self.btn_test_cookies.setEnabled(not is_file)
+
+    def on_portable_toggled(self, checked):
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        data_dir = os.path.join(project_root, 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        portable_marker = os.path.join(data_dir, 'portable.dat')
+        ini_path = os.path.join(data_dir, 'settings.ini')
+
+        self.settings.setValue('portable_mode', checked)
+        if checked:
+            try:
+                with open(portable_marker, 'w', encoding='utf-8') as f:
+                    f.write("portable=1\n")
+                ini_settings = QSettings(ini_path, QSettings.Format.IniFormat)
+                for key in self.settings.allKeys():
+                    ini_settings.setValue(key, self.settings.value(key))
+                ini_settings.sync()
+                QMessageBox.information(
+                    self,
+                    "Портативный режим",
+                    "Портативный режим активирован!\nНастройки сохранены в data/settings.ini.\nПри следующем запуске программа будет работать полностью автономно с флешки/папки."
+                )
+            except Exception as e:
+                logger.error(f"Error enabling portable mode: {e}")
+        else:
+            try:
+                if os.path.exists(portable_marker):
+                    os.remove(portable_marker)
+                QMessageBox.information(
+                    self,
+                    "Портативный режим",
+                    "Портативный режим отключен. Настройки будут сохраняться в системе."
+                )
+            except Exception as e:
+                logger.error(f"Error disabling portable mode: {e}")
+        self.settings.sync()
+
+
+
+    def on_test_cookies_clicked(self):
+        browser = self.cookie_browser_combo.currentData()
+        if not browser or browser == 'none':
+            self.lbl_cookie_status.setText("Выберите браузер в списке")
+            self.lbl_cookie_status.setStyleSheet("color: #d83b01; font-size: 12px;")
+            return
+
+        self.btn_test_cookies.setEnabled(False)
+        self.lbl_cookie_status.setText(f"Чтение cookies из {browser.capitalize()}...")
+        self.lbl_cookie_status.setStyleSheet("color: #0078D7; font-size: 12px;")
+
+        self._cookie_thread = CookieTestThread(browser, self)
+        self._cookie_thread.result_ready.connect(self._on_cookies_test_result)
+        self._cookie_thread.finished.connect(lambda: self.btn_test_cookies.setEnabled(True))
+        self._cookie_thread.start()
+
+    def _on_cookies_test_result(self, ok, msg):
+        self.lbl_cookie_status.setText(msg)
+        color = "#107c41" if ok else "#d83b01"
+        self.lbl_cookie_status.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self.btn_test_cookies.setEnabled(True)
+
+    def show_cookie_help_dialog(self):
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Использование cookies без закрытия Chrome")
+        box.setText(
+            "<b>Как использовать cookies без закрытия Chrome и браузеров:</b><br><br>"
+            "В Windows запущенный Chrome монопольно блокирует файл базы данных cookies, "
+            "а с версии Chrome 127+ Google включил защиту <i>App-Bound Encryption</i>, запрещающую "
+            "внешним программам читать чужие куки напрямую из файлов.<br><br>"
+            "<b>Решение раз и навсегда (1 минута):</b><br>"
+            "1. Установите проверенное расширение для Chrome: <b>Get cookies.txt LOCALLY</b> "
+            "(бесплатное, безопасное, работает прямо внутри Chrome и с открытым исходным кодом).<br>"
+            "2. Перейдите на нужный сайт (например, YouTube) со своим аккаунтом.<br>"
+            "3. Нажмите иконку расширения → <b>«Export»</b> (сохранится файл <code>cookies.txt</code>).<br>"
+            "4. В настройках выше выберите радиокнопку <b>«Файл cookie»</b> и укажите этот файл.<br><br>"
+            "<b>Преимущества:</b><br>"
+            "• Chrome <b>вообще не нужно закрывать</b> (пусть открыты сотни вкладок).<br>"
+            "• Файл <code>cookies.txt</code> действует месяцами."
+        )
+        btn_open = box.addButton("Открыть расширение в магазине Chrome", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("Понятно", QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        if box.clickedButton() == btn_open:
+            QDesktopServices.openUrl(QUrl("https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"))
+
 
     def on_select_save_path(self):
         folder = QFileDialog.getExistingDirectory(self, self.translator.translate('select_save_folder'))

@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 from enum import Enum
 from PyQt6.QtCore import QObject, pyqtSignal, QUrl
@@ -43,6 +44,9 @@ class DownloadTask(QObject):
         self.final_filepath = None
         self.thumbnail_loading = False
         self.file_size_str = ""
+        self.quality_badge = ""
+        self.custom_quality = ""
+        self.custom_title = ""
         self.info = {}
         self.is_removed = False
 
@@ -57,10 +61,43 @@ class DownloadTask(QObject):
 
     def update_info(self, info):
         self.info = info
-        self.title = info.get('title', 'Unknown Title')
-        self.thumbnail_url = info.get('thumbnail')
+        if hasattr(self, 'custom_title') and self.custom_title:
+            self.title = self.custom_title
+        else:
+            self.title = info.get('title', 'Unknown Title')
+
+        new_thumb = info.get('thumbnail')
+        if new_thumb:
+            self.thumbnail_url = new_thumb
+
         self.platform = info.get('extractor_key', 'Unknown')
         self.video_id = info.get('id')
+
+        # Определение значка качества / формата
+        badge = ""
+        if hasattr(self, 'custom_quality') and self.custom_quality:
+            badge = self.custom_quality
+        elif hasattr(self, 'quality_badge') and self.quality_badge:
+            badge = self.quality_badge
+        elif info.get('height'):
+            height = info.get('height')
+            badge = f"{height}p"
+            fps = info.get('fps')
+            if fps and int(fps) >= 50:
+                badge += f"{int(fps)}"
+        elif info.get('resolution'):
+            badge = str(info.get('resolution'))
+        elif info.get('format_note'):
+            badge = str(info.get('format_note'))
+        elif info.get('acodec') and (not info.get('vcodec') or info.get('vcodec') == 'none'):
+            badge = "AUDIO"
+        else:
+            # Попробуем извлечь разрешение из URL (например, /1080/ или _720p. или [1080p])
+            url_match = re.search(r'[/_\[](\d{3,4})p?[\._/\]]', self.url)
+            if url_match:
+                badge = f"{url_match.group(1)}p"
+
+        self.quality_badge = badge
 
         filesize = info.get('filesize') or info.get('filesize_approx')
         if filesize:
@@ -94,7 +131,13 @@ class DownloadTask(QObject):
         if filename:
             self.current_filename = filename
 
-    def set_thumbnail(self, pixmap):
+    def set_thumbnail(self, image_or_pixmap):
+        if isinstance(image_or_pixmap, QImage):
+            pixmap = QPixmap.fromImage(image_or_pixmap)
+        elif isinstance(image_or_pixmap, QPixmap):
+            pixmap = image_or_pixmap
+        else:
+            return
         self.thumbnail = pixmap
         self.thumbnail_loaded.emit(pixmap)
         self.thumbnail_loading = False

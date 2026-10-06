@@ -1,13 +1,30 @@
 import os
 import logging
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QMenu, QMessageBox
-from PyQt6.QtGui import QPixmap, QAction, QIcon
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QMenu,
+                             QMessageBox, QApplication, QToolTip)
+from PyQt6.QtGui import QPixmap, QAction, QIcon, QKeySequence, QCursor
+from PyQt6.QtCore import QSize, Qt, pyqtSignal, QRect, QObject, QEvent
 from qfluentwidgets import TransparentToolButton, FluentIcon, ProgressBar, StrongBodyLabel, BodyLabel, CaptionLabel
 from .download_task import DownloadTask
 
 
 logger = logging.getLogger(__name__)
+
+
+class UrlCopyFilter(QObject):
+    """Фильтр событий для гарантированного копирования полной ссылки при нажатии Ctrl+C"""
+    def __init__(self, url_getter, parent=None):
+        super().__init__(parent)
+        self.url_getter = url_getter
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress:
+            if event.matches(QKeySequence.StandardKey.Copy):
+                url = self.url_getter()
+                if url:
+                    QApplication.clipboard().setText(url)
+                    return True
+        return super().eventFilter(obj, event)
 
 
 class DownloadItemWidget(QWidget):
@@ -25,6 +42,24 @@ class DownloadItemWidget(QWidget):
         self.initUI()
         self.connect_signals()
         self.update_ui()
+
+    @staticmethod
+    def format_display_url(url: str, max_len: int = 65) -> str:
+        """Ограничивает отображаемую длину ссылки в карточке интерфейса"""
+        if not url:
+            return ""
+        if len(url) <= max_len:
+            return url
+        head_len = 42
+        tail_len = max(max_len - head_len - 3, 16)
+        return f"{url[:head_len]}...{url[-tail_len:]}"
+
+    def copy_full_url(self):
+        """Копирует полную ссылку в буфер обмена и показывает всплывающую подсказку"""
+        QApplication.clipboard().setText(self.task.url)
+        self.copy_link_requested.emit()
+        copied_text = self.translator.translate('copied', 'Ссылка скопирована')
+        QToolTip.showText(QCursor.pos(), copied_text, self.btn_copy_url, QRect(), 1500)
 
     def initUI(self):
         main_layout = QHBoxLayout(self)
@@ -45,11 +80,41 @@ class DownloadItemWidget(QWidget):
         self.title_label.setObjectName('TitleLabel')
         self.title_label.setWordWrap(True)
 
+        url_row = QHBoxLayout()
+        url_row.setContentsMargins(0, 0, 0, 0)
+        url_row.setSpacing(6)
 
-        self.url_label = CaptionLabel(self.task.url)
+        display_url = self.format_display_url(self.task.url)
+        self.url_label = CaptionLabel(display_url)
         self.url_label.setObjectName('UrlLabel')
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.url_label.setStyleSheet("color: #888888;")
+        self.url_label.setToolTip(self.task.url)
+        self.url_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.url_label.customContextMenuRequested.connect(
+            lambda pos: self.show_context_menu(self.url_label.mapTo(self, pos))
+        )
+        self._url_copy_filter = UrlCopyFilter(lambda: self.task.url, self.url_label)
+        self.url_label.installEventFilter(self._url_copy_filter)
+
+        self.btn_copy_url = TransparentToolButton(FluentIcon.COPY)
+        self.btn_copy_url.setFixedSize(22, 22)
+        self.btn_copy_url.setIconSize(QSize(13, 13))
+        self.btn_copy_url.setToolTip(self.translator.translate('copy_link', 'Копировать ссылку'))
+        self.btn_copy_url.clicked.connect(self.copy_full_url)
+
+        self.badge_quality = CaptionLabel()
+        self.badge_quality.setObjectName('BadgeQuality')
+        self.badge_quality.setStyleSheet(
+            "background-color: rgba(0, 122, 204, 0.2); color: #29b6f6; "
+            "padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;"
+        )
+        self.badge_quality.hide()
+
+        url_row.addWidget(self.url_label)
+        url_row.addWidget(self.btn_copy_url)
+        url_row.addWidget(self.badge_quality)
+        url_row.addStretch()
 
         self.progress_bar = ProgressBar()
         self.progress_bar.setFixedHeight(6)
@@ -70,7 +135,7 @@ class DownloadItemWidget(QWidget):
         status_layout.addWidget(self.size_label)
 
         info_layout.addWidget(self.title_label)
-        info_layout.addWidget(self.url_label)
+        info_layout.addLayout(url_row)
         info_layout.addSpacing(4)
         info_layout.addWidget(self.progress_bar)
         info_layout.addLayout(status_layout)
@@ -163,7 +228,7 @@ class DownloadItemWidget(QWidget):
         act_open_file.triggered.connect(self.open_file_requested.emit)
         act_start.triggered.connect(self.on_start_clicked)
         act_open.triggered.connect(self.open_folder_requested.emit)
-        act_copy.triggered.connect(self.copy_link_requested.emit)
+        act_copy.triggered.connect(self.copy_full_url)
         act_remove.triggered.connect(self.remove_requested.emit)
 
         is_startable = self.task.status in (
@@ -194,7 +259,7 @@ class DownloadItemWidget(QWidget):
         self.size_label.setText(size_str)
 
     def on_progress_update(self, percent, text):
-        if percent == 0 and "🔴" in text:
+        if percent == 0 and ("запис" in text.lower() or "record" in text.lower() or getattr(self.task, "is_stream", False)):
             self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
@@ -208,7 +273,18 @@ class DownloadItemWidget(QWidget):
 
     def update_ui(self):
         self.title_label.setText(self.task.title)
+        display_url = self.format_display_url(self.task.url)
+        self.url_label.setText(display_url)
+        self.url_label.full_url = self.task.url
+        self.url_label.setToolTip(self.task.url)
         self.size_label.setText(self.task.file_size_str)
+
+        badge_text = getattr(self.task, 'quality_badge', '')
+        if badge_text:
+            self.badge_quality.setText(badge_text)
+            self.badge_quality.show()
+        else:
+            self.badge_quality.hide()
 
         status = self.task.status
         self.progress_bar.setVisible(
@@ -230,15 +306,15 @@ class DownloadItemWidget(QWidget):
             DownloadTask.Status.FETCHING_INFO: self.translator.translate('status_fetching_info', 'Получение данных...'),
             DownloadTask.Status.DOWNLOADING: self.translator.translate('status_downloading', 'Скачивание...'),
             DownloadTask.Status.PROCESSING: self.translator.translate('status_processing', 'Обработка...'),
-            DownloadTask.Status.COMPLETED: f"{self.translator.translate('status_completed', 'Скачано')} ✓",
+            DownloadTask.Status.COMPLETED: self.translator.translate('status_completed', 'Скачано'),
             DownloadTask.Status.ERROR: f"{self.translator.translate('status_error', 'Ошибка')}: {self.task.error_message}",
-            DownloadTask.Status.STOPPED: "Стрим завершен и сохранен ✓",
+            DownloadTask.Status.STOPPED: self.translator.translate('status_stopped', 'Стрим завершен и сохранен'),
         }
 
         base_text = status_text_map.get(status, "")
 
         if self.is_stream_active():
-            base_text = "🔴 Идет запись..."
+            base_text = self.translator.translate('status_recording', 'Идет запись потока...')
 
         self.status_label.setText(base_text)
         self.setProperty('status', status.value)

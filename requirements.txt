@@ -4,3 +4,6 @@ yt-dlp[curl-cffi]
 packaging
 PyQt-Fluent-Widgets
 pyTelegramBotAPI
+selenium
+webdriver-manager
+beautifulsoup4

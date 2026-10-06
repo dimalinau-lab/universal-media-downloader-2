@@ -1,3 +1,5 @@
+import queue
+import time
 import threading
 import logging
 import telebot
@@ -5,8 +7,10 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
+
 class BotSignals(QObject):
     url_received = pyqtSignal(str)
+
 
 class TelegramBotManager:
     def __init__(self, settings):
@@ -14,8 +18,11 @@ class TelegramBotManager:
         self.signals = BotSignals()
         self.bot = None
         self.thread = None
+        self._sender_thread = None
+        self._msg_queue = queue.Queue()
         self._is_running = False
         self.last_chat_id = None
+        self.current_token = None
 
     def start_bot(self, token):
         if self._is_running and getattr(self, 'current_token', None) == token:
@@ -28,8 +35,30 @@ class TelegramBotManager:
         self.bot = telebot.TeleBot(token)
         self._is_running = True
 
+        saved_chat_id = self.settings.value('tg_admin_chat_id', None)
+        if saved_chat_id:
+            try:
+                self.last_chat_id = int(saved_chat_id)
+            except (ValueError, TypeError):
+                self.last_chat_id = saved_chat_id
+
         @self.bot.message_handler(content_types=['text'])
         def handle_message(message):
+            user_id = str(message.from_user.id if message.from_user else message.chat.id)
+            admin_id = str(self.settings.value('tg_admin_chat_id', '') or '')
+
+            # Автоматическая привязка к первому обратившемуся владельцу
+            if not admin_id:
+                admin_id = str(message.chat.id)
+                self.settings.setValue('tg_admin_chat_id', admin_id)
+                self.settings.sync()
+                self.last_chat_id = message.chat.id
+                self.bot.reply_to(message, "🔒 Бот успешно привязан к вашему аккаунту! Теперь только вы можете управлять загрузками.")
+
+            if str(message.chat.id) != admin_id and user_id != admin_id:
+                self.bot.reply_to(message, "⛔ Доступ ограничен. Этот бот привязан к личному ПК другого пользователя.")
+                return
+
             self.last_chat_id = message.chat.id
             text = message.text.strip()
 
@@ -38,11 +67,18 @@ class TelegramBotManager:
                 self.bot.reply_to(message, "Ссылка поймана! Анализирую видео...")
             elif text.startswith('/start'):
                 self.bot.reply_to(message, "Привет! Я на связи. Отправь мне ссылку, и загрузка начнется автоматически.")
+            elif text.startswith('/unbind'):
+                self.settings.remove('tg_admin_chat_id')
+                self.settings.sync()
+                self.bot.reply_to(message, "🔓 Привязка снята. Напишите /start с нужного аккаунта для новой привязки.")
             else:
                 self.bot.reply_to(message, "Просто отправь мне ссылку на видео, и я скачаю его!")
 
         self.thread = threading.Thread(target=self._poll, daemon=True)
         self.thread.start()
+
+        self._sender_thread = threading.Thread(target=self._send_loop, daemon=True)
+        self._sender_thread.start()
 
     def send_test_message(self):
         if not self.bot or not self._is_running:
@@ -52,23 +88,35 @@ class TelegramBotManager:
 
         try:
             self.bot.send_message(self.last_chat_id,
-                                  "Проверка связи: всё работает отлично! Бот готов к приему ссылок.")
+                                  "Проверка связи: всё работает отлично! Бот готов к приему ссылок.",
+                                  timeout=5)
             return True, "Тестовое сообщение отправлено в Telegram!"
         except Exception as e:
             return False, f"Ошибка отправки: {e}"
 
     def send_message(self, text):
-        if not self.bot or not self._is_running:
+        """Асинхронная неблокирующая отправка сообщения через очередь (безопасно для GUI потока)"""
+        if not self._is_running or not self.last_chat_id:
             return False
-        if not self.last_chat_id:
-            return False
+        self._msg_queue.put((self.last_chat_id, text))
+        return True
 
-        try:
-            self.bot.send_message(self.last_chat_id, text)
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка отправки TG: {e}")
-            return False
+    def _send_loop(self):
+        while self._is_running:
+            try:
+                chat_id, text = self._msg_queue.get(timeout=1.0)
+                if not self._is_running or not self.bot:
+                    break
+                try:
+                    self.bot.send_message(chat_id, text, timeout=10)
+                except Exception as e:
+                    logger.error(f"Ошибка асинхронной отправки TG: {e}")
+                finally:
+                    self._msg_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Непредвиденная ошибка в очереди сообщений Telegram: {e}")
 
     def _poll(self):
         try:
@@ -80,6 +128,9 @@ class TelegramBotManager:
     def stop_bot(self):
         self._is_running = False
         if self.bot:
-            self.bot.stop_polling()
+            try:
+                self.bot.stop_polling()
+            except Exception:
+                pass
         self.bot = None
         self.current_token = None

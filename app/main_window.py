@@ -3,18 +3,19 @@ import os
 import subprocess
 import logging
 import json
+import shutil
 from qfluentwidgets import (LineEdit, TransparentToolButton, PrimaryPushButton,
                             PushButton, SubtitleLabel, BodyLabel, CaptionLabel,
-                            FluentIcon, setTheme, Theme)
+                            FluentIcon, setTheme, Theme, SearchLineEdit,
+                            TransparentPushButton, RoundMenu, Action, ComboBox, IconWidget)
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QProgressBar, QLabel,
                              QFileDialog, QMessageBox, QComboBox,
                              QListWidget, QListWidgetItem, QStackedWidget,
                              QToolButton, QFrame, QApplication, QDialog,
-                             QSystemTrayIcon, QMenu)
+                             QSystemTrayIcon, QMenu, QButtonGroup)
 from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl, QTimer
 from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices, QAction
-from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices
 
 from .settings_tab import SettingsTab
 from .about_tab import AboutTab
@@ -28,6 +29,7 @@ from .update_checker import UpdateChecker
 from .files_tab import FilesTab
 from .telegram_bot import TelegramBotManager
 from .telegram_tab import TelegramTab
+from .local_api import LocalApiManager
 logger = logging.getLogger(__name__)
 
 
@@ -40,10 +42,15 @@ class MainWindow(QMainWindow):
         self.thread_pool = QThreadPool()
         parallel_downloads = int(self.settings.value('parallel_downloads', 2))
         self.thread_pool.setMaxThreadCount(max(parallel_downloads + 6, 8))
-        self.download_manager = DownloadManager(self.settings, self.ffmpeg_path, self.thread_pool, self.translator)
+        self.download_manager = DownloadManager(self.settings, self.ffmpeg_path, self.thread_pool, self.translator, parent=self)
         self.update_checker = UpdateChecker(self, self.translator, self.settings, self.thread_pool)
         self.bot_manager = TelegramBotManager(self.settings)
         self.bot_manager.signals.url_received.connect(self._on_bot_url_received)
+
+        self.local_api = LocalApiManager()
+        self.current_filter_mode = 'all'
+        self.local_api.signals.url_received.connect(self._on_bot_url_received)
+        self.local_api.start()
 
         # --- ЗАЩИТА ОТ КРИВОГО ТОКЕНА ---
         saved_token = self.settings.value('tg_bot_token', '')
@@ -64,15 +71,35 @@ class MainWindow(QMainWindow):
 
     def check_ffmpeg(self):
         project_root = os.path.dirname(os.path.abspath(__file__))
-        ffmpeg_folder = os.path.join(project_root, '..', 'assets', 'ffmpeg', 'bin')
-        ffmpeg_executable = os.path.join(ffmpeg_folder, 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
-        if not os.path.exists(ffmpeg_executable):
+        candidates = [
+            os.path.join(project_root, '..', 'assets', 'ffmpeg', 'bin', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'),
+            os.path.join(project_root, 'assets', 'ffmpeg', 'bin', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'),
+        ]
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+            candidates.insert(0, os.path.join(base_dir, 'assets', 'ffmpeg', 'bin', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'))
+            candidates.insert(1, os.path.join(base_dir, 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'))
+            if hasattr(sys, '_MEIPASS'):
+                candidates.insert(0, os.path.join(sys._MEIPASS, 'assets', 'ffmpeg', 'bin', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'))
+
+        system_ffmpeg = shutil.which('ffmpeg')
+        if system_ffmpeg:
+            candidates.append(system_ffmpeg)
+
+        ffmpeg_executable = None
+        for c in candidates:
+            if c and os.path.exists(c):
+                ffmpeg_executable = os.path.abspath(c)
+                break
+
+        if not ffmpeg_executable:
             QMessageBox.critical(self,
                                  self.translator.translate('error'),
-                                 f"{self.translator.translate('ffmpeg_not_found')}: {ffmpeg_executable}")
+                                 f"{self.translator.translate('ffmpeg_not_found')}")
             sys.exit(1)
         try:
-            subprocess.run([ffmpeg_executable, '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            subprocess.run([ffmpeg_executable, '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, creationflags=flags)
             return ffmpeg_executable
         except Exception as e:
             QMessageBox.critical(self,
@@ -83,7 +110,25 @@ class MainWindow(QMainWindow):
     def initUI(self):
         self.setObjectName('MainWindow')
         self.setWindowTitle(self.translator.translate('app_title'))
-        self.resize(1200, 800)
+
+        # Адаптивный размер и позиционирование под экран (включая Full HD ноутбуки с масштабом 100%, 125%, 150%)
+        screen = QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            # На ноутбуках FHD (1920x1080) при 125% (1536x864) или 150% (1280x720)
+            # высота рабочего стола за вычетом панели задач ~640-810px
+            w = min(1160, int(avail.width() * 0.90))
+            h = min(720, int(avail.height() * 0.88))
+            self.resize(max(920, w), max(560, h))
+
+            # Центрируем окно на экране
+            geo = self.frameGeometry()
+            geo.moveCenter(avail.center())
+            self.move(geo.topLeft())
+        else:
+            self.resize(1080, 680)
+
+        self.setMinimumSize(880, 520)
 
         current_theme = self.settings.value('theme', 'dark')
         setTheme(Theme.DARK if current_theme == 'dark' else Theme.LIGHT)
@@ -130,6 +175,7 @@ class MainWindow(QMainWindow):
 
         self.nav_bar = QWidget()
         self.nav_bar.setObjectName('NavBar')
+        self.nav_bar.setFixedWidth(180)
         nav_layout = QVBoxLayout(self.nav_bar)
         nav_layout.setContentsMargins(10, 20, 10, 10)
         nav_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -213,14 +259,15 @@ class MainWindow(QMainWindow):
             self.rocket_label.setMovie(self.rocket_movie)
             self.rocket_label.setFixedSize(32, 32)
             self.rocket_movie.start()
+            title_row.addWidget(self.rocket_label)
         else:
-            self.rocket_label.setText('🚀')
-            self.rocket_label.setStyleSheet("font-size: 24px;")
+            self.empty_icon = IconWidget(FluentIcon.DOWNLOAD)
+            self.empty_icon.setFixedSize(32, 32)
+            title_row.addWidget(self.empty_icon)
 
         self.empty_title = SubtitleLabel(
             self.translator.translate('no_downloads_placeholder', 'Add links to start downloading'))
         self.empty_title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        title_row.addWidget(self.rocket_label)
         title_row.addSpacing(10)
         title_row.addWidget(self.empty_title)
 
@@ -275,7 +322,7 @@ class MainWindow(QMainWindow):
         self.recent_buttons_layout = FlowLayout(h_spacing=8, v_spacing=8)
         rc_layout.addLayout(self.recent_buttons_layout)
 
-        self.hint_label = CaptionLabel(self.translator.translate('empty_hint', "Press Enter or ➕ to add"))
+        self.hint_label = CaptionLabel(self.translator.translate('empty_hint', "Press Enter or '+' button to add"))
         self.hint_label.setStyleSheet("color: #666666;")
         self.hint_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
@@ -288,8 +335,53 @@ class MainWindow(QMainWindow):
 
         empty_layout.addWidget(empty_card, 0, Qt.AlignmentFlag.AlignCenter)
 
+        # Контейнер списка загрузок с панелью фильтрации и поиска
+        self.downloads_container = QWidget()
+        dl_container_layout = QVBoxLayout(self.downloads_container)
+        dl_container_layout.setContentsMargins(10, 8, 10, 6)
+        dl_container_layout.setSpacing(8)
+
+        self.filter_toolbar = QWidget()
+        ft_layout = QHBoxLayout(self.filter_toolbar)
+        ft_layout.setContentsMargins(0, 0, 0, 0)
+        ft_layout.setSpacing(6)
+
+        self.btn_filter_all = PushButton(self.translator.translate('filter_all', 'Все'))
+        self.btn_filter_downloading = PushButton(self.translator.translate('filter_downloading', 'Скачиваются'))
+        self.btn_filter_completed = PushButton(self.translator.translate('filter_completed', 'Завершенные'))
+        self.btn_filter_errors = PushButton(self.translator.translate('filter_errors', 'Ошибки'))
+
+        for btn in (self.btn_filter_all, self.btn_filter_downloading, self.btn_filter_completed, self.btn_filter_errors):
+            btn.setFixedHeight(30)
+            btn.setCheckable(True)
+            ft_layout.addWidget(btn)
+
+        self.filter_btn_group = QButtonGroup(self)
+        self.filter_btn_group.addButton(self.btn_filter_all, 0)
+        self.filter_btn_group.addButton(self.btn_filter_downloading, 1)
+        self.filter_btn_group.addButton(self.btn_filter_completed, 2)
+        self.filter_btn_group.addButton(self.btn_filter_errors, 3)
+        self.btn_filter_all.setChecked(True)
+
+        ft_layout.addStretch()
+
+        self.platform_filter_combo = ComboBox()
+        self.platform_filter_combo.setFixedHeight(30)
+        self.platform_filter_combo.setMinimumWidth(165)
+        self._populate_platform_filter()
+        ft_layout.addWidget(self.platform_filter_combo)
+
+        self.search_downloads_input = SearchLineEdit()
+        self.search_downloads_input.setPlaceholderText(self.translator.translate('search_placeholder', 'Поиск по названию...'))
+        self.search_downloads_input.setFixedWidth(230)
+        self.search_downloads_input.setFixedHeight(30)
+        ft_layout.addWidget(self.search_downloads_input)
+
+        dl_container_layout.addWidget(self.filter_toolbar)
+        dl_container_layout.addWidget(self.downloads_list, 1)
+
         self.downloads_page_stack.addWidget(self.empty_widget)
-        self.downloads_page_stack.addWidget(self.downloads_list)
+        self.downloads_page_stack.addWidget(self.downloads_container)
 
         self.settings_page = SettingsTab(self.translator, self)
         self.history_page = HistoryTab(self.translator, self)
@@ -340,6 +432,17 @@ class MainWindow(QMainWindow):
         self.btn_open_logs.setFixedSize(36, 36)
         self.btn_open_logs.setToolTip(self.translator.translate('open_logs'))
 
+        self.btn_quick_speed = TransparentPushButton()
+        self.btn_quick_speed.setIcon(FluentIcon.SPEED_HIGH)
+        self.btn_quick_speed.setFixedHeight(32)
+        self.btn_quick_speed.setToolTip(self.translator.translate('speed_quick_menu', 'Лимит скорости'))
+
+        self.btn_disk_space = TransparentPushButton()
+        self.btn_disk_space.setIcon(FluentIcon.SAVE)
+        self.btn_disk_space.setFixedHeight(32)
+        self.btn_disk_space.setToolTip(self.translator.translate('open_save_folder', 'Открыть папку загрузок'))
+        self.btn_disk_space.clicked.connect(self.open_save_folder)
+
         self.summary_info = QLabel("")
         self.summary_info.setObjectName('StatusLabel')
 
@@ -352,6 +455,8 @@ class MainWindow(QMainWindow):
         bottom_bar_layout.addWidget(self.threads_label)
         bottom_bar_layout.addWidget(self.btn_open_save)
         bottom_bar_layout.addWidget(self.btn_open_logs)
+        bottom_bar_layout.addWidget(self.btn_quick_speed)
+        bottom_bar_layout.addWidget(self.btn_disk_space)
         bottom_bar_layout.addStretch()
         bottom_bar_layout.addWidget(self.summary_info)
         bottom_bar_layout.addSpacing(10)
@@ -360,6 +465,8 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(bottom_bar)
 
         self.init_tray()
+        self.update_quick_speed_display()
+        self.update_disk_space()
 
 
     def connect_signals(self):
@@ -387,6 +494,10 @@ class MainWindow(QMainWindow):
         self.btn_open_save.clicked.connect(self.open_save_folder)
         self.btn_open_logs.clicked.connect(self.open_logs_folder)
         self.btn_clear_recent.clicked.connect(self._clear_recent_history)
+        self.filter_btn_group.idClicked.connect(self.on_filter_changed)
+        self.platform_filter_combo.currentIndexChanged.connect(self.apply_downloads_filter)
+        self.search_downloads_input.textChanged.connect(self.apply_downloads_filter)
+        self.btn_quick_speed.clicked.connect(self.show_quick_speed_menu)
 
         self.download_manager.task_added.connect(self.add_download_item_widget)
         self.download_manager.download_started.connect(self.on_download_started)
@@ -422,11 +533,21 @@ class MainWindow(QMainWindow):
         self.btn_paste.setText(self.translator.translate('paste_from_clipboard', 'Paste'))
         self.btn_import.setText(self.translator.translate('load_from_file'))
         self.btn_quality.setText(self.translator.translate('open_quality_settings', 'Quality settings'))
-        self.hint_label.setText(self.translator.translate('empty_hint', "Press Enter or ➕ to add"))
+        self.hint_label.setText(self.translator.translate('empty_hint', "Press Enter or '+' button to add"))
         self.btn_open_save.setToolTip(self.translator.translate('open_save_folder'))
         self.btn_open_logs.setToolTip(self.translator.translate('open_logs'))
         self.recent_label.setText(self.translator.translate('recent', 'Recent') + ':')
         self.btn_clear_recent.setToolTip(self.translator.translate('clear_history'))
+
+        self.btn_filter_all.setText(self.translator.translate('filter_all', 'Все'))
+        self.btn_filter_downloading.setText(self.translator.translate('filter_downloading', 'Скачиваются'))
+        self.btn_filter_completed.setText(self.translator.translate('filter_completed', 'Завершенные'))
+        self.btn_filter_errors.setText(self.translator.translate('filter_errors', 'Ошибки'))
+        self._populate_platform_filter()
+        self.search_downloads_input.setPlaceholderText(self.translator.translate('search_placeholder', 'Поиск по названию...'))
+        self.btn_quick_speed.setToolTip(self.translator.translate('speed_quick_menu', 'Лимит скорости'))
+        self.update_quick_speed_display()
+        self.update_disk_space()
 
         self.language_combo.blockSignals(True)
         self.language_combo.setItemText(0, 'English')
@@ -457,22 +578,11 @@ class MainWindow(QMainWindow):
         self.settings.sync()
         ThemeManager(self.settings).apply_theme()
 
-    def _on_bot_url_received(self, url):
-        """Обработчик ссылок, присланных из Telegram бота"""
-        # Создаем список ожидания, если его еще нет
-        if not hasattr(self, '_bot_pending_urls'):
-            self._bot_pending_urls = []
-
-        self._bot_pending_urls.append(url)  # Запоминаем, что ссылка от бота
-
-        self.download_manager.add_urls([url])
-        self._add_recent(url)
-        self._rebuild_recent_buttons()
-
     def on_add_link(self):
         url = self.url_input.text().strip()
         if url:
             self.url_input.clear()
+            self.page_stack.setCurrentIndex(0)
             if 'list=' in url or '/playlist' in url:
                 self.status_label.setText("Анализ плейлиста...")
                 from .threads import PlaylistCheckWorker
@@ -522,6 +632,7 @@ class MainWindow(QMainWindow):
         text = QApplication.clipboard().text()
         if not text:
             return
+        self.page_stack.setCurrentIndex(0)
         parts = [p.strip() for p in text.replace('\r', '\n').split('\n')]
         urls = [p for p in parts if p]
         if urls:
@@ -551,8 +662,9 @@ class MainWindow(QMainWindow):
                                      f"{self.translator.translate('error_reading_file')}: {e}")
 
     def update_placeholder_visibility(self):
+        target = getattr(self, 'downloads_container', self.downloads_list)
         if self.downloads_list.count() > 0:
-            self.downloads_page_stack.setCurrentWidget(self.downloads_list)
+            self.downloads_page_stack.setCurrentWidget(target)
         else:
             self.downloads_page_stack.setCurrentWidget(self.empty_widget)
 
@@ -574,6 +686,8 @@ class MainWindow(QMainWindow):
 
         task.status_changed.connect(lambda status, t=task: self._on_task_status_changed(t, status))
         self.update_placeholder_visibility()
+        self.apply_downloads_filter()
+        self.update_disk_space()
 
     def remove_download_item(self, task):
         self.download_manager.remove_task(task)
@@ -581,6 +695,8 @@ class MainWindow(QMainWindow):
             row = self.downloads_list.row(task.list_item)
             self.downloads_list.takeItem(row)
         self.update_placeholder_visibility()
+        self.apply_downloads_filter()
+        self.update_disk_space()
 
     def clear_completed_items(self):
         tasks_to_remove = self.download_manager.get_completed_tasks()
@@ -607,7 +723,8 @@ class MainWindow(QMainWindow):
         if maxc <= 0:
             self.threads_label.setText("")
         else:
-            self.threads_label.setText(f"{active}/{maxc}")
+            threads_word = self.translator.translate('threads_prefix', 'Потоки: ')
+            self.threads_label.setText(f"{threads_word}{active}/{maxc}")
 
     def open_save_folder(self):
         folder = self.settings.value('save_path', '')
@@ -658,8 +775,12 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Error reading launch count: {e}")
 
-        if launch_count == 0:
-            self.on_notes_clicked()
+        first_launch_shown = self.settings.value('first_launch_folder_prompt_shown', False, type=bool)
+
+        if not first_launch_shown or launch_count == 0:
+            self.on_notes_clicked(is_first_launch=True)
+            self.settings.setValue('first_launch_folder_prompt_shown', True)
+            self.settings.sync()
 
         launch_count += 1
         try:
@@ -668,59 +789,176 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Error saving launch count: {e}")
 
-    def on_notes_clicked(self):
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel
+    def on_notes_clicked(self, checked=False, is_first_launch=False):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QFileDialog
         from PyQt6.QtCore import QTimer, Qt
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(self.translator.translate('notes', 'Примечания'))
-
-        dialog.resize(450, 150)
-        dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        dialog_title = (
+            self.translator.translate('welcome_title', 'Добро пожаловать в Universal Media Downloader!')
+            if is_first_launch
+            else self.translator.translate('notes', 'Примечания')
+        )
+        dialog.setWindowTitle(dialog_title)
+        dialog.setMinimumWidth(540)
+        dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, not is_first_launch)
 
         layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
         lang = self.settings.value('language', 'ru')
         if lang == 'en':
-            warning_text = "⚠️ <b>Note:</b> For KinoPub, you must first play the video in your browser for 5 seconds, and only then copy the link to download!"
+            folder_warning = "<b>Important:</b> Don't forget to set the download save folder for downloaded videos!"
+            folder_desc = "Please select a folder on your computer where downloaded videos and audio will be saved."
+            btn_choose_text = "Select Folder Now"
+            current_folder_text = "Current folder:"
+            not_set_text = "Not selected yet"
+            kinopub_warning = "<b>Note:</b> For KinoPub / Rezka, selecting quality, audio track and episodes is available directly in the app."
             close_btn_text = "Understood / Close"
+            settings_btn_text = "Open Settings"
+            choose_dialog_title = "Select save folder for videos"
         elif lang == 'uk':
-            warning_text = "⚠️ <b>Увага:</b> На KinoPub потрібно спочатку запустити відео в браузері на 5 секунд, і тільки потім копіювати посилання для завантаження!"
+            folder_warning = "<b>Важливо:</b> Не забудьте поставити місце збереження скачуваних відео!"
+            folder_desc = "Будь ласка, вкажіть папку на комп'ютері, куди зберігатимуться завантажені відео та аудіо."
+            btn_choose_text = "Обрати папку зараз"
+            current_folder_text = "Поточна папка:"
+            not_set_text = "Ще не обрано"
+            kinopub_warning = "<b>Увага:</b> Для KinoPub / Rezka вибір якості, озвучки та серій доступний безпосередньо в додатку."
             close_btn_text = "Зрозуміло / Закрити"
+            settings_btn_text = "Відкрити налаштування"
+            choose_dialog_title = "Оберіть папку для збереження відео"
         else:
-            warning_text = "⚠️ <b>Внимание:</b> На KinoPub нужно сначала запустить видео в браузере на 5 секунд, и только потом копировать ссылку для скачивания!"
+            folder_warning = "<b>Важно:</b> Не забудьте поставить место сохранения скачиваемых видео!"
+            folder_desc = "Пожалуйста, укажите папку на компьютере, куда будут сохраняться скачанные видео и аудиофайлы."
+            btn_choose_text = "Выбрать папку сейчас"
+            current_folder_text = "Текущая папка:"
+            not_set_text = "Папка еще не выбрана"
+            kinopub_warning = "<b>Внимание:</b> Для KinoPub / Rezka выбор качества, озвучки и серий доступен прямо в приложении."
             close_btn_text = "Понятно / Закрыть"
+            settings_btn_text = "Перейти в настройки"
+            choose_dialog_title = "Выберите папку для сохранения видео"
 
-        warning_label = QLabel(warning_text)
-        warning_label.setWordWrap(True)
-        warning_label.setStyleSheet("color: #ff9800; font-size: 15px; margin-bottom: 15px;")
-        layout.addWidget(warning_label)
+        # Карточка предупреждения о месте сохранения
+        card_folder = QFrame()
+        card_folder.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 152, 0, 0.12);
+                border: 1px solid rgba(255, 152, 0, 0.45);
+                border-radius: 8px;
+                padding: 14px;
+            }
+        """)
+        folder_layout = QVBoxLayout(card_folder)
+        folder_layout.setSpacing(10)
 
-        close_btn = QPushButton(f"{close_btn_text} (5)")
-        close_btn.setObjectName('ActionButton')
+        folder_label = QLabel(folder_warning)
+        folder_label.setWordWrap(True)
+        folder_label.setStyleSheet("color: #ffb74d; font-size: 15px; font-weight: bold;")
+        folder_layout.addWidget(folder_label)
+
+        folder_desc_label = QLabel(folder_desc)
+        folder_desc_label.setWordWrap(True)
+        folder_desc_label.setStyleSheet("color: #e0e0e0; font-size: 13px;")
+        folder_layout.addWidget(folder_desc_label)
+
+        # Отображение текущего пути
+        current_save = self.settings.value('save_path', '')
+        path_display_text = current_save if (current_save and os.path.isdir(current_save)) else not_set_text
+        path_label = QLabel(f"<b>{current_folder_text}</b> <span style='color: {'#64b5f6' if current_save else '#ffb74d'};'>{path_display_text}</span>")
+        path_label.setWordWrap(True)
+        folder_layout.addWidget(path_label)
+
+        # Кнопка прямого выбора папки
+        choose_btn = QPushButton(btn_choose_text)
+        choose_btn.setIcon(FluentIcon.FOLDER.icon())
+        choose_btn.setObjectName('ActionButton')
+        choose_btn.setFixedHeight(36)
+        choose_btn.setStyleSheet("background-color: #0078D7; color: white; font-weight: bold; border-radius: 6px; padding: 0 16px;")
+        folder_layout.addWidget(choose_btn)
+
+        layout.addWidget(card_folder)
+
+        # Карточка примечания по KinoPub / Rezka
+        card_kino = QFrame()
+        card_kino.setStyleSheet("""
+            QFrame {
+                background-color: rgba(0, 120, 215, 0.10);
+                border: 1px solid rgba(0, 120, 215, 0.35);
+                border-radius: 8px;
+                padding: 12px;
+            }
+        """)
+        kino_layout = QVBoxLayout(card_kino)
+        kinopub_label = QLabel(kinopub_warning)
+        kinopub_label.setWordWrap(True)
+        kinopub_label.setStyleSheet("color: #64b5f6; font-size: 13px;")
+        kino_layout.addWidget(kinopub_label)
+        layout.addWidget(card_kino)
+
+        # Нижняя панель кнопок
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+
+        settings_btn = QPushButton(settings_btn_text)
+        settings_btn.setIcon(FluentIcon.SETTING.icon())
+        settings_btn.setObjectName('SecondaryButton')
+        settings_btn.setFixedHeight(40)
+        settings_btn.setStyleSheet("border-radius: 6px; padding: 0 16px;")
+
+        close_btn = QPushButton(f"{close_btn_text} (3)" if is_first_launch else close_btn_text)
+        close_btn.setObjectName('SecondaryButton')
         close_btn.setFixedHeight(40)
-        close_btn.setEnabled(False)
-        layout.addWidget(close_btn)
+        close_btn.setStyleSheet("border-radius: 6px; padding: 0 16px;")
+        if is_first_launch:
+            close_btn.setEnabled(False)
 
-        time_left = [5]
+        btn_layout.addStretch()
+        btn_layout.addWidget(settings_btn)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
 
-        def update_timer():
-            time_left[0] -= 1
-            if time_left[0] > 0:
-                close_btn.setText(f"{close_btn_text} ({time_left[0]})")
-            else:
+        timer = None
+        if is_first_launch:
+            time_left = [3]
+
+            def update_timer():
+                time_left[0] -= 1
+                if time_left[0] > 0:
+                    close_btn.setText(f"{close_btn_text} ({time_left[0]})")
+                else:
+                    if timer and timer.isActive():
+                        timer.stop()
+                    close_btn.setText(close_btn_text)
+                    close_btn.setEnabled(True)
+
+            timer = QTimer(dialog)
+            timer.timeout.connect(update_timer)
+            timer.start(1000)
+
+        def on_choose_folder():
+            initial_dir = self.settings.value('save_path', '') or os.path.expanduser('~')
+            selected_folder = QFileDialog.getExistingDirectory(dialog, choose_dialog_title, initial_dir)
+            if selected_folder:
+                self.settings.setValue('save_path', selected_folder)
+                self.settings.sync()
+                if hasattr(self, 'settings_page') and hasattr(self.settings_page, 'load_settings'):
+                    self.settings_page.load_settings()
+                path_label.setText(f"<b>{current_folder_text}</b> <span style='color: #4CAF50; font-weight: bold;'>{selected_folder}</span>")
+                if is_first_launch and timer and timer.isActive():
+                    timer.stop()
+                    close_btn.setText(close_btn_text)
+                    close_btn.setEnabled(True)
+
+        def on_open_settings():
+            if is_first_launch and timer and timer.isActive():
                 timer.stop()
-                close_btn.setText(close_btn_text)
-                close_btn.setEnabled(True)
-
-        timer = QTimer(dialog)
-        timer.timeout.connect(update_timer)
-        timer.start(1000)
-
-        def on_close():
             dialog.accept()
+            self.page_stack.setCurrentIndex(4)
 
-        close_btn.clicked.connect(on_close)
+        choose_btn.clicked.connect(on_choose_folder)
+        settings_btn.clicked.connect(on_open_settings)
+        close_btn.clicked.connect(dialog.accept)
 
         dialog.exec()
 
@@ -893,8 +1131,13 @@ class MainWindow(QMainWindow):
             self.toggle_window()
 
     def quit_app(self):
+        if hasattr(self, 'local_api') and self.local_api:
+            self.local_api.stop()
+        if hasattr(self, 'bot_manager') and self.bot_manager:
+            self.bot_manager.stop_bot()
         self.download_manager.stop_all()
-        self.thread_pool.waitForDone()
+        # Ожидаем завершения потоков не более 2 секунд во избежание зависания процесса
+        self.thread_pool.waitForDone(2000)
         self.settings.sync()
         QApplication.quit()
 
@@ -903,10 +1146,9 @@ class MainWindow(QMainWindow):
 
         # 1. Данные получены -> Автоматически начинаем скачивать
         if status == DownloadTask.Status.PENDING:
-            if getattr(task, 'is_from_bot', False):
-                if hasattr(self, 'bot_manager'):
-                    self.bot_manager.send_message(f"🔄 Данные получены! Начинаю скачивание:\n{task.title}")
-                self.download_manager.start_or_retry_task(task)
+            if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
+                self.bot_manager.send_message(f"🔄 Данные получены! Начинаю скачивание:\n{task.title}")
+            self.download_manager.start_or_retry_task(task)
 
         # 2. Произошла ошибка -> Пишем в Телеграм
         elif status == DownloadTask.Status.ERROR:
@@ -920,7 +1162,177 @@ class MainWindow(QMainWindow):
             if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
                 self.bot_manager.send_message(f"✅ Успешно скачано на ПК:\n{task.title}")
             self._save_to_history(task)
+            self.update_disk_space()
+            if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
+                title = self.translator.translate('notification_download_finished', 'Загрузка завершена')
+                self.tray_icon.showMessage(
+                    title,
+                    task.title or "",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3500
+                )
 
         # 4. Остановлено вручную
         elif status == DownloadTask.Status.STOPPED:
             self._save_to_history(task)
+
+        self.apply_downloads_filter()
+
+    def on_filter_changed(self, button_id):
+        filter_modes = {0: 'all', 1: 'downloading', 2: 'completed', 3: 'error'}
+        self.current_filter_mode = filter_modes.get(button_id, 'all')
+        self.apply_downloads_filter()
+
+    def _populate_platform_filter(self):
+        curr_data = self.platform_filter_combo.currentData() if hasattr(self, 'platform_filter_combo') and self.platform_filter_combo.count() > 0 else 'all'
+        self.platform_filter_combo.blockSignals(True)
+        self.platform_filter_combo.clear()
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        logos_dir = os.path.join(base_dir, 'assets', 'logos')
+
+        def get_logo_icon(name):
+            p = os.path.join(logos_dir, name)
+            return QIcon(p) if os.path.exists(p) else None
+
+        platforms = [
+            ('all', self.translator.translate('platform_all', 'Все платформы'), FluentIcon.GLOBE),
+            ('youtube', 'YouTube', get_logo_icon('youtube.png')),
+            ('kinopub', 'KinoPub / Rezka', get_logo_icon('hdrezka.png')),
+            ('vk', 'VK Video', get_logo_icon('vk.png')),
+            ('tiktok', 'TikTok', get_logo_icon('tiktok.png')),
+            ('rutube', 'RuTube', get_logo_icon('rutube.png')),
+            ('instagram', 'Instagram', get_logo_icon('instagram.png')),
+            ('stream', 'Twitch / Kick', get_logo_icon('twitch.png')),
+            ('other', self.translator.translate('platform_other', 'Другие'), FluentIcon.MORE),
+        ]
+        target_idx = 0
+        for idx, (p_id, p_name, p_icon) in enumerate(platforms):
+            if p_icon:
+                self.platform_filter_combo.addItem(p_name, icon=p_icon, userData=p_id)
+            else:
+                self.platform_filter_combo.addItem(p_name, userData=p_id)
+            if p_id == curr_data:
+                target_idx = idx
+        self.platform_filter_combo.setCurrentIndex(target_idx)
+        self.platform_filter_combo.blockSignals(False)
+
+    def _get_task_platform_group(self, task):
+        u = (getattr(task, 'url', '') or '').lower()
+        p = (getattr(task, 'platform', '') or '').lower()
+        ref = (getattr(task, 'referer', '') or '').lower()
+        if 'youtube' in u or 'youtu.be' in u or 'youtube' in p:
+            return 'youtube'
+        if ('kinopub' in u or 'kino.pub' in u or 'rezka' in u or 'voidboost' in u or 
+            'kinopub' in ref or 'rezka' in ref or 'vi3000' in u or 'cub' in u or 'lampa' in u):
+            return 'kinopub'
+        if 'vk.com' in u or 'vkvideo' in u or 'vk' in p:
+            return 'vk'
+        if 'tiktok.com' in u or 'tiktok' in p:
+            return 'tiktok'
+        if 'rutube.ru' in u or 'rutube' in p:
+            return 'rutube'
+        if 'instagram.com' in u or 'instagram' in p:
+            return 'instagram'
+        if 'twitch.tv' in u or 'kick.com' in u or 'twitch' in p or 'kick' in p:
+            return 'stream'
+        return 'other'
+
+    def apply_downloads_filter(self):
+        filter_mode = getattr(self, 'current_filter_mode', 'all')
+        query = self.search_downloads_input.text().strip().lower() if hasattr(self, 'search_downloads_input') else ""
+        selected_platform = self.platform_filter_combo.currentData() if hasattr(self, 'platform_filter_combo') else 'all'
+        if not selected_platform:
+            selected_platform = 'all'
+
+        from .download_task import DownloadTask
+        for i in range(self.downloads_list.count()):
+            item = self.downloads_list.item(i)
+            widget = self.downloads_list.itemWidget(item)
+            if not widget:
+                continue
+            task = widget.task
+            matches_filter = True
+            if filter_mode == 'downloading':
+                matches_filter = task.status in (DownloadTask.Status.DOWNLOADING, DownloadTask.Status.PROCESSING, DownloadTask.Status.FETCHING_INFO)
+            elif filter_mode == 'completed':
+                matches_filter = task.status == DownloadTask.Status.COMPLETED
+            elif filter_mode == 'error':
+                matches_filter = task.status in (DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED)
+
+            matches_search = True
+            if query:
+                title = (task.title or "").lower()
+                url = (task.url or "").lower()
+                matches_search = (query in title) or (query in url)
+
+            matches_platform = True
+            if selected_platform != 'all':
+                matches_platform = (self._get_task_platform_group(task) == selected_platform)
+
+            item.setHidden(not (matches_filter and matches_search and matches_platform))
+
+    def show_quick_speed_menu(self):
+        menu = RoundMenu(parent=self)
+        speeds = [
+            (0, self.translator.translate('speed_unlimited', 'Без ограничений')),
+            (512 * 1024, "512 КБ/с"),
+            (1024 * 1024, "1 МБ/с"),
+            (3 * 1024 * 1024, "3 МБ/с"),
+            (5 * 1024 * 1024, "5 МБ/с"),
+            (10 * 1024 * 1024, "10 МБ/с"),
+            (20 * 1024 * 1024, "20 МБ/с"),
+            (50 * 1024 * 1024, "50 МБ/с"),
+            (100 * 1024 * 1024, "100 МБ/с"),
+        ]
+        curr_speed = self.settings.value('speed_limit', 0, type=int)
+        for s_bytes, s_label in speeds:
+            action = Action(s_label, self)
+            if s_bytes == curr_speed:
+                action.setIcon(FluentIcon.ACCEPT.icon())
+            action.triggered.connect(lambda checked, val=s_bytes: self.set_quick_speed_limit(val))
+            menu.addAction(action)
+
+        menu.addSeparator()
+        act_more = Action(self.translator.translate('settings', 'Настройки...'), self)
+        act_more.setIcon(FluentIcon.SETTING.icon())
+        act_more.triggered.connect(lambda: self.page_stack.setCurrentIndex(4))
+        menu.addAction(act_more)
+
+        menu.exec(self.btn_quick_speed.mapToGlobal(self.btn_quick_speed.rect().bottomLeft()))
+
+    def set_quick_speed_limit(self, speed_bytes):
+        self.settings.setValue('speed_limit', speed_bytes)
+        self.settings.sync()
+        self.update_quick_speed_display()
+        if hasattr(self, 'settings_page'):
+            self.settings_page.load_settings()
+
+    def update_quick_speed_display(self):
+        curr_speed = self.settings.value('speed_limit', 0, type=int)
+        if curr_speed <= 0:
+            text = self.translator.translate('speed_unlimited', 'Без ограничений')
+        elif curr_speed >= 1024 * 1024:
+            mb = curr_speed / (1024.0 * 1024.0)
+            text = f"{mb:.1f} МБ/с" if mb % 1 != 0 else f"{int(mb)} МБ/с"
+        else:
+            kb = curr_speed / 1024.0
+            text = f"{int(kb)} КБ/с"
+        self.btn_quick_speed.setText(text)
+        self.btn_quick_speed.setIcon(FluentIcon.SPEED_HIGH)
+
+    def update_disk_space(self):
+        save_path = self.settings.value('save_path', '')
+        if not save_path or not os.path.exists(save_path):
+            save_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        try:
+            total, used, free = shutil.disk_usage(save_path)
+            free_gb = free / (1024 ** 3)
+            drive = os.path.splitdrive(os.path.abspath(save_path))[0]
+            prefix = f"{drive} " if drive else ""
+            free_word = self.translator.translate('free_space_suffix', 'свободно')
+            self.btn_disk_space.setText(f"{prefix}{free_gb:.1f} GB {free_word}")
+            self.btn_disk_space.setIcon(FluentIcon.SAVE)
+            self.btn_disk_space.setToolTip(f"{self.translator.translate('open_save_folder', 'Открыть папку загрузок')}: {save_path}")
+        except Exception:
+            self.btn_disk_space.setText("")

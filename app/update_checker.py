@@ -54,6 +54,13 @@ class UpdateWorker(QRunnable):
 
     def run(self):
         try:
+            if getattr(sys, 'frozen', False):
+                self.signals.update_completed.emit(
+                    False,
+                    "Автоматическое обновление yt-dlp через pip недоступно в скомпилированной EXE версии. Скачайте свежий релиз программы."
+                )
+                return
+
             python_exe = sys.executable
             result = subprocess.run(
                 [python_exe, '-m', 'pip', 'install', '-U', 'yt-dlp[curl-cffi]'],
@@ -96,6 +103,12 @@ class UpdateChecker(QObject):
         self.thread_pool.start(worker)
 
     def _on_update_available(self, current_version, latest_version):
+        if getattr(self, '_silent', False):
+            skipped = self.settings.value('skipped_ytdlp_version', '')
+            if skipped == latest_version:
+                logger.info(f"Skipping yt-dlp update prompt for {latest_version} (user skipped)")
+                return
+
         self._current_version = current_version
         self._latest_version = latest_version
 

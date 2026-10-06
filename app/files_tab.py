@@ -2,19 +2,44 @@ import os
 import math
 import subprocess
 import traceback
+import hashlib
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QListWidget, QListWidgetItem, QPushButton, QLabel, QMessageBox,
                              QDialog, QLineEdit, QSlider)
-from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject
-from PyQt6.QtGui import QDesktopServices, QPixmap
+from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject, QThreadPool
+from PyQt6.QtGui import QDesktopServices, QPixmap, QImage
 from qfluentwidgets import (TransparentToolButton, FluentIcon, Slider,
                             PushButton, PrimaryPushButton, LineEdit, BodyLabel)
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
 
+class CutSignals(QObject):
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+
+class CutWorker(QRunnable):
+    def __init__(self, cmd, out_path):
+        super().__init__()
+        self.cmd = cmd
+        self.out_path = out_path
+        self.signals = CutSignals()
+
+    def run(self):
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            res = subprocess.run(self.cmd, capture_output=True, text=True, creationflags=flags)
+            if res.returncode == 0:
+                self.signals.finished.emit(self.out_path)
+            else:
+                self.signals.error.emit(res.stderr or "FFmpeg execution failed")
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+
 class ThumbSignals(QObject):
-    loaded = pyqtSignal(QPixmap)
+    loaded = pyqtSignal(QImage)
     error = pyqtSignal(str)
 
 
@@ -27,6 +52,18 @@ class LocalThumbWorker(QRunnable):
 
     def run(self):
         try:
+            cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'thumbs_cache')
+            os.makedirs(cache_dir, exist_ok=True)
+            mtime = os.path.getmtime(self.filepath) if os.path.exists(self.filepath) else 0
+            cache_key = hashlib.md5(f"{self.filepath}_{mtime}".encode('utf-8')).hexdigest() + ".jpg"
+            cache_file = os.path.join(cache_dir, cache_key)
+
+            if os.path.exists(cache_file):
+                cached_image = QImage(cache_file)
+                if not cached_image.isNull():
+                    self.signals.loaded.emit(cached_image)
+                    return
+
             cmd = [
                 self.ffmpeg_path,
                 '-y',
@@ -42,9 +79,14 @@ class LocalThumbWorker(QRunnable):
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=flags)
             image_data, _ = process.communicate()
             if image_data:
-                pixmap = QPixmap()
-                pixmap.loadFromData(image_data)
-                self.signals.loaded.emit(pixmap)
+                image = QImage()
+                image.loadFromData(image_data)
+                if not image.isNull():
+                    try:
+                        image.save(cache_file, "JPG")
+                    except Exception:
+                        pass
+                    self.signals.loaded.emit(image)
         except Exception as e:
             self.signals.error.emit(str(e))
 
@@ -136,7 +178,7 @@ class LocalFileItemWidget(QWidget):
         self.update_translations()
 
     def update_translations(self):
-        self.status_label.setText(self.translator.translate('status_downloaded', 'Скачано ✓'))
+        self.status_label.setText(self.translator.translate('status_downloaded', 'Скачано'))
         self.btn_open.setToolTip(self.translator.translate('play_video', 'Воспроизвести видео'))
         self.btn_cut.setToolTip(self.translator.translate('cut_video', 'Обрезать по таймингу'))
         self.btn_folder.setToolTip(self.translator.translate('show_in_folder', 'Показать в папке'))
@@ -159,7 +201,13 @@ class LocalFileItemWidget(QWidget):
         worker.signals.loaded.connect(self.set_thumbnail)
         self.parent_tab.parent_window.thread_pool.start(worker)
 
-    def set_thumbnail(self, pixmap):
+    def set_thumbnail(self, image_or_pixmap):
+        if isinstance(image_or_pixmap, QImage):
+            pixmap = QPixmap.fromImage(image_or_pixmap)
+        elif isinstance(image_or_pixmap, QPixmap):
+            pixmap = image_or_pixmap
+        else:
+            return
         if not pixmap.isNull():
             scaled = pixmap.scaled(self.thumbnail_label.size(),
                                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
@@ -221,7 +269,7 @@ class VideoCutterDialog(QDialog):
         layout.addWidget(self.slider)
 
         controls_layout = QHBoxLayout()
-        self.btn_play = PushButton("▶ Play / Pause")
+        self.btn_play = PushButton(FluentIcon.PLAY, "Play / Pause")
         self.btn_play.clicked.connect(self.toggle_play)
 
         self.lbl_time = BodyLabel("00:00:00 / 00:00:00")
@@ -246,7 +294,7 @@ class VideoCutterDialog(QDialog):
 
         times_layout = QHBoxLayout()
 
-        self.btn_set_start = PushButton("⬅ Начать отсюда")
+        self.btn_set_start = PushButton(FluentIcon.LEFT_ARROW, "Начать отсюда")
         self.btn_set_start.clicked.connect(self.set_start_time)
 
         self.start_input = LineEdit()
@@ -254,7 +302,7 @@ class VideoCutterDialog(QDialog):
         self.start_input.setFixedWidth(110)
         self.start_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.btn_set_end = PushButton("Закончить здесь ➡")
+        self.btn_set_end = PushButton(FluentIcon.RIGHT_ARROW, "Закончить здесь")
         self.btn_set_end.clicked.connect(self.set_end_time)
 
         self.end_input = LineEdit()
@@ -271,7 +319,7 @@ class VideoCutterDialog(QDialog):
 
         btn_layout = QHBoxLayout()
 
-        self.btn_cut = PrimaryPushButton("✂ Обрезать и сохранить")
+        self.btn_cut = PrimaryPushButton(FluentIcon.CUT, "Обрезать и сохранить")
         self.btn_cut.clicked.connect(self.process_cut)
 
         self.btn_cancel = PushButton("Отмена")
@@ -374,24 +422,30 @@ class VideoCutterDialog(QDialog):
             out_path
         ]
 
-        try:
-            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            self.btn_cut.setText("Режем...")
-            self.btn_cut.setEnabled(False)
+        self.btn_cut.setText("Режем (в фоне)...")
+        self.btn_cut.setEnabled(False)
+        self.btn_cancel.setEnabled(False)
+        self.start_input.setEnabled(False)
+        self.end_input.setEnabled(False)
 
-            subprocess.run(cmd, check=True, creationflags=flags)
-            QMessageBox.information(self, "Успех", "Видео обрезано и сохранено!\nФайл: _cut.mp4")
+        worker = CutWorker(cmd, out_path)
+        worker.signals.finished.connect(self._on_cut_finished)
+        worker.signals.error.connect(self._on_cut_error)
+        QThreadPool.globalInstance().start(worker)
 
-            self.media_player.setSource(QUrl())
-            self.accept()
-        except subprocess.CalledProcessError as e:
-            QMessageBox.critical(self, "Ошибка FFmpeg", f"Сбой кодека:\n{e.stderr}")
-            self.btn_cut.setText("✂ Обрезать и сохранить")
-            self.btn_cut.setEnabled(True)
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Непредвиденная ошибка:\n{e}")
-            self.btn_cut.setText("✂ Обрезать и сохранить")
-            self.btn_cut.setEnabled(True)
+    def _on_cut_finished(self, out_path):
+        QMessageBox.information(self, "Успех", f"Видео обрезано и сохранено!\nФайл:\n{os.path.basename(out_path)}")
+        self.media_player.setSource(QUrl())
+        self.accept()
+
+    def _on_cut_error(self, err):
+        QMessageBox.critical(self, "Ошибка FFmpeg", f"Сбой кодека:\n{err}")
+        self.btn_cut.setText("Обрезать и сохранить")
+        self.btn_cut.setIcon(FluentIcon.CUT)
+        self.btn_cut.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
+        self.start_input.setEnabled(True)
+        self.end_input.setEnabled(True)
 
     def closeEvent(self, event):
         self.media_player.setSource(QUrl())

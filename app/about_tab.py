@@ -3,6 +3,7 @@ import os
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QFrame
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont, QDesktopServices, QPixmap
+from qfluentwidgets import SingleDirectionScrollArea
 from .translation import Translator
 
 logger = logging.getLogger(__name__)
@@ -17,9 +18,21 @@ class AboutTab(QWidget):
         self.translator.language_changed.connect(self.update_translations)
 
     def initUI(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical, parent=self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.enableTransparentBackground()
+        self.scroll_area.setStyleSheet("SingleDirectionScrollArea, QScrollArea { border: none; background: transparent; }")
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background: transparent;")
+
+        layout = QVBoxLayout(self.scroll_content)
         layout.setSpacing(18)
-        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setContentsMargins(30, 30, 30, 30)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         top = QHBoxLayout()
@@ -83,13 +96,16 @@ class AboutTab(QWidget):
         layout.addLayout(buttons_layout)
         layout.addStretch(1)
 
+        self.scroll_area.setWidget(self.scroll_content)
+        outer_layout.addWidget(self.scroll_area)
+
         self.update_translations()
 
     def update_translations(self):
         self.lbl_title.setText(self.translator.translate('app_title'))
         self.lbl_desc.setText(self.translator.translate('description'))
         self.btn_support.setText(self.translator.translate('support_author', 'Поддержать автора'))
-        self.lbl_version.setText(self.translator.translate('about_version', 'Версия: 2.5'))
+        self.lbl_version.setText(self.translator.translate('about_version', 'Версия: 3.1'))
         self.lbl_author.setText(self.translator.translate('about_author', 'Автор: Magerko\nДополнено: MrPablo'))
 
 

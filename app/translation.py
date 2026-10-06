@@ -11,19 +11,26 @@ class Translator(QObject):
 
     def __init__(self, project_root=None, parent=None):
         super().__init__(parent)
-        self.project_root = project_root or os.path.dirname(os.path.abspath(__file__))
+        if not project_root:
+            here = os.path.dirname(os.path.abspath(__file__))
+            if os.path.exists(os.path.join(here, 'assets')):
+                self.project_root = here
+            else:
+                self.project_root = os.path.abspath(os.path.join(here, '..'))
+        else:
+            self.project_root = project_root
         self.current_language = 'ru'
         self.translations = {}
         self.load_translations()
 
-    def _read_json(self, path):
+    def _read_json(self, path, silent_if_missing=False):
         if os.path.exists(path):
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f'Ошибка чтения файла перевода: {path} - {e}')
-        else:
+        elif not silent_if_missing:
             logger.warning(f'Не найден файл перевода: {path}')
         return {}
 
@@ -34,7 +41,7 @@ class Translator(QObject):
         ]
         data = {}
         for p in candidates:
-            data = self._read_json(p)
+            data = self._read_json(p, silent_if_missing=True)
             if data:
                 break
         if not data:
@@ -42,9 +49,11 @@ class Translator(QObject):
                 os.path.join(self.project_root, 'assets', 'locales', 'en.json'),
                 os.path.join(self.project_root, 'assets', 'en.json'),
             ]:
-                data = self._read_json(fp)
+                data = self._read_json(fp, silent_if_missing=True)
                 if data:
                     break
+        if not data:
+            logger.warning(f'Не удалось загрузить ни один файл перевода для языка: {self.current_language}')
         self.translations = data or {}
 
     def translate(self, key: str, fallback: str = None) -> str:

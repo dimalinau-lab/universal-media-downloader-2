@@ -40,8 +40,21 @@ class HistoryManager:
             logger.error(f"Failed to save history: {e}")
 
     def add_entry(self, url, title, platform, status, file_path=None):
+        # Проверяем недавние записи с тем же URL для обновления статуса без дублирования
+        for existing in self._history[:30]:
+            if existing.get('url') == url:
+                existing['title'] = title or existing.get('title')
+                existing['platform'] = platform or existing.get('platform')
+                existing['status'] = status
+                if file_path:
+                    existing['file_path'] = file_path
+                existing['date'] = datetime.now().isoformat()
+                self._save()
+                return existing
+
+        max_id = max((e.get('id', 0) for e in self._history if isinstance(e.get('id'), int)), default=0)
         entry = {
-            'id': len(self._history) + 1,
+            'id': max_id + 1,
             'url': url,
             'title': title,
             'platform': platform,

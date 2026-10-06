@@ -19,11 +19,11 @@
         },
         {
             "optionDest": "icon_file",
-            "value": "D:/pton/PythonProject5/assets/icon.ico"
+            "value": "D:/pton/PythonProject9/assets/icon.ico"
         },
         {
             "optionDest": "name",
-            "value": "Windows3.0.UMD"
+            "value": "Windows3.1.UMD"
         },
         {
             "optionDest": "clean_build",
