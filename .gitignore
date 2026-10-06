@@ -39,10 +39,16 @@ logs/
 *.log
 app.log
 
-# Output / Build
+# Output / Build & Installer
 output/
+build/
+dist/
 *.exe
 *.spec
+*.iss
+build_config.json
+build_installer.bat
+build_*.bat
 
 # Data (user-specific)
 data/
@@ -55,9 +61,14 @@ desktop.ini
 nul
 cleanup_nul.bat
 
-# Test files
+# Test & Temporary files
 sample.txt
 *.png.bak
+*.bak
+*_backup.*
+*backup*
+scratch/
+uploaded/
 # Ignore PNGs except screenshots folder
 /*.PNG
 /*.png
@@ -97,5 +108,4 @@ coverage.xml
 .env.local
 # Папка с профилем браузера (содержит личные куки и данные входа)
 browser_profile/
-build_config.json
 browser_profile/get_site_code.py
