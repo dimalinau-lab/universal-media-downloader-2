@@ -1,14 +1,128 @@
 import os
 import logging
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QMenu,
-                             QMessageBox, QApplication, QToolTip)
+                             QMessageBox, QApplication, QToolTip, QDialog, QGridLayout)
 from PyQt6.QtGui import QPixmap, QAction, QIcon, QKeySequence, QCursor
 from PyQt6.QtCore import QSize, Qt, pyqtSignal, QRect, QObject, QEvent
-from qfluentwidgets import TransparentToolButton, FluentIcon, ProgressBar, StrongBodyLabel, BodyLabel, CaptionLabel
+from qfluentwidgets import (TransparentToolButton, FluentIcon, ProgressBar,
+                            StrongBodyLabel, BodyLabel, CaptionLabel,
+                            PushButton, PrimaryPushButton, LineEdit)
 from .download_task import DownloadTask
 
 
 logger = logging.getLogger(__name__)
+
+
+class TimeRangeDialog(QDialog):
+    def __init__(self, task: DownloadTask, translator, parent=None):
+        super().__init__(parent)
+        self.task = task
+        self.translator = translator
+        self.setWindowTitle(self.translator.translate('time_range_title', "Указать отрезок времени для скачивания"))
+        self.setMinimumWidth(430)
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(14)
+
+        title = StrongBodyLabel(self.task.title)
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        desc = CaptionLabel(self.translator.translate('time_range_desc', "Будет скачан только выбранный фрагмент (без загрузки всего видео):"))
+        desc.setStyleSheet("color: #888888;")
+        layout.addWidget(desc)
+
+        duration = self.task.info.get('duration') if isinstance(self.task.info, dict) else None
+        if duration:
+            dur_m, dur_s = divmod(int(duration), 60)
+            dur_h, dur_m = divmod(dur_m, 60)
+            dur_str = f"{dur_h:02d}:{dur_m:02d}:{dur_s:02d}"
+            dur_lbl = CaptionLabel(f"Длительность оригинала: {dur_str}")
+            dur_lbl.setStyleSheet("color: #29b6f6; font-weight: bold;")
+            layout.addWidget(dur_lbl)
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+
+        lbl_start = BodyLabel(self.translator.translate('time_range_start', "Начало (ЧЧ:ММ:СС):"))
+        self.input_start = LineEdit()
+        self.input_start.setPlaceholderText("00:00:00")
+
+        lbl_end = BodyLabel(self.translator.translate('time_range_end', "Конец (ЧЧ:ММ:СС):"))
+        self.input_end = LineEdit()
+        self.input_end.setPlaceholderText("00:00:00")
+
+        if self.task.time_range:
+            s_sec, e_sec = self.task.time_range
+            self.input_start.setText(self._sec_to_str(s_sec))
+            self.input_end.setText(self._sec_to_str(e_sec))
+        elif duration:
+            self.input_start.setText("00:00:00")
+            dur_m, dur_s = divmod(int(duration), 60)
+            dur_h, dur_m = divmod(dur_m, 60)
+            self.input_end.setText(f"{dur_h:02d}:{dur_m:02d}:{dur_s:02d}")
+        else:
+            self.input_start.setText("00:00:00")
+            self.input_end.setText("00:05:00")
+
+        grid.addWidget(lbl_start, 0, 0)
+        grid.addWidget(self.input_start, 0, 1)
+        grid.addWidget(lbl_end, 1, 0)
+        grid.addWidget(self.input_end, 1, 1)
+        layout.addLayout(grid)
+
+        btn_box = QHBoxLayout()
+        btn_reset = PushButton(self.translator.translate('time_range_reset', "Сбросить"))
+        btn_reset.clicked.connect(self.on_reset)
+
+        btn_cancel = PushButton(self.translator.translate('cancel_action', "Отмена"))
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_apply = PrimaryPushButton(self.translator.translate('time_range_apply', "Применить"))
+        btn_apply.clicked.connect(self.on_apply)
+
+        btn_box.addWidget(btn_reset)
+        btn_box.addStretch()
+        btn_box.addWidget(btn_cancel)
+        btn_box.addWidget(btn_apply)
+        layout.addLayout(btn_box)
+
+    @staticmethod
+    def _sec_to_str(sec):
+        m, s = divmod(int(sec), 60)
+        h, m = divmod(m, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    @staticmethod
+    def _parse_time(t_str):
+        parts = t_str.strip().split(':')
+        if len(parts) == 3:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        elif len(parts) == 2:
+            return float(parts[0]) * 60 + float(parts[1])
+        elif len(parts) == 1 and parts[0]:
+            return float(parts[0])
+        return 0.0
+
+    def on_apply(self):
+        try:
+            start_s = self._parse_time(self.input_start.text())
+            end_s = self._parse_time(self.input_end.text())
+            if end_s <= start_s:
+                QMessageBox.warning(self, "Ошибка", "Время окончания должно быть больше времени начала.")
+                return
+            label = f"{self._sec_to_str(start_s)} - {self._sec_to_str(end_s)}"
+            self.task.set_time_range(start_s, end_s, label)
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Неверный формат времени: {e}")
+
+    def on_reset(self):
+        self.task.clear_time_range()
+        self.accept()
 
 
 class UrlCopyFilter(QObject):
@@ -111,9 +225,18 @@ class DownloadItemWidget(QWidget):
         )
         self.badge_quality.hide()
 
+        self.badge_timerange = CaptionLabel()
+        self.badge_timerange.setObjectName('BadgeTimeRange')
+        self.badge_timerange.setStyleSheet(
+            "background-color: rgba(255, 152, 0, 0.2); color: #ffa726; "
+            "padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;"
+        )
+        self.badge_timerange.hide()
+
         url_row.addWidget(self.url_label)
         url_row.addWidget(self.btn_copy_url)
         url_row.addWidget(self.badge_quality)
+        url_row.addWidget(self.badge_timerange)
         url_row.addStretch()
 
         self.progress_bar = ProgressBar()
@@ -157,6 +280,11 @@ class DownloadItemWidget(QWidget):
         self.download_button.setToolTip("Скачать файл / Возобновить")
         self.download_button.clicked.connect(self.on_start_clicked)
 
+        self.timerange_button = TransparentToolButton(FluentIcon.HISTORY)
+        self.timerange_button.setFixedSize(34, 34)
+        self.timerange_button.setToolTip(self.translator.translate('time_range', 'Скачать отрезок / таймкоды'))
+        self.timerange_button.clicked.connect(self.open_time_range_dialog)
+
         self.stop_button = TransparentToolButton(FluentIcon.PAUSE)
         self.stop_button.setFixedSize(34, 34)
         self.stop_button.setToolTip("Завершить стрим и СОБРАТЬ видео")
@@ -174,6 +302,7 @@ class DownloadItemWidget(QWidget):
 
         buttons_layout.addWidget(self.play_button)
         buttons_layout.addWidget(self.download_button)
+        buttons_layout.addWidget(self.timerange_button)
         buttons_layout.addWidget(self.stop_button)
         buttons_layout.addWidget(self.folder_button)
         buttons_layout.addWidget(self.remove_button)
@@ -221,12 +350,14 @@ class DownloadItemWidget(QWidget):
         menu = QMenu(self)
         act_open_file = QAction(self.translator.translate('open_file', 'Смотреть видео'), self)
         act_start = QAction("Скачать / Возобновить", self)
+        act_timerange = QAction(self.translator.translate('time_range', 'Скачать отрезок (таймкоды)...'), self)
         act_open = QAction(self.translator.translate('open_save_folder', 'Открыть папку'), self)
         act_copy = QAction(self.translator.translate('copy_link', 'Копировать ссылку'), self)
         act_remove = QAction(self.translator.translate('remove_from_list', 'Убрать из списка'), self)
 
         act_open_file.triggered.connect(self.open_file_requested.emit)
         act_start.triggered.connect(self.on_start_clicked)
+        act_timerange.triggered.connect(self.open_time_range_dialog)
         act_open.triggered.connect(self.open_folder_requested.emit)
         act_copy.triggered.connect(self.copy_full_url)
         act_remove.triggered.connect(self.remove_requested.emit)
@@ -235,6 +366,7 @@ class DownloadItemWidget(QWidget):
             DownloadTask.Status.PENDING, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED,
             DownloadTask.Status.COMPLETED)
         act_start.setEnabled(is_startable)
+        act_timerange.setEnabled(is_startable)
 
         is_watchable = self.task.status in (DownloadTask.Status.COMPLETED, DownloadTask.Status.STOPPED)
         act_open_file.setEnabled(is_watchable)
@@ -242,6 +374,7 @@ class DownloadItemWidget(QWidget):
 
         menu.addAction(act_open_file)
         menu.addAction(act_start)
+        menu.addAction(act_timerange)
         menu.addAction(act_open)
         menu.addAction(act_copy)
         menu.addSeparator()
@@ -254,6 +387,18 @@ class DownloadItemWidget(QWidget):
         self.task.progress_updated.connect(self.on_progress_update)
         self.task.thumbnail_loaded.connect(self.set_thumbnail)
         self.task.size_updated.connect(self.on_size_update)
+        self.task.time_range_updated.connect(self.on_time_range_update)
+
+    def on_time_range_update(self, text):
+        if text:
+            self.badge_timerange.setText(f"⏱ {text}")
+            self.badge_timerange.show()
+        else:
+            self.badge_timerange.hide()
+
+    def open_time_range_dialog(self):
+        dialog = TimeRangeDialog(self.task, self.translator, self)
+        dialog.exec()
 
     def on_size_update(self, size_str):
         self.size_label.setText(size_str)
@@ -286,6 +431,13 @@ class DownloadItemWidget(QWidget):
         else:
             self.badge_quality.hide()
 
+        tr_text = getattr(self.task, 'time_range_str', '')
+        if tr_text:
+            self.badge_timerange.setText(f"⏱ {tr_text}")
+            self.badge_timerange.show()
+        else:
+            self.badge_timerange.hide()
+
         status = self.task.status
         self.progress_bar.setVisible(
             status == DownloadTask.Status.DOWNLOADING or status == DownloadTask.Status.PROCESSING)
@@ -299,6 +451,7 @@ class DownloadItemWidget(QWidget):
         self.stop_button.setVisible(is_active)
         self.play_button.setVisible(is_completed or is_stopped)
         self.download_button.setVisible(is_pending_or_err or is_stopped or is_completed)
+        self.timerange_button.setVisible(is_pending_or_err or is_stopped or is_completed)
         self.folder_button.setVisible(True)
 
         status_text_map = {

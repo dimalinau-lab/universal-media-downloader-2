@@ -245,6 +245,35 @@ class SettingsTab(QWidget):
         portable_layout.addWidget(self.portable_checkbox)
         v_layout.addLayout(portable_layout)
 
+        # Мониторинг буфера обмена
+        clipboard_layout = QHBoxLayout()
+        self.clipboard_label = BodyLabel()
+        self.clipboard_label.setProperty("text_key", "clipboard_monitor")
+        self.clipboard_label.setText("Отслеживать ссылки в буфере обмена")
+        self.clipboard_checkbox = SwitchButton()
+        self.clipboard_checkbox.setOnText("Вкл")
+        self.clipboard_checkbox.setOffText("Выкл")
+        clipboard_layout.addWidget(self.clipboard_label)
+        clipboard_layout.addStretch()
+        clipboard_layout.addWidget(self.clipboard_checkbox)
+        v_layout.addLayout(clipboard_layout)
+
+        # Действие по завершению всех загрузок
+        completion_layout = QHBoxLayout()
+        self.completion_label = BodyLabel()
+        self.completion_label.setProperty("text_key", "on_completion_action")
+        self.completion_label.setText("По завершению всех загрузок")
+        self.completion_combo = ComboBox()
+        self.completion_combo.setFixedWidth(180)
+        self.completion_combo.addItem("Ничего не делать", userData="none")
+        self.completion_combo.addItem("Выключить ПК", userData="shutdown")
+        self.completion_combo.addItem("Спящий режим", userData="sleep")
+        self.completion_combo.addItem("Закрыть программу", userData="exit_app")
+        completion_layout.addWidget(self.completion_label)
+        completion_layout.addStretch()
+        completion_layout.addWidget(self.completion_combo)
+        v_layout.addLayout(completion_layout)
+
         layout.addWidget(group_box)
 
     def create_download_settings(self, layout):
@@ -416,6 +445,63 @@ class SettingsTab(QWidget):
         frag_layout.addWidget(self.frag_spin)
         v_layout.addLayout(frag_layout)
 
+        # Формат извлечения аудио
+        audio_fmt_layout = QHBoxLayout()
+        self.audio_fmt_label = BodyLabel()
+        self.audio_fmt_label.setProperty("text_key", "audio_format")
+        self.audio_fmt_label.setText("Формат аудио (при извлечении)")
+        self.audio_fmt_combo = ComboBox()
+        self.audio_fmt_combo.setFixedWidth(170)
+        for fmt_name in ["MP3", "M4A", "FLAC", "Opus", "WAV"]:
+            self.audio_fmt_combo.addItem(fmt_name, userData=fmt_name.lower())
+        audio_fmt_layout.addWidget(self.audio_fmt_label)
+        audio_fmt_layout.addStretch()
+        audio_fmt_layout.addWidget(self.audio_fmt_combo)
+        v_layout.addLayout(audio_fmt_layout)
+
+        # Качество аудио / битрейт
+        audio_bitrate_layout = QHBoxLayout()
+        self.audio_bitrate_label = BodyLabel()
+        self.audio_bitrate_label.setProperty("text_key", "audio_bitrate")
+        self.audio_bitrate_label.setText("Качество / битрейт аудио")
+        self.audio_bitrate_combo = ComboBox()
+        self.audio_bitrate_combo.setFixedWidth(170)
+        self.audio_bitrate_combo.addItem("320 kbps (Высокое)", userData="320")
+        self.audio_bitrate_combo.addItem("256 kbps", userData="256")
+        self.audio_bitrate_combo.addItem("192 kbps (Стандарт)", userData="192")
+        self.audio_bitrate_combo.addItem("128 kbps (Эконом)", userData="128")
+        self.audio_bitrate_combo.addItem("VBR / Без сжатия", userData="VBR/Best")
+        audio_bitrate_layout.addWidget(self.audio_bitrate_label)
+        audio_bitrate_layout.addStretch()
+        audio_bitrate_layout.addWidget(self.audio_bitrate_combo)
+        v_layout.addLayout(audio_bitrate_layout)
+
+        # Вшивание метаданных и тегов (ID3)
+        meta_layout = QHBoxLayout()
+        self.meta_lbl = BodyLabel()
+        self.meta_lbl.setProperty("text_key", "embed_metadata")
+        self.meta_lbl.setText("Вшивать метаданные и ID3-теги")
+        self.embed_metadata_checkbox = SwitchButton()
+        self.embed_metadata_checkbox.setOnText("Вкл")
+        self.embed_metadata_checkbox.setOffText("Выкл")
+        meta_layout.addWidget(self.meta_lbl)
+        meta_layout.addStretch()
+        meta_layout.addWidget(self.embed_metadata_checkbox)
+        v_layout.addLayout(meta_layout)
+
+        # Вшивание обложки в аудиофайлы
+        thumb_layout = QHBoxLayout()
+        self.thumb_lbl = BodyLabel()
+        self.thumb_lbl.setProperty("text_key", "embed_thumbnail")
+        self.thumb_lbl.setText("Вшивать обложку трека (Cover Art)")
+        self.embed_thumbnail_checkbox = SwitchButton()
+        self.embed_thumbnail_checkbox.setOnText("Вкл")
+        self.embed_thumbnail_checkbox.setOffText("Выкл")
+        thumb_layout.addWidget(self.thumb_lbl)
+        thumb_layout.addStretch()
+        thumb_layout.addWidget(self.embed_thumbnail_checkbox)
+        v_layout.addLayout(thumb_layout)
+
         layout.addWidget(group_box)
 
 
@@ -503,6 +589,12 @@ class SettingsTab(QWidget):
         self.cookies_btn.clicked.connect(self.on_select_cookies_file)
         self.cookie_browser_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.tray_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.clipboard_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.completion_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.audio_fmt_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.audio_bitrate_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.embed_metadata_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.embed_thumbnail_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.speed_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.custom_speed_spin.valueChanged.connect(self.on_setting_changed)
         self.custom_speed_unit.currentIndexChanged.connect(self.on_setting_changed)
@@ -524,6 +616,12 @@ class SettingsTab(QWidget):
             self.cookies_btn.clicked,
             self.cookie_browser_combo.currentIndexChanged,
             self.tray_checkbox.checkedChanged,
+            self.clipboard_checkbox.checkedChanged,
+            self.completion_combo.currentIndexChanged,
+            self.audio_fmt_combo.currentIndexChanged,
+            self.audio_bitrate_combo.currentIndexChanged,
+            self.embed_metadata_checkbox.checkedChanged,
+            self.embed_thumbnail_checkbox.checkedChanged,
             self.speed_combo.currentIndexChanged,
             self.custom_speed_spin.valueChanged,
             self.custom_speed_unit.currentIndexChanged,
@@ -621,6 +719,14 @@ class SettingsTab(QWidget):
         self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
         self.tray_checkbox.setChecked(self.settings.value('close_to_tray', True, type=bool))
+        self.clipboard_checkbox.setChecked(self.settings.value('clipboard_monitor', False, type=bool))
+        self.set_combo_by_data(self.completion_combo, self.settings.value('on_completion_action', 'none'))
+
+        self.set_combo_by_data(self.audio_fmt_combo, self.settings.value('audio_format', 'mp3'))
+        self.set_combo_by_data(self.audio_bitrate_combo, str(self.settings.value('audio_bitrate', '192')))
+        self.embed_metadata_checkbox.setChecked(self.settings.value('embed_metadata', True, type=bool))
+        self.embed_thumbnail_checkbox.setChecked(self.settings.value('embed_thumbnail', True, type=bool))
+
         cookie_source_type = self.settings.value('cookie_source_type', 'browser')
         self.rb_cookie_file.setChecked(cookie_source_type == 'file')
         self.rb_cookie_browser.setChecked(cookie_source_type != 'file')
@@ -686,6 +792,12 @@ class SettingsTab(QWidget):
         self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
         self.settings.setValue('use_cookies', self.cookies_checkbox.isChecked())
         self.settings.setValue('close_to_tray', self.tray_checkbox.isChecked())
+        self.settings.setValue('clipboard_monitor', self.clipboard_checkbox.isChecked())
+        self.settings.setValue('on_completion_action', self.completion_combo.currentData())
+        self.settings.setValue('audio_format', self.audio_fmt_combo.currentData())
+        self.settings.setValue('audio_bitrate', self.audio_bitrate_combo.currentData())
+        self.settings.setValue('embed_metadata', self.embed_metadata_checkbox.isChecked())
+        self.settings.setValue('embed_thumbnail', self.embed_thumbnail_checkbox.isChecked())
 
         selected_speed_data = self.speed_combo.currentData()
         if selected_speed_data == -1:

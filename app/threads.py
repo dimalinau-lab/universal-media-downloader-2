@@ -127,6 +127,14 @@ class InfoWorker(QRunnable):
 
     def run(self):
         try:
+            info_referer = 'https://vi3000.top/'
+            if any(d in self.url for d in ('solodcdn', 'kodik')):
+                info_referer = 'https://kodikplayer.com/'
+            elif any(d in self.url for d in ('aniboom', 'ya-ligh', 'boom-img')):
+                info_referer = 'https://aniboom.one/'
+            elif any(d in self.url for d in ('kinopub', 'rezka', 'voidboost')):
+                info_referer = 'https://kinopub.me/'
+
             ydl_opts = {
                 'quiet': True,
                 'skip_download': True,
@@ -136,8 +144,8 @@ class InfoWorker(QRunnable):
                 'remote_components': {'ejs:github': True},
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': 'https://vi3000.top/',
-                    'Origin': 'https://vi3000.top'
+                    'Referer': info_referer,
+                    'Origin': info_referer.rstrip('/')
                 }
             }
             use_cookies = self.settings.value('use_cookies', False, type=bool)
@@ -158,6 +166,8 @@ class InfoWorker(QRunnable):
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(self.url, download=False)
+                    if not info:
+                        raise Exception("yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)")
                     self.signals.info_fetched.emit(info)
             except Exception as e:
                 err_str = str(e).lower()
@@ -167,6 +177,8 @@ class InfoWorker(QRunnable):
                     ydl_opts.pop('cookiefile', None)
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(self.url, download=False)
+                        if not info:
+                            raise Exception("yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)")
                         self.signals.info_fetched.emit(info)
                 else:
                     raise
@@ -258,10 +270,17 @@ class DownloadWorker(QRunnable):
             eta = d.get('_eta_str')
             eta_part = f" • ост. {eta}" if eta else ""
 
+            frag_index = d.get('fragment_index')
+            frag_count = d.get('fragment_count')
+            frag_info = f" [{frag_index}/{frag_count}]" if frag_index and frag_count else ""
+
             if total > 0:
                 self.task.set_file_size(total)
                 percent = int((downloaded / total) * 90)
-                self.task.update_progress(percent, f"Скачивание: {percent}% • {speed}{eta_part}")
+                self.task.update_progress(percent, f"Скачивание: {percent}%{frag_info} • {speed}{eta_part}")
+            elif frag_index and frag_count:
+                percent = int((frag_index / frag_count) * 90)
+                self.task.update_progress(percent, f"Скачивание: {percent}% (фрагмент {frag_index}/{frag_count}) • {speed}{eta_part}")
             else:
                 mb = downloaded / (1024 * 1024)
                 self.task.update_progress(0, f"Скачивание: {mb:.1f} MB • {speed}{eta_part}")
@@ -270,6 +289,17 @@ class DownloadWorker(QRunnable):
             fn = d.get('filename')
             if fn:
                 self._last_downloaded_filename = fn
+            info_dict = d.get('info_dict', {})
+            real_t = info_dict.get('title')
+            custom_t = getattr(self.task, 'custom_title', None)
+            if not custom_t and real_t and (not getattr(self.task, 'title', None) or self.task.title in ("...", "")):
+                if real_t in ('720', '1080', '480', '360', 'master', 'manifest', 'index') or (isinstance(real_t, str) and real_t.isdigit()):
+                    if any(d_url in self.task.url for d_url in ('solodcdn', 'kodik')):
+                        real_t = f"Kodik Video ({real_t}p)" if real_t.isdigit() else "Kodik Video"
+                    elif any(d_url in self.task.url for d_url in ('ya-ligh', 'aniboom')):
+                        real_t = "AniBoom Video"
+                self.task.title = real_t
+                self.task.info_updated.emit()
             print(f"[ОТЛАДКА] [VOD] Поток скачан: {fn}. Ждем склейку...")
 
     def simple_pp_hook(self, d):
@@ -284,6 +314,16 @@ class DownloadWorker(QRunnable):
             pp_file = info_dict.get('filepath') or info_dict.get('_filename')
             if pp_file:
                 self._last_downloaded_filename = pp_file
+            real_t = info_dict.get('title')
+            custom_t = getattr(self.task, 'custom_title', None)
+            if not custom_t and real_t and (not getattr(self.task, 'title', None) or self.task.title in ("...", "")):
+                if real_t in ('720', '1080', '480', '360', 'master', 'manifest', 'index') or (isinstance(real_t, str) and real_t.isdigit()):
+                    if any(d_url in self.task.url for d_url in ('solodcdn', 'kodik')):
+                        real_t = f"Kodik Video ({real_t}p)" if real_t.isdigit() else "Kodik Video"
+                    elif any(d_url in self.task.url for d_url in ('ya-ligh', 'aniboom')):
+                        real_t = "AniBoom Video"
+                self.task.title = real_t
+                self.task.info_updated.emit()
             self.task.update_progress(99, "Сохранение...")
 
     def _monitor_progress_twitch(self, target_file):
@@ -373,6 +413,33 @@ class DownloadWorker(QRunnable):
         elif 'kinopub' in u or 'kino.pub' in u or 'rezka' in u or 'voidboost' in u:
             platform_key = 'quality_kinopub'
 
+        task_override = getattr(self.task, 'quality_override', None)
+        task_audio_only = getattr(self.task, 'audio_only', False)
+
+        if task_audio_only or task_override in ('audio_only', 'audio_mp3'):
+            fmt = 'bestaudio/best'
+            merge_fmt = None
+            audio_codec = 'mp3' if task_override == 'audio_mp3' else str(self.settings.value('audio_format', 'mp3')).lower()
+            audio_quality = '320' if task_override == 'audio_mp3' else str(self.settings.value('audio_bitrate', '192'))
+            if audio_quality == 'VBR/Best':
+                audio_quality = '0'
+            pps = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': audio_codec,
+                'preferredquality': audio_quality,
+            }]
+            if self.settings.value('embed_metadata', True, type=bool):
+                pps.append({'key': 'FFmpegMetadata', 'add_metadata': True})
+            if self.settings.value('embed_thumbnail', True, type=bool):
+                pps.append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
+            return fmt, merge_fmt, pps
+        elif task_override == '1080p':
+            return 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best', 'mp4', []
+        elif task_override == '720p':
+            return 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best', 'mp4', []
+        elif task_override == 'best':
+            return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best', 'mp4', []
+
         fmt = self.settings.value(platform_key, '') if platform_key else ''
         pps = []
         merge_fmt = 'mp4'
@@ -381,11 +448,19 @@ class DownloadWorker(QRunnable):
             fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
         elif fmt == 'bestaudio/best':
             merge_fmt = None
+            audio_codec = str(self.settings.value('audio_format', 'mp3')).lower()
+            audio_quality = str(self.settings.value('audio_bitrate', '192'))
+            if audio_quality == 'VBR/Best':
+                audio_quality = '0'
             pps.append({
                 'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
+                'preferredcodec': audio_codec,
+                'preferredquality': audio_quality,
             })
+            if self.settings.value('embed_metadata', True, type=bool):
+                pps.append({'key': 'FFmpegMetadata', 'add_metadata': True})
+            if self.settings.value('embed_thumbnail', True, type=bool):
+                pps.append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
         elif fmt == 'video_only_stripped':
             fmt = 'bestvideo/best'
         elif fmt == 'worst':
@@ -400,11 +475,26 @@ class DownloadWorker(QRunnable):
         print(f"[ОТЛАДКА] [VOD] Папка сохранения: {save_path}")
         self._start_time = time.time()
 
-        base_title = getattr(self.task, 'custom_title', self.task.title)
-        safe_title = re.sub(r'[\\/*?:"<>|]', "", base_title).strip()
+        custom_t = getattr(self.task, 'custom_title', None)
+        task_t = getattr(self.task, 'title', None)
+        base_title = (custom_t.strip() if custom_t else "") or (task_t.strip() if task_t and task_t not in ("...", "") else "")
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", base_title).strip() if base_title else ""
         safe_title = safe_title[:150]
 
-        out_template = os.path.join(save_path, f'{safe_title}.%(ext)s')
+        time_range = getattr(self.task, 'time_range', None)
+        range_suffix = ""
+        if time_range:
+            s_sec, e_sec = time_range
+            s_str = f"{int(s_sec//3600):02d}-{int((s_sec%3600)//60):02d}-{int(s_sec%60):02d}" if s_sec >= 3600 else f"{int(s_sec//60):02d}-{int(s_sec%60):02d}"
+            e_str = f"{int(e_sec//3600):02d}-{int((e_sec%3600)//60):02d}-{int(e_sec%60):02d}" if e_sec >= 3600 else f"{int(e_sec//60):02d}-{int(e_sec%60):02d}"
+            range_suffix = f"_[{s_str}_{e_str}]"
+
+        if safe_title:
+            out_filename = f"{safe_title}{range_suffix}.%(ext)s"
+        else:
+            out_filename = f"%(title)s{range_suffix}.%(ext)s"
+
+        out_template = os.path.join(save_path, out_filename)
 
         referer_url = getattr(self.task, 'referer', None)
         if not referer_url:
@@ -412,6 +502,10 @@ class DownloadWorker(QRunnable):
                 referer_url = 'https://vi3000.top/'
             elif 'voidboost' in self.task.url:
                 referer_url = 'https://kinopub.me/'
+            elif any(d in self.task.url for d in ('solodcdn', 'kodik')):
+                referer_url = 'https://kodikplayer.com/'
+            elif any(d in self.task.url for d in ('aniboom', 'ya-ligh', 'boom-img')):
+                referer_url = 'https://aniboom.one/'
             else:
                 referer_url = 'https://kinopub.me/'
 
@@ -507,6 +601,13 @@ class DownloadWorker(QRunnable):
         if not ydl_opts['postprocessors']:
             del ydl_opts['postprocessors']
 
+        if time_range:
+            start_s, end_s = time_range
+            ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func([], [(float(start_s), float(end_s))])
+            ydl_opts['force_keyframes_at_cuts'] = True
+
+        if fmt == 'bestaudio/best' and self.settings.value('embed_thumbnail', True, type=bool):
+            ydl_opts['writethumbnail'] = True
 
         # === ЗАПУСК СКАЧИВАНИЯ ===
         try:
@@ -529,6 +630,20 @@ class DownloadWorker(QRunnable):
                         raise yt_dlp.utils.DownloadCancelled("Stopped")
                     ydl.download([self.task.url])
                     print("[ОТЛАДКА] [VOD] yt-dlp (без куки): Завершено.")
+            elif 'subtitle' in err_str and ('writesubtitles' in ydl_opts or 'writeautomaticsub' in ydl_opts):
+                print(f"[ОТЛАДКА] Сбой скачивания субтитров ({e}), повторяем скачивание видео без субтитров...")
+                ydl_opts.pop('writesubtitles', None)
+                ydl_opts.pop('writeautomaticsub', None)
+                ydl_opts.pop('subtitleslangs', None)
+                if 'postprocessors' in ydl_opts:
+                    ydl_opts['postprocessors'] = [p for p in ydl_opts['postprocessors'] if p.get('key') != 'FFmpegEmbedSubtitle']
+                    if not ydl_opts['postprocessors']:
+                        del ydl_opts['postprocessors']
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    if self.task.is_stop_requested() or self._cancel_requested:
+                        raise yt_dlp.utils.DownloadCancelled("Stopped")
+                    ydl.download([self.task.url])
+                    print("[ОТЛАДКА] [VOD] yt-dlp (без субтитров): Завершено.")
             else:
                 raise
         time.sleep(1.5)
@@ -549,7 +664,7 @@ class DownloadWorker(QRunnable):
                         break
 
         # 2. Поиск по целевому названию в папке сохранения
-        if not final_file:
+        if not final_file and safe_title:
             for f in os.listdir(save_path):
                 if f.startswith(safe_title) and f.endswith(valid_exts) and not f.endswith('.part'):
                     final_file = os.path.join(save_path, f)
@@ -565,6 +680,12 @@ class DownloadWorker(QRunnable):
                     final_file = latest_file
 
         if final_file and os.path.exists(final_file) and os.path.getsize(final_file) > 1024:
+            base_fname = os.path.splitext(os.path.basename(final_file))[0]
+            if getattr(self.task, 'custom_title', None):
+                self.task.title = self.task.custom_title
+            elif not getattr(self.task, 'title', None) or self.task.title in ("...", ""):
+                self.task.title = base_fname
+            self.task.info_updated.emit()
             print(f"[ОТЛАДКА] [VOD] Найден финальный файл: {final_file}")
             self.task.update_progress(100, "Скачано")
             self.task.set_completed(final_file)

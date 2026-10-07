@@ -1,12 +1,14 @@
 import sys
 import os
+import re
+import datetime
 import subprocess
 import logging
 import json
 import shutil
 from qfluentwidgets import (LineEdit, TransparentToolButton, PrimaryPushButton,
                             PushButton, SubtitleLabel, BodyLabel, CaptionLabel,
-                            FluentIcon, setTheme, Theme, SearchLineEdit,
+                            StrongBodyLabel, FluentIcon, setTheme, Theme, SearchLineEdit,
                             TransparentPushButton, RoundMenu, Action, ComboBox, IconWidget)
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QProgressBar, QLabel,
@@ -30,7 +32,64 @@ from .files_tab import FilesTab
 from .telegram_bot import TelegramBotManager
 from .telegram_tab import TelegramTab
 from .local_api import LocalApiManager
+from .batch_dialog import BatchAddDialog
+from .scheduler_dialog import SchedulerDialog
 logger = logging.getLogger(__name__)
+
+
+class CountdownShutdownDialog(QDialog):
+    def __init__(self, action: str, translator, parent=None):
+        super().__init__(parent)
+        self.action = action
+        self.translator = translator
+        self.remaining_seconds = 30
+        self.cancelled = False
+        self.setWindowTitle(
+            "Автовыключение ПК" if action == "shutdown" else ("Переход в спящий режим" if action == "sleep" else "Завершение работы")
+        )
+        self.setFixedSize(420, 190)
+        self.initUI()
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._on_tick)
+        self.timer.start(1000)
+
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        action_name = "выключится" if self.action == "shutdown" else "перейдет в спящий режим"
+        self.lbl_title = StrongBodyLabel("Все загрузки в очереди завершены!")
+        self.lbl_msg = BodyLabel(f"Компьютер {action_name} через {self.remaining_seconds} сек.")
+        self.lbl_msg.setStyleSheet("color: #ffa726; font-size: 14px; font-weight: bold;")
+
+        layout.addWidget(self.lbl_title)
+        layout.addWidget(self.lbl_msg)
+        layout.addStretch()
+
+        btn_box = QHBoxLayout()
+        self.btn_cancel = PrimaryPushButton("Отменить действие")
+        self.btn_cancel.clicked.connect(self.on_cancel)
+        self.btn_now = PushButton("Выполнить сейчас")
+        self.btn_now.clicked.connect(self.accept)
+
+        btn_box.addWidget(self.btn_cancel)
+        btn_box.addWidget(self.btn_now)
+        layout.addLayout(btn_box)
+
+    def _on_tick(self):
+        self.remaining_seconds -= 1
+        action_name = "выключится" if self.action == "shutdown" else "перейдет в спящий режим"
+        self.lbl_msg.setText(f"Компьютер {action_name} через {self.remaining_seconds} сек.")
+        if self.remaining_seconds <= 0:
+            self.timer.stop()
+            self.accept()
+
+    def on_cancel(self):
+        self.cancelled = True
+        self.timer.stop()
+        self.reject()
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +98,11 @@ class MainWindow(QMainWindow):
         self.translator = translator
         self.settings = settings
         self.ffmpeg_path = self.check_ffmpeg()
+        self.ffprobe_path = self.check_ffprobe()
+        self._schedule = {'active': False}
+        self._schedule_timer = QTimer(self)
+        self._schedule_timer.timeout.connect(self._check_schedule_tick)
+
         self.thread_pool = QThreadPool()
         parallel_downloads = int(self.settings.value('parallel_downloads', 2))
         self.thread_pool.setMaxThreadCount(max(parallel_downloads + 6, 8))
@@ -66,8 +130,19 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.translator.language_changed.connect(self.update_translations)
 
+        self.clipboard = QApplication.clipboard()
+        self._last_clipboard_url = ""
+        self.clipboard.dataChanged.connect(self._on_clipboard_changed)
+
         QTimer.singleShot(500, self._check_first_launch)
         QTimer.singleShot(1000, self._startup_checks)
+
+    def check_ffprobe(self):
+        if hasattr(self, 'ffmpeg_path') and self.ffmpeg_path:
+            probe_cand = os.path.join(os.path.dirname(self.ffmpeg_path), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            if os.path.exists(probe_cand):
+                return probe_cand
+        return shutil.which('ffprobe')
 
     def check_ffmpeg(self):
         project_root = os.path.dirname(os.path.abspath(__file__))
@@ -154,6 +229,11 @@ class MainWindow(QMainWindow):
         self.btn_add.setFixedSize(35, 35)
         self.btn_add.setToolTip(self.translator.translate('add_link'))
 
+        self.btn_batch = TransparentToolButton(FluentIcon.FOLDER_ADD)
+        self.btn_batch.setFixedSize(35, 35)
+        self.btn_batch.setToolTip(self.translator.translate('batch_add_tooltip', 'Пакетное добавление ссылок'))
+        self.btn_batch.clicked.connect(self.open_batch_dialog)
+
         self.btn_file = TransparentToolButton(FluentIcon.FOLDER)
         self.btn_file.setFixedSize(35, 35)
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
@@ -164,6 +244,7 @@ class MainWindow(QMainWindow):
 
         top_bar_layout.addWidget(self.url_input)
         top_bar_layout.addWidget(self.btn_add)
+        top_bar_layout.addWidget(self.btn_batch)
         top_bar_layout.addWidget(self.btn_file)
         top_bar_layout.addWidget(self.btn_notes)
         main_layout.addWidget(top_bar)
@@ -443,6 +524,12 @@ class MainWindow(QMainWindow):
         self.btn_disk_space.setToolTip(self.translator.translate('open_save_folder', 'Открыть папку загрузок'))
         self.btn_disk_space.clicked.connect(self.open_save_folder)
 
+        self.btn_scheduler = TransparentPushButton()
+        self.btn_scheduler.setIcon(FluentIcon.DATE_TIME)
+        self.btn_scheduler.setFixedHeight(32)
+        self.btn_scheduler.setToolTip(self.translator.translate('scheduler_tooltip', 'Планировщик загрузок (Ночной таймер)'))
+        self.btn_scheduler.clicked.connect(self.show_scheduler_dialog)
+
         self.summary_info = QLabel("")
         self.summary_info.setObjectName('StatusLabel')
 
@@ -457,6 +544,7 @@ class MainWindow(QMainWindow):
         bottom_bar_layout.addWidget(self.btn_open_logs)
         bottom_bar_layout.addWidget(self.btn_quick_speed)
         bottom_bar_layout.addWidget(self.btn_disk_space)
+        bottom_bar_layout.addWidget(self.btn_scheduler)
         bottom_bar_layout.addStretch()
         bottom_bar_layout.addWidget(self.summary_info)
         bottom_bar_layout.addSpacing(10)
@@ -521,8 +609,12 @@ class MainWindow(QMainWindow):
         self.btn_telegram.setText(self.translator.translate('tg_tab_title', 'Telegram Бот'))
 
         self.btn_add.setToolTip(self.translator.translate('add_link'))
+        if hasattr(self, 'btn_batch'):
+            self.btn_batch.setToolTip(self.translator.translate('batch_add_tooltip', 'Пакетное добавление ссылок'))
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
         self.btn_notes.setToolTip(self.translator.translate('notes', 'Примечания'))
+        if hasattr(self, 'btn_scheduler') and not self._schedule.get('active'):
+            self.btn_scheduler.setToolTip(self.translator.translate('scheduler_tooltip', 'Планировщик загрузок (Ночной таймер)'))
         self.empty_title.setText(
             self.translator.translate('no_downloads_placeholder', 'Add links to start downloading'))
         self.empty_b1.setText(
@@ -580,24 +672,51 @@ class MainWindow(QMainWindow):
 
     def on_add_link(self):
         url = self.url_input.text().strip()
-        if url:
-            self.url_input.clear()
-            self.page_stack.setCurrentIndex(0)
-            if 'list=' in url or '/playlist' in url:
-                self.status_label.setText("Анализ плейлиста...")
-                from .threads import PlaylistCheckWorker
-                worker = PlaylistCheckWorker(url)
-                worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
-                worker.signals.error.connect(lambda err: self._handle_link_error(err, url))
-                self.thread_pool.start(worker)
-
-            else:
-                self.status_label.setText(self.translator.translate('waiting'))
-                self.download_manager.add_urls([url])
-                self._add_recent(url)
-                self._rebuild_recent_buttons()
-        else:
+        if not url:
             QMessageBox.warning(self, self.translator.translate('warning'), self.translator.translate('enter_link'))
+            return
+
+        self.url_input.clear()
+        self.page_stack.setCurrentIndex(0)
+
+        # Проверка на вставку сразу нескольких ссылок через пробел или перенос строки
+        multiple_urls = re.findall(r'https?://[^\s<>"]+', url)
+        if len(multiple_urls) > 1:
+            clean_urls = []
+            for u in multiple_urls:
+                u = u.strip().rstrip('.,;)]}>')
+                if u and u not in clean_urls:
+                    clean_urls.append(u)
+            self.download_manager.add_urls(clean_urls)
+            for u in clean_urls:
+                self._add_recent(u)
+            self._rebuild_recent_buttons()
+            try:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title=self.translator.translate('batch_added_title', "Пакетное добавление"),
+                    content=f"Добавлено {len(clean_urls)} ссылок в очередь загрузки.",
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self
+                )
+            except Exception:
+                pass
+            return
+
+        if 'list=' in url or '/playlist' in url:
+            self.status_label.setText("Анализ плейлиста...")
+            from .threads import PlaylistCheckWorker
+            worker = PlaylistCheckWorker(url)
+            worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
+            worker.signals.error.connect(lambda err: self._handle_link_error(err, url))
+            self.thread_pool.start(worker)
+
+        else:
+            self.status_label.setText(self.translator.translate('waiting'))
+            self.download_manager.add_urls([url])
+            self._add_recent(url)
+            self._rebuild_recent_buttons()
 
     def _handle_link_info(self, info, original_url):
         self.status_label.setText(self.translator.translate('waiting'))
@@ -661,6 +780,97 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, self.translator.translate('error'),
                                      f"{self.translator.translate('error_reading_file')}: {e}")
 
+    def open_batch_dialog(self):
+        dialog = BatchAddDialog(self.translator, self)
+        if dialog.exec() and dialog.selected_urls:
+            self.page_stack.setCurrentIndex(0)
+            self.download_manager.add_urls(dialog.selected_urls, quality_override=dialog.quality_override)
+            for u in dialog.selected_urls:
+                self._add_recent(u)
+            self._rebuild_recent_buttons()
+            try:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title=self.translator.translate('batch_added_title', "Пакетное добавление"),
+                    content=f"Добавлено {len(dialog.selected_urls)} ссылок в очередь загрузки.",
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self
+                )
+            except Exception:
+                pass
+
+    def show_scheduler_dialog(self):
+        dialog = SchedulerDialog(self._schedule, self.translator, self)
+        if dialog.exec():
+            res = dialog.result_schedule
+            if res and res.get('active'):
+                self._schedule = res
+                self._schedule_timer.start(1000)
+                self._check_schedule_tick()
+                try:
+                    from qfluentwidgets import InfoBar, InfoBarPosition
+                    InfoBar.info(
+                        title=self.translator.translate('scheduler_active_title', "Таймер активен"),
+                        content=f"Запуск очереди назначен на {res.get('target_time_str')}.",
+                        position=InfoBarPosition.TOP,
+                        duration=3500,
+                        parent=self
+                    )
+                except Exception:
+                    pass
+            else:
+                self._schedule = {'active': False}
+                self._schedule_timer.stop()
+                self.btn_scheduler.setText("")
+                self.btn_scheduler.setToolTip(self.translator.translate('scheduler_tooltip', 'Планировщик загрузок (Ночной таймер)'))
+
+    def _check_schedule_tick(self):
+        if not self._schedule.get('active'):
+            self._schedule_timer.stop()
+            self.btn_scheduler.setText("")
+            return
+
+        now_ts = datetime.datetime.now().timestamp()
+        target_ts = self._schedule.get('target_timestamp', 0)
+        remaining = int(target_ts - now_ts)
+
+        if remaining > 0:
+            h = remaining // 3600
+            m = (remaining % 3600) // 60
+            s = remaining % 60
+            time_str = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+            self.btn_scheduler.setText(f"⏰ {time_str}")
+            self.btn_scheduler.setToolTip(f"Автозапуск в {self._schedule.get('target_time_str')} (осталось {time_str})")
+        else:
+            self._schedule_timer.stop()
+            self.btn_scheduler.setText("")
+            self._schedule['active'] = False
+
+            action = self._schedule.get('action')
+            if action and action != 'none':
+                self.settings.setValue('on_completion_action', action)
+
+            self.download_manager.start_all()
+            if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+                self.tray_icon.showMessage(
+                    "Планировщик загрузок",
+                    "Начато скачивание очереди по расписанию!",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    5000
+                )
+            try:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title="Планировщик",
+                    content="Старт загрузок по расписанию!",
+                    position=InfoBarPosition.TOP,
+                    duration=4000,
+                    parent=self
+                )
+            except Exception:
+                pass
+
     def update_placeholder_visibility(self):
         target = getattr(self, 'downloads_container', self.downloads_list)
         if self.downloads_list.count() > 0:
@@ -715,6 +925,18 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.clear_button.setEnabled(True)
         self.status_label.setText(self.translator.translate('downloads_completed'))
+
+        action = self.settings.value('on_completion_action', 'none')
+        if action == 'exit_app':
+            QTimer.singleShot(1500, self.quit_app)
+        elif action in ('shutdown', 'sleep'):
+            dlg = CountdownShutdownDialog(action, self.translator, self)
+            res = dlg.exec()
+            if res == QDialog.DialogCode.Accepted and not dlg.cancelled:
+                if action == 'shutdown':
+                    subprocess.run(["shutdown", "/s", "/t", "0"])
+                elif action == 'sleep':
+                    subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
 
     def on_summary_update(self, text):
         self.summary_info.setText(text)
@@ -1108,16 +1330,75 @@ class MainWindow(QMainWindow):
         show_action = QAction("Показать / Скрыть", self)
         show_action.triggered.connect(self.toggle_window)
 
+        resume_action = QAction("Возобновить все", self)
+        resume_action.triggered.connect(self.download_manager.start_all)
+
+        pause_action = QAction("Пауза всех загрузок", self)
+        pause_action.triggered.connect(self.download_manager.stop_all)
+
+        folder_action = QAction(self.translator.translate('open_save_folder', "Открыть папку загрузок"), self)
+        folder_action.triggered.connect(self.open_save_folder)
+
         quit_action = QAction("Выход", self)
         quit_action.triggered.connect(self.quit_app)
 
         tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(resume_action)
+        tray_menu.addAction(pause_action)
+        tray_menu.addAction(folder_action)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_action)
 
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.tray_activated)
         self.tray_icon.show()
+
+    def _on_clipboard_changed(self):
+        if not self.settings.value('clipboard_monitor', False, type=bool):
+            return
+        try:
+            text = self.clipboard.text().strip()
+        except Exception:
+            return
+        if not text or text == self._last_clipboard_url or text == self.url_input.text().strip():
+            return
+
+        supported_domains = (
+            'youtube.com', 'youtu.be', 'rutube.ru', 'tiktok.com', 'instagram.com',
+            'vk.com', 'vkvideo.ru', 'twitch.tv', 'kick.com', 'twitter.com', 'x.com',
+            'facebook.com', 'fb.watch', 'pornhub.com', 'rezka', 'kinopub', 'kino.pub',
+            'animego.me', 'animego.org', 'bilibili.com', 'bilibili.tv',
+            'pinterest.com', 'pin.it', 'reddit.com', 'rumble.com', 'streamable.com',
+            'vi3000.top', 'kinopoisk.ru', 'soundcloud.com', 'vimeo.com', 'dailymotion.com'
+        )
+        is_media_url = text.startswith(('http://', 'https://')) and any(d in text.lower() for d in supported_domains)
+        if not is_media_url:
+            return
+
+        self._last_clipboard_url = text
+        self.url_input.setText(text)
+
+        if self.isHidden():
+            if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+                self.tray_icon.showMessage(
+                    self.translator.translate('clipboard_detected', "Ссылка в буфере обмена"),
+                    f"Найдена ссылка на видео:\n{text}",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3000
+                )
+        else:
+            try:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.info(
+                    title=self.translator.translate('clipboard_detected', "Ссылка в буфере"),
+                    content=self.translator.translate('clipboard_ready_tip', "Ссылка подставлена в поле ввода. Нажмите «+» или Enter."),
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self
+                )
+            except Exception:
+                pass
 
     def toggle_window(self):
         if self.isVisible():
@@ -1199,10 +1480,13 @@ class MainWindow(QMainWindow):
             ('all', self.translator.translate('platform_all', 'Все платформы'), FluentIcon.GLOBE),
             ('youtube', 'YouTube', get_logo_icon('youtube.png')),
             ('kinopub', 'KinoPub / Rezka', get_logo_icon('hdrezka.png')),
+            ('animego', 'AnimeGo / Kodik', FluentIcon.PLAY),
             ('vk', 'VK Video', get_logo_icon('vk.png')),
             ('tiktok', 'TikTok', get_logo_icon('tiktok.png')),
             ('rutube', 'RuTube', get_logo_icon('rutube.png')),
             ('instagram', 'Instagram', get_logo_icon('instagram.png')),
+            ('reddit', 'Reddit', FluentIcon.SHARE),
+            ('pinterest', 'Pinterest', FluentIcon.PHOTO),
             ('stream', 'Twitch / Kick', get_logo_icon('twitch.png')),
             ('other', self.translator.translate('platform_other', 'Другие'), FluentIcon.MORE),
         ]
@@ -1226,6 +1510,12 @@ class MainWindow(QMainWindow):
         if ('kinopub' in u or 'kino.pub' in u or 'rezka' in u or 'voidboost' in u or 
             'kinopub' in ref or 'rezka' in ref or 'vi3000' in u or 'cub' in u or 'lampa' in u):
             return 'kinopub'
+        if 'animego' in u or 'kodik' in u or 'animego' in p:
+            return 'animego'
+        if 'pinterest' in u or 'pin.it' in u or 'pinterest' in p:
+            return 'pinterest'
+        if 'reddit' in u or 'redd.it' in u or 'reddit' in p:
+            return 'reddit'
         if 'vk.com' in u or 'vkvideo' in u or 'vk' in p:
             return 'vk'
         if 'tiktok.com' in u or 'tiktok' in p:

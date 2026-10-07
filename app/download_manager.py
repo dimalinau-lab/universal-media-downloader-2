@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import base64
 import logging
 import re
 import time
@@ -26,6 +28,7 @@ from .threads import InfoWorker, DownloadWorker, ThumbnailWorker
 from .download_task import DownloadTask
 from .episode_dialog import EpisodeSelectionDialog
 from .kinopub_dialog import KinoPubScanDialog, KinoPubSeriesProgressDialog, format_kinopub_error
+from .extractors import find_extractor_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -210,29 +213,192 @@ def try_direct_http_fetch(url: str, timeout: int = 8):
 
 
 
+AD_AND_SPAM_PATTERNS = [
+    r'adfox\.',
+    r'adriver\.',
+    r'an\.yandex\.',
+    r'mc\.yandex\.',
+    r'doubleclick\.',
+    r'googlesyndication\.',
+    r'google-analytics\.',
+    r'mail\.ru',
+    r'top100\.',
+    r'1xbet\.',
+    r'melbet\.',
+    r'fonbet\.',
+    r'vavada\.',
+    r'casino',
+    r'pin-up\.',
+    r'betwinner\.',
+    r'mostbet\.',
+    r'popunder',
+    r'clickunder',
+    r'teaser',
+    r'banner',
+    r'prem\.svg',
+    r'pjs-prem',
+    r'promo_30s',
+    r'qr_promo',
+    r'advert',
+    r'tracker',
+    r'pixel',
+    r'counter',
+    r'beacon',
+]
+
+NON_VIDEO_EXTENSIONS = (
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico',
+    '.css', '.js', '.json', '.html', '.php', '.txt', '.xml'
+)
+
+TRASH_TOKENS = [
+    "//_//", "#@#", "@#@", "!#!", "$$$", "$$", "&&&", "|||",
+    "^^", "%%", "@@", "##", "_//_", "--", "==", "__"
+]
+
+
+def extract_raw_stream_from_json(res_json) -> tuple[str, str]:
+    """
+    Безопасно извлекает строку со ссылками или ошибку из ответа сервера.
+    Гарантирует отсутствие крашей на 'bool' object has no attribute 'replace' или None.
+    """
+    if not isinstance(res_json, dict):
+        return "", f"Ответ сервера не является JSON-объектом ({type(res_json).__name__})"
+
+    if res_json.get('success') is False or res_json.get('status') == 'error':
+        msg = res_json.get('message') or res_json.get('error') or "Сервер сообщил: success=false"
+        return "", str(msg)
+
+    for key in ('url', 'stream', 'streams', 'link', 'links', 'file', 'video', 'playlist'):
+        val = res_json.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.replace(r'\/', '/').strip(), ""
+        elif isinstance(val, (list, dict)):
+            try:
+                return json.dumps(val), ""
+            except Exception:
+                pass
+
+    if res_json.get('url') is False:
+        msg = res_json.get('message') or "Сервер не предоставил ссылку на видео (url: false, возможно видео изъято или заблокировано)."
+        return "", str(msg)
+
+    msg = res_json.get('message') or "В ответе сервера отсутствует ссылка на видеопоток."
+    return "", str(msg)
+
+
+def decode_obfuscated_stream(raw: str) -> str:
+    """
+    Расшифровывает мусорные токены и base64-обфускацию PlayerJS / HDRezka.
+    """
+    if not isinstance(raw, str) or not raw:
+        return ""
+
+    raw = raw.strip()
+    if re.search(r'\[\d+p?[^\]]*\]https?://', raw):
+        return raw
+
+    cleaned = raw
+    if cleaned.startswith(("#h", "#0", "#1", "#2", "#3", "#")):
+        cleaned = re.sub(r'^#[a-zA-Z0-9]?', '', cleaned)
+
+    for token in TRASH_TOKENS:
+        cleaned = cleaned.replace(token, "")
+
+    cleaned = cleaned.strip()
+    try:
+        rem = len(cleaned) % 4
+        if rem:
+            cleaned += '=' * (4 - rem)
+        decoded = base64.b64decode(cleaned).decode('utf-8', errors='ignore')
+        if "http" in decoded or "[" in decoded:
+            logger.info("[StreamDecoder] Успешно расшифрован обфусцированный поток (base64/trash).")
+            return decoded
+    except Exception:
+        pass
+
+    return raw
+
+
 def clean_stream_url(stream_url: str) -> str:
-    if ":hls:seg-" in stream_url:
-        stream_url = re.sub(r':hls:seg-[^/]+\.ts.*', '', stream_url)
-    elif ".ts" in stream_url and "seg-" in stream_url:
-        stream_url = re.sub(r':?seg-[^/]+\.ts.*', '', stream_url)
-    stream_url = stream_url.replace(':hls:manifest.m3u8', '')
-    return stream_url.strip('; "\'')
+    """
+    Очищает ссылку потока от HLS сегментов, параметров плеера PlayerJS и мусорных суффиксов.
+    """
+    if not isinstance(stream_url, str):
+        return ""
+    u = stream_url.strip('; "\'')
+    if ":hls:seg-" in u:
+        u = re.sub(r':hls:seg-[^/]+\.ts.*', '', u)
+    elif ".ts" in u and "seg-" in u:
+        u = re.sub(r':?seg-[^/]+\.ts.*', '', u)
+    elif ".m4s" in u:
+        u = re.sub(r'/[^/]+(?:\.m4s).*$', '/master.m3u8', u)
+    u = u.replace(':hls:manifest.m3u8', '')
+    return u.strip('; "\'')
+
+
+def score_stream_url(url: str, tag: str = "") -> tuple[float, str]:
+    """
+    Анализирует пригодность ссылки и фильтрует спам, рекламу и фейковые ссылки.
+    Возвращает (score, reason). Если score <= 0, ссылка отбрасывается как спам.
+    """
+    if not url or not isinstance(url, str):
+        return 0.0, "empty"
+
+    u_lower = url.lower().strip()
+    tag_lower = tag.lower().strip()
+
+    if not u_lower.startswith(('http://', 'https://')):
+        return 0.0, "invalid_scheme"
+
+    for pattern in AD_AND_SPAM_PATTERNS:
+        if re.search(pattern, u_lower) or re.search(pattern, tag_lower):
+            return 0.0, f"ad_or_spam:{pattern}"
+
+    clean_path = u_lower.split('?')[0].split('#')[0]
+    for ext in NON_VIDEO_EXTENSIONS:
+        if clean_path.endswith(ext):
+            return 0.0, f"non_video_ext:{ext}"
+
+    score = 10.0
+    if '.m3u8' in u_lower or ':hls:' in u_lower:
+        score += 60.0
+        if 'manifest' in u_lower or 'master' in u_lower or 'index' in u_lower:
+            score += 20.0
+    elif any(clean_path.endswith(ve) for ve in ('.mp4', '.mkv', '.webm', '.m4v')):
+        score += 40.0
+
+    for kw in ('voidboost', 'stream', 'cdn', 'media', 'play', 'vod', 'video', 'hls'):
+        if kw in u_lower:
+            score += 15.0
+            break
+
+    if re.search(r'\d{3,4}p?', tag_lower):
+        score += 10.0
+
+    for susp in ('sample', 'test', 'fake', 'dummy'):
+        if susp in u_lower:
+            score -= 30.0
+
+    return max(score, 0.0), "valid"
 
 
 def parse_voidboost_streams(streams_raw):
+    """
+    Разбирает строку потоков Voidboost/HDRezka, расшифровывает обфускацию,
+    отсеивает спам и рекламные вставки.
+    """
     if not streams_raw:
         return []
 
-    # Matches [TAG]URLS
+    decoded_raw = decode_obfuscated_stream(streams_raw)
     pattern = r'\[([^\]]+)\](https?://[^\[\]]+)'
-    matches = re.findall(pattern, streams_raw)
+    matches = re.findall(pattern, decoded_raw)
     parsed = []
 
     for tag_raw, urls_part in matches:
         clean_tag = re.sub(r'<[^>]+>', '', tag_raw).strip()
         is_ultra = 'ultra' in clean_tag.lower()
-        # HDRezka / Voidboost serves a locked 30-second promo ad with a QR code
-        # for 'pjs-prem-quality' / 'prem.svg' / '1080p Ultra' unless logged into a paid account.
         is_prem = (
             'prem' in tag_raw.lower() or
             'pjs-prem' in tag_raw.lower() or
@@ -244,27 +410,23 @@ def parse_voidboost_streams(streams_raw):
         res_m = re.search(r'(\d+)', clean_tag)
         res_num = int(res_m.group(1)) if res_m else 720
 
-        url_candidates = re.findall(r'https?://[^\s,;]+', urls_part)
-        if not url_candidates:
+        raw_candidates = re.findall(r'https?://[^\s,;]+', urls_part)
+        valid_candidates = []
+
+        for candidate in raw_candidates:
+            clean_c = clean_stream_url(candidate)
+            score, reason = score_stream_url(clean_c, tag=clean_tag)
+            if score > 0:
+                valid_candidates.append({
+                    'url': clean_c,
+                    'score': score
+                })
+
+        if not valid_candidates:
             continue
 
-        direct_mp4 = None
-        hls_url = None
-
-        for u in url_candidates:
-            u_clean = u.rstrip(',;')
-            if ':hls:manifest.m3u8' in u_clean or '.m3u8' in u_clean:
-                if not hls_url:
-                    hls_url = u_clean
-            elif u_clean.endswith('.mp4') or '.mp4?' in u_clean:
-                if not direct_mp4:
-                    direct_mp4 = u_clean
-
-        if not direct_mp4 and hls_url:
-            direct_mp4 = re.sub(r':hls:(?:manifest\.m3u8|seg-[^/]+\.ts.*)', '', hls_url)
-
-        best_url = direct_mp4 or hls_url or url_candidates[0]
-        best_url = clean_stream_url(best_url)
+        valid_candidates.sort(key=lambda x: x['score'], reverse=True)
+        best_candidate = valid_candidates[0]
 
         key = f"{res_num}_ultra" if is_ultra else str(res_num)
         label = f"{res_num}p Ultra" if is_ultra else f"{res_num}p"
@@ -277,12 +439,9 @@ def parse_voidboost_streams(streams_raw):
             'is_prem': is_prem,
             'label': label,
             'sort_score': sort_score,
-            'direct_mp4': direct_mp4,
-            'hls_url': hls_url,
-            'best_url': best_url
+            'best_url': best_candidate['url']
         })
 
-    # Filter out paywalled teaser streams (which only contain 30s QR code promo ads)
     free_streams = [s for s in parsed if not s['is_prem']]
     if free_streams:
         parsed = free_streams
@@ -297,12 +456,20 @@ def extract_best_link(streams_raw, target_res=1080):
 
     streams = parse_voidboost_streams(streams_raw)
     if not streams:
-        urls = re.findall(r'(https?://[^\s,\[\]]+)', streams_raw)
-        if urls:
-            clean = clean_stream_url(urls[0].split(' or ')[0].strip())
-            q_match = re.search(r'[/_](\d{3,4})p?[\._/]', clean)
+        decoded = decode_obfuscated_stream(streams_raw)
+        urls = re.findall(r'(https?://[^\s,;\[\]"\'<>]+)', decoded)
+        valid_fallback = []
+        for u in urls:
+            clean_u = clean_stream_url(u.split(' or ')[0].strip())
+            score, _ = score_stream_url(clean_u)
+            if score > 0:
+                valid_fallback.append((score, clean_u))
+        if valid_fallback:
+            valid_fallback.sort(key=lambda x: x[0], reverse=True)
+            chosen_url = valid_fallback[0][1]
+            q_match = re.search(r'[/_](\d{3,4})p?[\._/]', chosen_url)
             q_str = f"{q_match.group(1)}p" if q_match else None
-            return clean, q_str
+            return chosen_url, q_str
         return None, None
 
     target_str = str(target_res).lower().strip()
@@ -633,12 +800,13 @@ class KinoPubFetchWorker(QRunnable):
                     try:
                         r = session.post(ajax_url, headers=headers, data=d, timeout=8)
                         if r.status_code == 200:
-                            raw_u = r.json().get('url', '').replace('\\/', '/')
-                            if not raw_u and not is_movie:
-                                d['action'] = 'get_cdn_series'
+                            raw_u, _ = extract_raw_stream_from_json(r.json())
+                            if not raw_u:
+                                # Fallback action
+                                d['action'] = 'get_cdn_series' if not is_movie else 'get_stream'
                                 r2 = session.post(ajax_url, headers=headers, data=d, timeout=8)
                                 if r2.status_code == 200:
-                                    raw_u = r2.json().get('url', '').replace('\\/', '/')
+                                    raw_u, _ = extract_raw_stream_from_json(r2.json())
                             return raw_u
                     except Exception as e:
                         logger.debug(f"Failed to fetch sample stream for voice {v_id}: {e}")
@@ -665,7 +833,8 @@ class KinoPubFetchWorker(QRunnable):
             if not sample_streams_raw:
                 streams_match = re.search(r'"streams"\s*:\s*"([^"]+)"', page_source)
                 if streams_match:
-                    sample_streams_raw = streams_match.group(1).replace('\\/', '/')
+                    raw_s = streams_match.group(1).replace(r'\/', '/')
+                    sample_streams_raw = decode_obfuscated_stream(raw_s)
                     parsed_st = parse_voidboost_streams(sample_streams_raw)
                     if parsed_st:
                         available_qualities = [s['label'] for s in parsed_st]
@@ -748,6 +917,7 @@ class KinoPubSeriesWorker(QRunnable):
 
     def run(self):
         results = []
+        driver = None
         try:
             session = requests.Session()
             session.proxies = {}
@@ -769,6 +939,91 @@ class KinoPubSeriesWorker(QRunnable):
             logger.info(f"[KinoPubSeries] Старт сбора ссылок: серий={len(self.targets)}, голос='{v_id}', сезон='{self.selected_season}', качество='{self.selected_quality}'")
 
             last_error_detail = None
+            use_browser_for_ajax = False
+
+            def execute_ajax_post(post_data):
+                nonlocal driver, use_browser_for_ajax
+                t = int(time.time() * 1000)
+                ajax_url = f"{base_origin}/ajax/get_cdn_series/?t={t}"
+
+                # 1. Попытка через requests, если браузер еще не потребовался
+                if not use_browser_for_ajax:
+                    try:
+                        req = session.post(ajax_url, headers=headers, data=post_data, timeout=12)
+                        if req.status_code == 200:
+                            txt = req.text
+                            # Проверяем, не страница ли это проверки антибота
+                            if 'within.website' not in txt and 'О, привет!' not in txt and 'cf-browser-verification' not in txt:
+                                try:
+                                    j = req.json()
+                                    streams_s, err_s = extract_raw_stream_from_json(j)
+                                    if streams_s:
+                                        return streams_s, ""
+                                    if err_s:
+                                        return "", err_s
+                                except Exception:
+                                    pass
+                    except Exception as req_err:
+                        logger.debug(f"[KinoPubSeries] Прямой HTTP запрос не удался ({req_err}), пробуем браузер...")
+
+                # 2. Fallback: Выполнение через браузер в контексте открытой страницы
+                try:
+                    if driver is None:
+                        logger.info("[KinoPubSeries] Активация браузера для обхода защиты при получении серий...")
+                        self.signals.status.emit("Подключение браузера для обхода защиты...")
+                        driver = create_browser_driver(headless=True, user_agent=BROWSER_USER_AGENT, use_profile=True)
+                        driver.set_script_timeout(15)
+                        driver.get(self.url)
+                        time.sleep(1.0)
+                        use_browser_for_ajax = True
+
+                    js_code = """
+                    var callback = arguments[arguments.length - 1];
+                    var data = arguments[0];
+                    var ajaxUrl = arguments[1];
+
+                    if (typeof $ !== 'undefined' && $.ajax) {
+                        $.ajax({
+                            url: ajaxUrl,
+                            type: 'POST',
+                            data: data,
+                            dataType: 'json',
+                            timeout: 12000,
+                            success: function(res) { callback({status: 200, json: res}); },
+                            error: function(xhr, status, err) { 
+                                var parsed = null;
+                                try { parsed = JSON.parse(xhr.responseText); } catch(e) {}
+                                callback({status: xhr.status || 500, json: parsed, text: xhr.responseText || '', error: err || status}); 
+                            }
+                        });
+                    } else {
+                        var params = new URLSearchParams();
+                        for (var k in data) {
+                            params.append(k, data[k]);
+                        }
+                        fetch(ajaxUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            body: params.toString()
+                        })
+                        .then(function(r) { return r.json(); })
+                        .then(function(j) { callback({status: 200, json: j}); })
+                        .catch(function(e) { callback({status: 500, error: e.toString()}); });
+                    }
+                    """
+                    b_res = driver.execute_async_script(js_code, post_data, ajax_url)
+                    if isinstance(b_res, dict) and b_res.get('status') == 200:
+                        j = b_res.get('json')
+                        streams_s, err_s = extract_raw_stream_from_json(j)
+                        return streams_s, err_s
+                except Exception as b_err:
+                    logger.debug(f"[KinoPubSeries] Ошибка запроса через браузер: {b_err}")
+
+                return "", "Не удалось получить ответ сервера"
+
             for idx, ep in enumerate(self.targets):
                 if self._cancel_requested.is_set():
                     logger.info("[KinoPubSeries] Получен сигнал отмены сбора серий.")
@@ -779,77 +1034,77 @@ class KinoPubSeriesWorker(QRunnable):
                 self.signals.status.emit(f"Получаю ссылки: {idx + 1} из {len(self.targets)}...")
                 logger.info(f"[KinoPubSeries] [{idx + 1}/{len(self.targets)}] Запрос ссылки для '{ep_name}' (ID: {ep.get('id')})...")
 
-                data = {
-                    'id': self.post_id,
-                    'translator_id': v_id,
-                    'action': 'get_movie' if self.is_movie else 'get_stream'
-                }
-                if self.favs:
-                    data['favs'] = self.favs
-                if not self.is_movie:
-                    data['season'] = self.selected_season
-                    data['episode'] = ep['id']
+                primary_action = 'get_movie' if self.is_movie else 'get_stream'
+                actions_to_try = [primary_action]
+                if self.is_movie:
+                    actions_to_try.extend(['get_stream', 'get_cdn_series'])
+                else:
+                    actions_to_try.extend(['get_cdn_series', 'get_movie'])
 
-                t = int(time.time() * 1000)
-                ajax_url = f"{base_origin}/ajax/get_cdn_series/?t={t}"
+                streams_raw = ""
+                for act in actions_to_try:
+                    data = {
+                        'id': self.post_id,
+                        'translator_id': v_id,
+                        'action': act
+                    }
+                    if self.favs:
+                        data['favs'] = self.favs
+                    if act != 'get_movie':
+                        data['season'] = self.selected_season
+                        data['episode'] = ep['id']
 
-                try:
-                    ajax_req = session.post(ajax_url, headers=headers, data=data, timeout=15)
-                    streams_raw = ''
-                    if ajax_req.status_code == 200:
-                        try:
-                            res_json = ajax_req.json()
-                            if res_json.get('success') is False:
-                                msg = res_json.get('message') or "Сервер вернул success: false"
-                                logger.warning(f"[KinoPubSeries] Сервер сообщил об ошибке для '{ep_name}': {msg}")
-                                last_error_detail = msg
-                            else:
-                                streams_raw = res_json.get('url', '').replace('\\/', '/')
-                        except Exception as json_err:
-                            logger.warning(f"[KinoPubSeries] Ответ сервера не является JSON для '{ep_name}': {json_err} (текст: {ajax_req.text[:200]})")
-                            last_error_detail = f"Ошибка ответа сервера (не JSON): {json_err}"
+                    raw_res, err_res = execute_ajax_post(data)
+                    if raw_res:
+                        streams_raw = raw_res
+                        break
+                    elif err_res and not last_error_detail:
+                        last_error_detail = err_res
 
-                        if not streams_raw and not self.is_movie:
-                            # Fallback if get_stream didn't return stream url
-                            data['action'] = 'get_cdn_series'
-                            ajax_fallback = session.post(ajax_url, headers=headers, data=data, timeout=15)
-                            if ajax_fallback.status_code == 200:
-                                try:
-                                    streams_raw = ajax_fallback.json().get('url', '').replace('\\/', '/')
-                                except Exception:
-                                    pass
-                        if not streams_raw and not last_error_detail:
-                            last_error_detail = "Сервер не предоставил ссылку на видео"
-                    else:
-                        last_error_detail = f"Ответ сервера: HTTP {ajax_req.status_code}"
-                        logger.warning(f"[KinoPubSeries] HTTP ошибка {ajax_req.status_code} для '{ep_name}'")
+                # Если с translator_id не найдено, пробуем резервный запрос без translator_id
+                if not streams_raw and v_id == '59':
+                    for act in actions_to_try:
+                        data = {
+                            'id': self.post_id,
+                            'action': act
+                        }
+                        if self.favs:
+                            data['favs'] = self.favs
+                        if act != 'get_movie':
+                            data['season'] = self.selected_season
+                            data['episode'] = ep['id']
+                        raw_res, _ = execute_ajax_post(data)
+                        if raw_res:
+                            streams_raw = raw_res
+                            break
 
-                    if streams_raw:
-                        best_link, actual_qual = extract_best_link(streams_raw, target_res=self.selected_quality)
-                        if best_link:
-                            safe_e_name = re.sub(r'[\\/*?:"<>|]', "", ep_name)
-                            if self.is_movie:
-                                custom_title = f"{self.safe_anime_title} ({self.safe_v_name})"
-                            else:
-                                custom_title = f"{self.safe_anime_title} - {self.safe_s_name} {safe_e_name} ({self.safe_v_name})"
-                            q_badge = actual_qual or str(self.selected_quality)
-                            if not q_badge.endswith('p') and 'ultra' not in q_badge.lower():
-                                q_badge = f"{q_badge}p"
-                            results.append({
-                                'url': best_link,
-                                'title': custom_title,
-                                'quality': q_badge,
-                                'referer': self.url
-                            })
-                            logger.info(f"[KinoPubSeries] [+] Ссылка получена: '{custom_title}' [{q_badge}] -> {best_link[:80]}...")
+                if streams_raw:
+                    best_link, actual_qual = extract_best_link(streams_raw, target_res=self.selected_quality)
+                    if best_link:
+                        safe_e_name = re.sub(r'[\\/*?:"<>|]', "", ep_name)
+                        if self.is_movie:
+                            custom_title = f"{self.safe_anime_title} ({self.safe_v_name})"
                         else:
-                            last_error_detail = "Не удалось извлечь рабочий видеопоток из ответа"
-                            logger.warning(f"[KinoPubSeries] [-] Не удалось извлечь видеопоток для '{ep_name}'")
-                except Exception as ep_err:
-                    logger.warning(f"[KinoPubSeries] Ошибка запроса ссылки для {ep_name}: {ep_err}")
-                    last_error_detail = str(ep_err)
+                            custom_title = f"{self.safe_anime_title} - {self.safe_s_name} {safe_e_name} ({self.safe_v_name})"
+                        q_badge = actual_qual or str(self.selected_quality)
+                        if not q_badge.endswith('p') and 'ultra' not in q_badge.lower():
+                            q_badge = f"{q_badge}p"
+                        results.append({
+                            'url': best_link,
+                            'title': custom_title,
+                            'quality': q_badge,
+                            'referer': self.url
+                        })
+                        logger.info(f"[KinoPubSeries] [+] Ссылка получена: '{custom_title}' [{q_badge}] -> {best_link[:80]}...")
+                    else:
+                        last_error_detail = "Не удалось отфильтровать рабочий видеопоток из ответа"
+                        logger.warning(f"[KinoPubSeries] [-] Не удалось отфильтровать видеопоток для '{ep_name}'")
+                else:
+                    if not last_error_detail:
+                        last_error_detail = "Сервер не вернул ссылку на видеопоток"
+                    logger.warning(f"[KinoPubSeries] Сервер не вернул поток для '{ep_name}': {last_error_detail}")
 
-                time.sleep(0.3)
+                time.sleep(0.2)
 
             logger.info(f"[KinoPubSeries] Завершен опрос серий. Успешно получено {len(results)} из {len(self.targets)}.")
             if not results and last_error_detail:
@@ -861,9 +1116,36 @@ class KinoPubSeriesWorker(QRunnable):
             logger.error(f"Ошибка получения серий KinoPub: {e}")
             self.signals.error.emit(str(e))
             return
+        finally:
+            try:
+                if driver:
+                    driver.quit()
+            except Exception:
+                pass
 
         self.signals.finished.emit(results)
 
+
+
+class CustomExtractorSignals(QObject):
+    ready = pyqtSignal(dict, object)
+    error = pyqtSignal(str)
+
+
+class CustomExtractorFetchWorker(QRunnable):
+    def __init__(self, url, extractor):
+        super().__init__()
+        self.url = url
+        self.extractor = extractor
+        self.signals = CustomExtractorSignals()
+
+    def run(self):
+        try:
+            meta = self.extractor.fetch_metadata(self.url)
+            self.signals.ready.emit(meta, self.extractor)
+        except Exception as e:
+            logger.error(f"[CustomExtractor] Ошибка извлечения {self.url}: {e}", exc_info=True)
+            self.signals.error.emit(str(e))
 
 
 # ==================================
@@ -910,22 +1192,17 @@ class DownloadManager(QObject):
         self.active_threads_changed.emit(self.active_downloads, int(self.settings.value('parallel_downloads', 2)))
 
     def _clean_stream_url(self, stream_url: str) -> str:
-        if ":hls:seg-" in stream_url:
-            stream_url = re.sub(r':hls:seg-[^/]+\.ts.*', '', stream_url)
-        elif ".ts" in stream_url and "seg-" in stream_url:
-            stream_url = re.sub(r':?seg-[^/]+\.ts.*', '', stream_url)
-        stream_url = stream_url.replace(':hls:manifest.m3u8', '')
-        return stream_url.strip('; "\'')
+        return clean_stream_url(stream_url)
 
     def _normalize_url(self, url: str) -> str:
         u = url.strip()
-        if ":hls:seg-" in u or (".ts" in u and "seg-" in u):
+        if ":hls:seg-" in u or (".ts" in u and "seg-" in u) or ".m4s" in u:
             return self._clean_stream_url(u)
         m = re.search(r"https?://(?:www\.)?kick\.com/[^/]+/videos/([0-9a-fA-F-]{6,})", u)
         if m: return f"https://kick.com/video/{m.group(1)}"
         return u
 
-    def add_urls(self, urls):
+    def add_urls(self, urls, quality_override=None):
         for url in urls:
             url = self._normalize_url(url)
 
@@ -937,7 +1214,25 @@ class DownloadManager(QObject):
                 self._start_kinopub_scan(url)
                 continue
 
+            extractor = find_extractor_for_url(url)
+            if extractor:
+                self._start_custom_extractor_scan(url, extractor)
+                continue
+
+            # Предотвращаем дублирование активных или ожидающих задач
+            if any(t.url == url and t.status in (DownloadTask.Status.DOWNLOADING, DownloadTask.Status.PENDING, DownloadTask.Status.FETCHING_INFO) for t in self.tasks):
+                logger.info(f"[DownloadManager] Пропуск дубликата ссылки: {url}")
+                continue
+
             task = DownloadTask(url)
+            if quality_override:
+                task.quality_override = quality_override
+                if quality_override in ('audio_only', 'audio_mp3'):
+                    task.audio_only = True
+                    task.quality_badge = "MP3" if quality_override == 'audio_mp3' else "AUDIO"
+                elif quality_override in ('1080p', '720p', '480p'):
+                    task.quality_badge = quality_override
+
             task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
             self.tasks.append(task)
             self.task_added.emit(task)
@@ -997,13 +1292,23 @@ class DownloadManager(QObject):
             self.start_task(task)
         self._update_summary()
 
+    def _task_display_name(self, task):
+        return getattr(task, 'custom_title', None) or (task.title if getattr(task, 'title', None) and task.title != "..." else None) or getattr(task, 'url', 'Task')
+
     def start_task(self, task):
         max_concurrent = int(self.settings.value('parallel_downloads', 2))
+        task_name = self._task_display_name(task)
         if self.active_downloads >= max_concurrent:
-            logger.info(f"[DownloadManager] Задача '{getattr(task, 'custom_title', task.url)}' в очереди (активно: {self.active_downloads}/{max_concurrent})")
+            logger.info(f"[DownloadManager] Задача '{task_name}' в очереди (активно: {self.active_downloads}/{max_concurrent})")
             return
+
+        # Защита от параллельного скачивания одинакового URL в один и тот же файл (WinError 32)
+        if any(t != task and t.url == task.url and t.status == DownloadTask.Status.DOWNLOADING for t in self.tasks):
+            logger.warning(f"[DownloadManager] Задача с таким же URL уже скачивается, оставляем в очереди: '{task_name}'")
+            return
+
         self.active_downloads += 1
-        logger.info(f"[DownloadManager] Старт загрузки: '{getattr(task, 'custom_title', task.url)}' (активно: {self.active_downloads}/{max_concurrent})")
+        logger.info(f"[DownloadManager] Старт загрузки: '{task_name}' (активно: {self.active_downloads}/{max_concurrent})")
         task.set_status(DownloadTask.Status.DOWNLOADING)
         worker = DownloadWorker(task, self.settings, self.ffmpeg_path, self.translator)
         self._workers[task] = worker
@@ -1013,7 +1318,8 @@ class DownloadManager(QObject):
         self._update_summary()
 
     def on_task_finished(self, task):
-        logger.info(f"[DownloadManager] Загрузка завершена: '{getattr(task, 'custom_title', task.url)}'")
+        task_name = self._task_display_name(task)
+        logger.info(f"[DownloadManager] Загрузка завершена: '{task_name}'")
         if self.active_downloads > 0: self.active_downloads -= 1
         if task in self._workers: self._workers.pop(task, None)
         pending_tasks = [t for t in self.tasks if t.status == DownloadTask.Status.PENDING]
@@ -1025,7 +1331,8 @@ class DownloadManager(QObject):
         self._update_summary()
 
     def on_task_error(self, task, error_msg):
-        logger.error(f"[DownloadManager] Ошибка загрузки задачи '{getattr(task, 'custom_title', task.url)}': {error_msg}")
+        task_name = self._task_display_name(task)
+        logger.error(f"[DownloadManager] Ошибка загрузки задачи '{task_name}': {error_msg}")
         task.set_error(error_msg)
         self.on_task_finished(task)
 
@@ -1071,6 +1378,104 @@ class DownloadManager(QObject):
             for q in [360, 480, 720, 1080, 1440, 2160]:
                 if str(q) in str(quality_setting): target_res = q
         return extract_best_link(streams_raw, target_res=target_res)
+
+    def _start_custom_extractor_scan(self, url, extractor):
+        self.status_updated.emit(f"Анализ {extractor.name}...")
+        worker = CustomExtractorFetchWorker(url, extractor)
+        worker.signals.ready.connect(self._on_custom_extractor_ready)
+        worker.signals.error.connect(lambda err: self.status_updated.emit(f"Ошибка {extractor.name}: {err}"))
+        self.thread_pool.start(worker)
+
+    def _on_custom_extractor_ready(self, meta, extractor):
+        episodes = meta.get('episodes', [])
+        voiceovers = meta.get('voiceovers', [])
+        if episodes or (voiceovers and len(voiceovers) > 1):
+            v_list = voiceovers or [{'name': 'Оригинал', 'id': '1'}]
+            s_list = meta.get('seasons', [{'name': '1 Сезон', 'id': '1'}])
+            ep_list = episodes or [{'name': 'Полный выпуск / Фильм', 'id': '1', 'season_id': '1', 'episode_number': 1}]
+            qualities = meta.get('available_qualities', ['1080p', '720p', '480p'])
+            is_movie = meta.get('is_movie', False) and len(ep_list) <= 1
+
+            dialog = EpisodeSelectionDialog(
+                v_list,
+                s_list,
+                ep_list,
+                qualities,
+                is_movie=is_movie,
+                parent=self.parent_window
+            )
+            if dialog.exec():
+                selected_targets = dialog.get_selected_targets()
+                selected_v = dialog.get_selected_voiceover()
+                selected_q = dialog.get_selected_quality()
+                if not selected_targets and is_movie:
+                    selected_targets = ep_list
+
+                added_count = 0
+                for ep in selected_targets:
+                    ep_meta = dict(meta)
+                    ep_meta.update(ep)
+                    ep_meta['selected_voiceover'] = selected_v
+                    try:
+                        direct_url, q_badge = extractor.resolve_stream(ep_meta, quality=selected_q)
+                    except Exception as e:
+                        logger.error(f"[{extractor.name}] Ошибка получения потока: {e}")
+                        direct_url = None
+
+                    if not direct_url:
+                        logger.warning(f"[{extractor.name}] Не удалось получить прямую ссылку для серии {ep.get('name')}")
+                        continue
+
+                    title = f"{meta.get('safe_anime_title', 'Anime')} - {ep.get('name', 'Серия')}"
+                    if selected_v and selected_v.get('name') and selected_v.get('name') not in ('Default', 'Оригинал'):
+                        title += f" [{selected_v.get('name')}]"
+
+                    task = DownloadTask(direct_url)
+                    task.title = title
+                    task.custom_title = title
+                    task.custom_quality = selected_q or q_badge
+                    task.quality_badge = selected_q or q_badge or ""
+                    task.thumbnail_url = meta.get('poster_url')
+                    if any(d in direct_url for d in ('solodcdn', 'kodik')):
+                        task.referer = 'https://kodikplayer.com/'
+                    elif any(d in direct_url for d in ('aniboom', 'ya-ligh', 'boom-img')):
+                        task.referer = 'https://aniboom.one/'
+                    elif meta.get('referer'):
+                        task.referer = meta.get('referer')
+                    task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
+                    self.tasks.append(task)
+                    self.task_added.emit(task)
+                    if task.thumbnail_url:
+                        self.queue_thumbnail_load(task.thumbnail_url, task)
+                    self.start_task(task)
+                    added_count += 1
+
+                if added_count == 0:
+                    self.status_updated.emit(f"Не удалось получить видеопоток для выбранных серий {extractor.name}")
+                self._update_summary()
+        else:
+            direct_url = meta.get('direct_url')
+            if not direct_url:
+                try:
+                    direct_url, _ = extractor.resolve_stream(meta, quality=meta.get('quality', '1080p'))
+                except Exception:
+                    direct_url = None
+            if not direct_url:
+                self.status_updated.emit(f"Не удалось получить видео с {extractor.name}")
+                return
+            task = DownloadTask(direct_url)
+            task.custom_title = meta.get('safe_anime_title')
+            task.custom_quality = meta.get('quality', '1080p')
+            task.thumbnail_url = meta.get('poster_url')
+            if meta.get('referer'):
+                task.referer = meta.get('referer')
+            task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
+            self.tasks.append(task)
+            self.task_added.emit(task)
+            if task.thumbnail_url:
+                self.queue_thumbnail_load(task.thumbnail_url, task)
+            self.fetch_video_info(task)
+            self._update_summary()
 
     def _start_lampa_scan(self, url):
         self.status_updated.emit("Ожидаю включения плеера в браузере...")
@@ -1307,7 +1712,7 @@ class DownloadManager(QObject):
         logger.error(f"[KinoPub] Ошибка сбора ссылок на серии: {err}")
         self.status_updated.emit(f"Ошибка получения серий: {err}")
         if self.parent_window:
-            QMessageBox.critical(self.parent_window, "Ошибка KinoPub", f"Не удалось получить ссылки на серии:\n\n{err}")
+            QMessageBox.critical(self.parent_window, "Ошибка KinoPub / Rezka", f"Не удалось получить ссылки на серии:\n\n{err}")
         self._update_summary()
 
     def _on_kinopub_error(self, url, err):

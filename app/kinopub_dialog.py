@@ -93,6 +93,18 @@ def format_kinopub_error(raw_error: str) -> dict:
         solution = "• Убедитесь, что Microsoft Edge установлен в системе.\n• Перезапустите приложение."
         short_status = "Ошибка запуска браузера Microsoft Edge."
 
+    elif any(k in err_str.lower() for k in ["правообладател", "недоступно в вашей стране", "видео изъято", "заблокировано"]):
+        title = "Видео заблокировано правообладателем"
+        description = "Видеопоток заблокирован на сайте по требованию правообладателя или недоступен для вашего IP-адреса."
+        solution = "• Попробуйте включить VPN другой страны.\n• Выберите другой релиз, перевод или серию."
+        short_status = "Видео заблокировано правообладателем (нужен VPN)."
+
+    elif any(k in err_str.lower() for k in ["within.website", "о, привет", "cloudflare", "cf-browser-verification", "ddos"]):
+        title = "Сработала защита от ботов (Cloudflare / DDoS-Guard)"
+        description = "Сайт запросил подтверждение браузера для доступа к видео."
+        solution = "• Включите VPN.\n• Откройте сайт в обычном браузере, чтобы обновить сессию."
+        short_status = "Защита от ботов: требуется VPN или обновление сессии."
+
     else:
         if clean_msg:
             description = f"Детали: {clean_msg[:200]}"

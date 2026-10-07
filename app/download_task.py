@@ -22,6 +22,7 @@ class DownloadTask(QObject):
     thumbnail_loaded = pyqtSignal(QPixmap)
     thumbnail_load_requested = pyqtSignal(str, object)
     size_updated = pyqtSignal(str)
+    time_range_updated = pyqtSignal(str)
 
     def __init__(self, url):
         super().__init__()
@@ -45,10 +46,22 @@ class DownloadTask(QObject):
         self.thumbnail_loading = False
         self.file_size_str = ""
         self.quality_badge = ""
-        self.custom_quality = ""
-        self.custom_title = ""
+        self.custom_quality = None
+        self.custom_title = None
+        self.time_range = None  # tuple (start_sec, end_sec)
+        self.time_range_str = ""  # string label e.g. "00:01:20 - 00:03:45"
         self.info = {}
         self.is_removed = False
+
+    def set_time_range(self, start_sec: float, end_sec: float, label: str = ""):
+        self.time_range = (start_sec, end_sec)
+        self.time_range_str = label
+        self.time_range_updated.emit(self.time_range_str)
+
+    def clear_time_range(self):
+        self.time_range = None
+        self.time_range_str = ""
+        self.time_range_updated.emit("")
 
     @property
     def status(self):
@@ -64,7 +77,13 @@ class DownloadTask(QObject):
         if hasattr(self, 'custom_title') and self.custom_title:
             self.title = self.custom_title
         else:
-            self.title = info.get('title', 'Unknown Title')
+            raw_title = info.get('title', 'Unknown Title')
+            if raw_title in ('720', '1080', '480', '360', 'master', 'manifest', 'index') or (isinstance(raw_title, str) and raw_title.isdigit()):
+                if any(d in self.url for d in ('solodcdn', 'kodik')):
+                    raw_title = f"Kodik Video ({raw_title}p)" if raw_title.isdigit() else "Kodik Video"
+                elif any(d in self.url for d in ('ya-ligh', 'aniboom')):
+                    raw_title = "AniBoom Video"
+            self.title = raw_title
 
         new_thumb = info.get('thumbnail')
         if new_thumb:
