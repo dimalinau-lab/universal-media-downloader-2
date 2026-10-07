@@ -32,7 +32,6 @@ from .update_checker import UpdateChecker
 from .files_tab import FilesTab
 from .telegram_bot import TelegramBotManager
 from .telegram_tab import TelegramTab
-from .local_api import LocalApiManager
 from .batch_dialog import BatchAddDialog
 from .scheduler_dialog import SchedulerDialog
 logger = logging.getLogger(__name__)
@@ -143,10 +142,7 @@ class MainWindow(QMainWindow):
         self.bot_manager = TelegramBotManager(self.settings)
         self.bot_manager.signals.url_received.connect(self._on_bot_url_received)
 
-        self.local_api = LocalApiManager()
         self.current_filter_mode = 'all'
-        self.local_api.signals.url_received.connect(self._on_bot_url_received)
-        self.local_api.start()
 
         # --- ЗАЩИТА ОТ КРИВОГО ТОКЕНА ---
         saved_token = self.settings.value('tg_bot_token', '')
@@ -1349,10 +1345,10 @@ class MainWindow(QMainWindow):
             file_path=task.final_filepath
         )
 
-    def _on_bot_url_received(self, url, quality=None):
-        """Обработчик ссылок, присланных из Telegram бота или Local API / расширения"""
+    def _on_bot_url_received(self, url):
+        """Обработчик ссылок, присланных из Telegram бота"""
         self._is_adding_from_bot = True  # Ставим железный флаг
-        self.download_manager.add_urls([url], quality_override=quality)
+        self.download_manager.add_urls([url])
         self._is_adding_from_bot = False  # Снимаем флаг
 
         self._add_recent(url)
@@ -1360,8 +1356,8 @@ class MainWindow(QMainWindow):
 
         if self.isHidden() and hasattr(self, 'tray_icon') and self.tray_icon:
             self.tray_icon.showMessage(
-                "Ссылка получена",
-                f"Начинаю обработку:\n{url}",
+                "Ссылка от бота",
+                f"Получена ссылка, начинаю анализ:\n{url}",
                 QSystemTrayIcon.MessageIcon.Information,
                 3000
             )
@@ -1467,8 +1463,6 @@ class MainWindow(QMainWindow):
             self.toggle_window()
 
     def quit_app(self):
-        if hasattr(self, 'local_api') and self.local_api:
-            self.local_api.stop()
         if hasattr(self, 'bot_manager') and self.bot_manager:
             self.bot_manager.stop_bot()
         self.download_manager.stop_all()
