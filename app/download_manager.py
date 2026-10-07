@@ -1202,7 +1202,7 @@ class DownloadManager(QObject):
         if m: return f"https://kick.com/video/{m.group(1)}"
         return u
 
-    def add_urls(self, urls, quality_override=None):
+    def add_urls(self, urls, quality_override=None, is_from_bot=False):
         for url in urls:
             url = self._normalize_url(url)
 
@@ -1211,12 +1211,12 @@ class DownloadManager(QObject):
                 continue
 
             elif "kinopub" in url or "kino.pub" in url or "rezka" in url:
-                self._start_kinopub_scan(url)
+                self._start_kinopub_scan(url, is_from_bot=is_from_bot)
                 continue
 
             extractor = find_extractor_for_url(url)
             if extractor:
-                self._start_custom_extractor_scan(url, extractor)
+                self._start_custom_extractor_scan(url, extractor, is_from_bot=is_from_bot)
                 continue
 
             # Предотвращаем дублирование активных или ожидающих задач
@@ -1225,6 +1225,7 @@ class DownloadManager(QObject):
                 continue
 
             task = DownloadTask(url)
+            task.is_from_bot = is_from_bot
             if quality_override:
                 task.quality_override = quality_override
                 if quality_override in ('audio_only', 'audio_mp3'):
@@ -1379,17 +1380,32 @@ class DownloadManager(QObject):
                 if str(q) in str(quality_setting): target_res = q
         return extract_best_link(streams_raw, target_res=target_res)
 
-    def _start_custom_extractor_scan(self, url, extractor):
+    def _start_custom_extractor_scan(self, url, extractor, is_from_bot=False):
         self.status_updated.emit(f"Анализ {extractor.name}...")
         worker = CustomExtractorFetchWorker(url, extractor)
-        worker.signals.ready.connect(self._on_custom_extractor_ready)
-        worker.signals.error.connect(lambda err: self.status_updated.emit(f"Ошибка {extractor.name}: {err}"))
+        worker.signals.ready.connect(lambda meta, ext=extractor: self._on_custom_extractor_ready(meta, ext, is_from_bot=is_from_bot))
+        worker.signals.error.connect(lambda err, ext=extractor: self._on_custom_extractor_error(err, ext, is_from_bot=is_from_bot))
         self.thread_pool.start(worker)
 
-    def _on_custom_extractor_ready(self, meta, extractor):
+    def _on_custom_extractor_error(self, err, extractor, is_from_bot=False):
+        logger.error(f"[{extractor.name}] Ошибка анализа: {err}")
+        self.status_updated.emit(f"Ошибка {extractor.name}: {err}")
+        if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
+            self.bot_manager.send_message(f"❌ Ошибка анализа {extractor.name}:\n{err}")
+
+    def _on_custom_extractor_ready(self, meta, extractor, is_from_bot=False):
         episodes = meta.get('episodes', [])
         voiceovers = meta.get('voiceovers', [])
         if episodes or (voiceovers and len(voiceovers) > 1):
+            if is_from_bot:
+                if hasattr(self, 'bot_manager') and self.bot_manager:
+                    self.bot_manager.start_interactive_selection(
+                        meta=meta,
+                        on_complete=lambda voice, quality, targets, m=meta, ext=extractor: self._start_custom_extractor_from_bot(m, ext, voice, quality, targets),
+                        on_cancel=lambda: self.status_updated.emit(f"Выбор {extractor.name} отменен в Telegram.")
+                    )
+                return
+
             v_list = voiceovers or [{'name': 'Оригинал', 'id': '1'}]
             s_list = meta.get('seasons', [{'name': '1 Сезон', 'id': '1'}])
             ep_list = episodes or [{'name': 'Полный выпуск / Фильм', 'id': '1', 'season_id': '1', 'episode_number': 1}]
@@ -1462,8 +1478,11 @@ class DownloadManager(QObject):
                     direct_url = None
             if not direct_url:
                 self.status_updated.emit(f"Не удалось получить видео с {extractor.name}")
+                if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
+                    self.bot_manager.send_message(f"❌ Не удалось получить видео с {extractor.name}")
                 return
             task = DownloadTask(direct_url)
+            task.is_from_bot = is_from_bot
             task.custom_title = meta.get('safe_anime_title')
             task.custom_quality = meta.get('quality', '1080p')
             task.thumbnail_url = meta.get('poster_url')
@@ -1476,6 +1495,67 @@ class DownloadManager(QObject):
                 self.queue_thumbnail_load(task.thumbnail_url, task)
             self.fetch_video_info(task)
             self._update_summary()
+
+    def _start_custom_extractor_from_bot(self, meta, extractor, selected_v, selected_q, selected_targets):
+        class ResolveStreamsWorker(QRunnable):
+            def __init__(self, dm, meta, extractor, selected_v, selected_q, targets):
+                super().__init__()
+                self.dm = dm
+                self.meta = meta
+                self.extractor = extractor
+                self.selected_v = selected_v
+                self.selected_q = selected_q
+                self.targets = targets
+
+            def run(self):
+                added_count = 0
+                for ep in self.targets:
+                    ep_meta = dict(self.meta)
+                    ep_meta.update(ep)
+                    ep_meta['selected_voiceover'] = self.selected_v
+                    try:
+                        direct_url, q_badge = self.extractor.resolve_stream(ep_meta, quality=self.selected_q)
+                    except Exception as e:
+                        logger.error(f"[{self.extractor.name}] Ошибка получения потока: {e}")
+                        direct_url = None
+
+                    if not direct_url:
+                        logger.warning(f"[{self.extractor.name}] Не удалось получить прямую ссылку для {ep.get('name')}")
+                        continue
+
+                    title = f"{self.meta.get('safe_anime_title', 'Anime')} - {ep.get('name', 'Серия')}"
+                    if self.selected_v and isinstance(self.selected_v, dict) and self.selected_v.get('name') and self.selected_v.get('name') not in ('Default', 'Оригинал'):
+                        title += f" [{self.selected_v.get('name')}]"
+
+                    task = DownloadTask(direct_url)
+                    task.is_from_bot = True
+                    task.title = title
+                    task.custom_title = title
+                    task.custom_quality = self.selected_q or q_badge
+                    task.quality_badge = self.selected_q or q_badge or ""
+                    task.thumbnail_url = self.meta.get('poster_url')
+                    if any(d in direct_url for d in ('solodcdn', 'kodik')):
+                        task.referer = 'https://kodikplayer.com/'
+                    elif any(d in direct_url for d in ('aniboom', 'ya-ligh', 'boom-img')):
+                        task.referer = 'https://aniboom.one/'
+                    elif self.meta.get('referer'):
+                        task.referer = self.meta.get('referer')
+                    task.thumbnail_load_requested.connect(self.dm.queue_thumbnail_load)
+                    self.dm.tasks.append(task)
+                    self.dm.task_added.emit(task)
+                    if task.thumbnail_url:
+                        self.dm.queue_thumbnail_load(task.thumbnail_url, task)
+                    self.dm.start_task(task)
+                    added_count += 1
+
+                if added_count == 0:
+                    self.dm.status_updated.emit(f"Не удалось получить видеопоток для {self.extractor.name}")
+                    if hasattr(self.dm, 'bot_manager') and self.dm.bot_manager:
+                        self.dm.bot_manager.send_message(f"❌ Не удалось получить видеопоток для {self.extractor.name}")
+                self.dm._update_summary()
+
+        worker = ResolveStreamsWorker(self, meta, extractor, selected_v, selected_q, selected_targets)
+        self.thread_pool.start(worker)
 
     def _start_lampa_scan(self, url):
         self.status_updated.emit("Ожидаю включения плеера в браузере...")
@@ -1511,18 +1591,25 @@ class DownloadManager(QObject):
             self.task_added.emit(task)
         self._update_summary()
 
-    def _start_kinopub_scan(self, url, existing_dialog=None):
+    def _start_kinopub_scan(self, url, existing_dialog=None, is_from_bot=False):
         self.status_updated.emit("Анализ KinoPub / Rezka...")
+        if is_from_bot:
+            worker = KinoPubFetchWorker(url, settings=self.settings)
+            worker.signals.ready.connect(lambda meta: self._on_kinopub_meta_ready(meta, is_from_bot=True))
+            worker.signals.error.connect(lambda err, u=url: self._on_kinopub_scan_error(err, None, u, is_from_bot=True))
+            self.thread_pool.start(worker)
+            return
+
         dialog = existing_dialog or KinoPubScanDialog(url, parent=self.parent_window)
         worker = KinoPubFetchWorker(url, settings=self.settings)
 
         dialog.cancelled.connect(worker.cancel)
         worker.signals.progress.connect(dialog.set_step_progress)
         worker.signals.ready.connect(lambda meta, d=dialog: self._on_kinopub_scan_ready(meta, d))
-        worker.signals.error.connect(lambda err, d=dialog, u=url: self._on_kinopub_scan_error(err, d, u))
+        worker.signals.error.connect(lambda err, d=dialog, u=url: self._on_kinopub_scan_error(err, d, u, is_from_bot=False))
 
         if not existing_dialog:
-            dialog.retry_requested.connect(lambda d=dialog, u=url: self._start_kinopub_scan(u, existing_dialog=d))
+            dialog.retry_requested.connect(lambda d=dialog, u=url: self._start_kinopub_scan(u, existing_dialog=d, is_from_bot=False))
             dialog.show()
             dialog.raise_()
             dialog.activateWindow()
@@ -1535,16 +1622,20 @@ class DownloadManager(QObject):
                 dialog.accept()
             except Exception:
                 pass
-        self._on_kinopub_meta_ready(meta)
+        self._on_kinopub_meta_ready(meta, is_from_bot=False)
 
-    def _on_kinopub_scan_error(self, err, dialog, url):
+    def _on_kinopub_scan_error(self, err, dialog, url, is_from_bot=False):
         info = format_kinopub_error(str(err))
         logger.error(f"KinoPub scan error for {url}: {err}")
         self.status_updated.emit(f"KinoPub: {info['short_status']}")
+        if is_from_bot:
+            if hasattr(self, 'bot_manager') and self.bot_manager:
+                self.bot_manager.send_message(f"❌ Ошибка анализа видео (KinoPub / Rezka):\n{info['message']}")
+            return
         if dialog and not dialog.is_cancelled:
             dialog.show_error(str(err))
 
-    def _on_kinopub_meta_ready(self, meta):
+    def _on_kinopub_meta_ready(self, meta, is_from_bot=False):
         url = meta['url']
         post_id = meta['post_id']
         voiceovers = meta['voiceovers']
@@ -1556,6 +1647,16 @@ class DownloadManager(QObject):
         is_movie = meta['is_movie']
 
         self._current_kinopub_poster = meta.get('poster_url')
+
+        if is_from_bot:
+            if hasattr(self, 'bot_manager') and self.bot_manager:
+                self.bot_manager.start_interactive_selection(
+                    meta=meta,
+                    on_complete=lambda voice, quality, targets, m=meta: self._start_kinopub_from_bot(m, voice, quality, targets),
+                    on_cancel=lambda: self.status_updated.emit("Выбор KinoPub отменен в Telegram.")
+                )
+            return
+
         if post_id:
             logger.info(f"[KinoPub] Открытие диалога выбора серий для '{meta.get('safe_anime_title')}' (post_id: {post_id})...")
             dialog = EpisodeSelectionDialog(
@@ -1621,7 +1722,7 @@ class DownloadManager(QObject):
                         d.accept()
                     except Exception:
                         pass
-                    self._on_kinopub_series_finished(res)
+                    self._on_kinopub_series_finished(res, is_from_bot=False)
 
                 def on_series_failed(err, w=series_worker, d=series_dialog):
                     if w in self._active_series_workers:
@@ -1630,7 +1731,7 @@ class DownloadManager(QObject):
                         d.accept()
                     except Exception:
                         pass
-                    self._on_kinopub_series_error(err)
+                    self._on_kinopub_series_error(err, is_from_bot=False)
 
                 series_worker.signals.finished.connect(on_series_success)
                 series_worker.signals.error.connect(on_series_failed)
@@ -1671,13 +1772,75 @@ class DownloadManager(QObject):
             self.task_added.emit(task)
             self._update_summary()
 
-    def _on_kinopub_series_finished(self, results):
+    def _start_kinopub_from_bot(self, meta, selected_v_obj, selected_quality, targets):
+        url = meta['url']
+        post_id = meta.get('post_id')
+        seasons = meta.get('seasons', [])
+        is_movie = meta.get('is_movie', False)
+        selected_voice = str(selected_v_obj.get('id', '59') if isinstance(selected_v_obj, dict) else selected_v_obj or '59')
+        safe_v_name = re.sub(r'[\\/*?:"<>|]', "", selected_v_obj.get('name', 'Default') if isinstance(selected_v_obj, dict) else 'Default')
+        safe_s_name = re.sub(r'[\\/*?:"<>|]', "", seasons[0].get('name', '1 Сезон') if seasons else '1 Сезон')
+        selected_season = str(seasons[0].get('id', '1') if seasons else '1')
+
+        if post_id:
+            logger.info(f"[KinoPub-Bot] Запуск сбора ссылок: '{meta.get('safe_anime_title')}', озвучка: {safe_v_name}, серий: {len(targets)}")
+            self.status_updated.emit(f"KinoPub: сбор ссылок для {len(targets)} серий...")
+            series_worker = KinoPubSeriesWorker(
+                url=url,
+                post_id=post_id,
+                selected_voice=selected_voice,
+                selected_season=selected_season,
+                selected_quality=selected_quality,
+                safe_anime_title=meta['safe_anime_title'],
+                safe_v_name=safe_v_name,
+                safe_s_name=safe_s_name,
+                is_movie=is_movie,
+                targets=targets,
+                cookies=meta.get('cookies', []),
+                favs=meta.get('favs', ''),
+                settings=self.settings
+            )
+            self._active_series_workers.append(series_worker)
+
+            def on_series_success(res, w=series_worker):
+                if w in self._active_series_workers:
+                    self._active_series_workers.remove(w)
+                self._on_kinopub_series_finished(res, is_from_bot=True)
+
+            def on_series_failed(err, w=series_worker):
+                if w in self._active_series_workers:
+                    self._active_series_workers.remove(w)
+                self._on_kinopub_series_error(err, is_from_bot=True)
+
+            series_worker.signals.finished.connect(on_series_success)
+            series_worker.signals.error.connect(on_series_failed)
+            self.thread_pool.start(series_worker)
+        elif meta.get('direct_url'):
+            task = DownloadTask(meta['direct_url'])
+            task.is_from_bot = True
+            task.custom_title = meta.get('safe_anime_title')
+            task.custom_quality = selected_quality or meta.get('direct_quality') or '1080p'
+            task.quality_badge = task.custom_quality
+            task.referer = meta.get('url')
+            if meta.get('poster_url'):
+                task.thumbnail_url = meta['poster_url']
+            task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
+            self.tasks.append(task)
+            self.task_added.emit(task)
+            self.fetch_video_info(task)
+            if task.thumbnail_url:
+                self.queue_thumbnail_load(task.thumbnail_url, task)
+            self.start_task(task)
+            self._update_summary()
+
+    def _on_kinopub_series_finished(self, results, is_from_bot=False):
         logger.info(f"[KinoPub] Завершение сбора серий: получено {len(results) if results else 0} рабочих ссылок.")
         if results:
             poster = getattr(self, '_current_kinopub_poster', None)
             new_tasks = []
             for res in results:
                 task = DownloadTask(res['url'])
+                task.is_from_bot = is_from_bot
                 task.custom_title = res['title']
                 if res.get('quality'):
                     task.custom_quality = res['quality']
@@ -1704,14 +1867,18 @@ class DownloadManager(QObject):
         else:
             logger.warning("[KinoPub] Список серий пуст — ни одна ссылка не была получена.")
             self.status_updated.emit("Не удалось получить ссылки на серии.")
-            if self.parent_window:
+            if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
+                self.bot_manager.send_message("❌ Не удалось получить ссылки на выбранные серии KinoPub.")
+            elif self.parent_window:
                 QMessageBox.warning(self.parent_window, "KinoPub", "Не удалось получить рабочие ссылки на выбранные серии.")
         self._update_summary()
 
-    def _on_kinopub_series_error(self, err):
+    def _on_kinopub_series_error(self, err, is_from_bot=False):
         logger.error(f"[KinoPub] Ошибка сбора ссылок на серии: {err}")
         self.status_updated.emit(f"Ошибка получения серий: {err}")
-        if self.parent_window:
+        if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
+            self.bot_manager.send_message(f"❌ Ошибка KinoPub / Rezka:\n{err}")
+        elif self.parent_window:
             QMessageBox.critical(self.parent_window, "Ошибка KinoPub / Rezka", f"Не удалось получить ссылки на серии:\n\n{err}")
         self._update_summary()
 

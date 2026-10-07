@@ -140,6 +140,7 @@ class MainWindow(QMainWindow):
         self.download_manager = DownloadManager(self.settings, self.ffmpeg_path, self.thread_pool, self.translator, parent=self)
         self.update_checker = UpdateChecker(self, self.translator, self.settings, self.thread_pool)
         self.bot_manager = TelegramBotManager(self.settings)
+        self.download_manager.bot_manager = self.bot_manager
         self.bot_manager.signals.url_received.connect(self._on_bot_url_received)
 
         self.current_filter_mode = 'all'
@@ -909,7 +910,8 @@ class MainWindow(QMainWindow):
 
     def add_download_item_widget(self, task):
         item_widget = DownloadItemWidget(task, self.translator)
-        task.is_from_bot = getattr(self, '_is_adding_from_bot', False)
+        if not getattr(task, 'is_from_bot', False):
+            task.is_from_bot = getattr(self, '_is_adding_from_bot', False)
         list_item = QListWidgetItem(self.downloads_list)
         list_item.setSizeHint(item_widget.sizeHint())
         self.downloads_list.addItem(list_item)
@@ -1348,7 +1350,7 @@ class MainWindow(QMainWindow):
     def _on_bot_url_received(self, url):
         """Обработчик ссылок, присланных из Telegram бота"""
         self._is_adding_from_bot = True  # Ставим железный флаг
-        self.download_manager.add_urls([url])
+        self.download_manager.add_urls([url], is_from_bot=True)
         self._is_adding_from_bot = False  # Снимаем флаг
 
         self._add_recent(url)
