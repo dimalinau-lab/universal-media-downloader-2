@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QListWidget, QListWidgetItem, QStackedWidget,
                              QToolButton, QFrame, QApplication, QDialog,
                              QSystemTrayIcon, QMenu, QButtonGroup)
+from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl, QTimer
 from PyQt6.QtGui import (QFont, QIcon, QDropEvent, QMovie, QDesktopServices, QAction,
                          QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent)
 
