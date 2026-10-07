@@ -351,7 +351,10 @@ class DownloadWorker(QRunnable):
             time.sleep(1)
 
     def _default_save_path(self):
-        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        if getattr(sys, 'frozen', False):
+            root = os.path.dirname(sys.executable)
+        else:
+            root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         dl_dir = os.path.join(root, 'downloads')
         os.makedirs(dl_dir, exist_ok=True)
         return dl_dir

@@ -1026,8 +1026,11 @@ class FilesTab(QWidget):
         folder = self.parent_window.settings.value('save_path', '')
 
         if not folder or not os.path.isdir(folder):
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-            folder = os.path.join(project_root, 'downloads')
+            if getattr(sys, 'frozen', False):
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            folder = os.path.join(base_dir, 'downloads')
 
         if os.path.isdir(folder):
             valid_extensions = ('.mp4', '.mkv', '.avi', '.webm', '.mp3', '.m4a', '.mov')

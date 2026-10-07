@@ -1157,6 +1157,7 @@ class DownloadManager(QObject):
     status_updated = pyqtSignal(str)
     summary_updated = pyqtSignal(str)
     active_threads_changed = pyqtSignal(int, int)
+    dispatch_main = pyqtSignal(object, tuple)
 
     def __init__(self, settings, ffmpeg_path, thread_pool, translator, parent=None):
         super().__init__(parent)
@@ -1165,6 +1166,7 @@ class DownloadManager(QObject):
         self.ffmpeg_path = ffmpeg_path
         self.thread_pool = thread_pool
         self.translator = translator
+        self.dispatch_main.connect(self._run_on_main)
         self.tasks = []
         self.active_downloads = 0
         self.is_downloading_active = False
@@ -1174,6 +1176,23 @@ class DownloadManager(QObject):
         self.max_thumbnail_workers = 5
         self.active_thumbnail_workers = 0
         self.thumbnail_queue = []
+
+    def _run_on_main(self, fn, args):
+        try:
+            fn(*args)
+        except Exception as e:
+            logger.error(f"[DownloadManager] Ошибка выполнения в GUI потоке: {e}", exc_info=True)
+
+    def run_on_main(self, fn, *args):
+        self.dispatch_main.emit(fn, args)
+
+    def _add_and_start_task(self, task):
+        self.tasks.append(task)
+        self.task_added.emit(task)
+        if task.thumbnail_url:
+            self.queue_thumbnail_load(task.thumbnail_url, task)
+        self.start_task(task)
+        self._update_summary()
 
     def _update_summary(self):
         total = len(self.tasks)
@@ -1401,7 +1420,7 @@ class DownloadManager(QObject):
                 if hasattr(self, 'bot_manager') and self.bot_manager:
                     self.bot_manager.start_interactive_selection(
                         meta=meta,
-                        on_complete=lambda voice, quality, targets, m=meta, ext=extractor: self._start_custom_extractor_from_bot(m, ext, voice, quality, targets),
+                        on_complete=lambda voice, quality, targets, m=meta, ext=extractor: self.run_on_main(self._start_custom_extractor_from_bot, m, ext, voice, quality, targets),
                         on_cancel=lambda: self.status_updated.emit(f"Выбор {extractor.name} отменен в Telegram.")
                     )
                 return
@@ -1541,11 +1560,7 @@ class DownloadManager(QObject):
                     elif self.meta.get('referer'):
                         task.referer = self.meta.get('referer')
                     task.thumbnail_load_requested.connect(self.dm.queue_thumbnail_load)
-                    self.dm.tasks.append(task)
-                    self.dm.task_added.emit(task)
-                    if task.thumbnail_url:
-                        self.dm.queue_thumbnail_load(task.thumbnail_url, task)
-                    self.dm.start_task(task)
+                    self.dm.run_on_main(self.dm._add_and_start_task, task)
                     added_count += 1
 
                 if added_count == 0:
@@ -1652,7 +1667,7 @@ class DownloadManager(QObject):
             if hasattr(self, 'bot_manager') and self.bot_manager:
                 self.bot_manager.start_interactive_selection(
                     meta=meta,
-                    on_complete=lambda voice, quality, targets, m=meta: self._start_kinopub_from_bot(m, voice, quality, targets),
+                    on_complete=lambda voice, quality, targets, m=meta: self.run_on_main(self._start_kinopub_from_bot, m, voice, quality, targets),
                     on_cancel=lambda: self.status_updated.emit("Выбор KinoPub отменен в Telegram.")
                 )
             return
@@ -1805,12 +1820,12 @@ class DownloadManager(QObject):
             def on_series_success(res, w=series_worker):
                 if w in self._active_series_workers:
                     self._active_series_workers.remove(w)
-                self._on_kinopub_series_finished(res, is_from_bot=True)
+                self.run_on_main(self._on_kinopub_series_finished, res, True)
 
             def on_series_failed(err, w=series_worker):
                 if w in self._active_series_workers:
                     self._active_series_workers.remove(w)
-                self._on_kinopub_series_error(err, is_from_bot=True)
+                self.run_on_main(self._on_kinopub_series_error, err, True)
 
             series_worker.signals.finished.connect(on_series_success)
             series_worker.signals.error.connect(on_series_failed)
@@ -1824,14 +1839,7 @@ class DownloadManager(QObject):
             task.referer = meta.get('url')
             if meta.get('poster_url'):
                 task.thumbnail_url = meta['poster_url']
-            task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
-            self.tasks.append(task)
-            self.task_added.emit(task)
-            self.fetch_video_info(task)
-            if task.thumbnail_url:
-                self.queue_thumbnail_load(task.thumbnail_url, task)
-            self.start_task(task)
-            self._update_summary()
+            self.run_on_main(self._add_and_start_task, task)
 
     def _on_kinopub_series_finished(self, results, is_from_bot=False):
         logger.info(f"[KinoPub] Завершение сбора серий: получено {len(results) if results else 0} рабочих ссылок.")

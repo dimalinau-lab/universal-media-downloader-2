@@ -1168,8 +1168,11 @@ class SettingsTab(QWidget):
             self.btn_test_cookies.setEnabled(not is_file)
 
     def on_portable_toggled(self, checked):
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        data_dir = os.path.join(project_root, 'data')
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        data_dir = os.path.join(base_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
         portable_marker = os.path.join(data_dir, 'portable.dat')
         ini_path = os.path.join(data_dir, 'settings.ini')

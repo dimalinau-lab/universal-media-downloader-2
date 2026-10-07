@@ -127,7 +127,7 @@
   "tg_error_empty_token": "Спочатку введи токен бота!",
   "tg_success_start": "Telegram-бот успішно запущений!",
   "tg_error_start": "Не вдалося підключитися:",
-  "about_version": "Версія: 3.1",
+  "about_version": "Версія: 3.2 (Alpha)",
   "about_author": "Автор: Magerko\nДоповнено: MrPablo",
   "support_author": "Підтримати автора",
   "tg_btn_clear": "Скинути токен",

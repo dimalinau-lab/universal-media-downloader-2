@@ -14,12 +14,14 @@ logger = logging.getLogger(__name__)
 
 class BotSignals(QObject):
     url_received = pyqtSignal(str)
+    dispatch_main = pyqtSignal(object, tuple)
 
 
 class TelegramBotManager:
     def __init__(self, settings):
         self.settings = settings
         self.signals = BotSignals()
+        self.signals.dispatch_main.connect(self._run_on_main_thread)
         self.bot = None
         self.thread = None
         self._sender_thread = None
@@ -28,6 +30,15 @@ class TelegramBotManager:
         self.last_chat_id = None
         self.current_token = None
         self._interactive_sessions = {}
+
+    def _run_on_main_thread(self, fn, args):
+        try:
+            fn(*args)
+        except Exception as e:
+            logger.error(f"[TelegramBot] Ошибка выполнения в GUI потоке: {e}", exc_info=True)
+
+    def dispatch_to_main_thread(self, fn, *args):
+        self.signals.dispatch_main.emit(fn, args)
 
     def start_bot(self, token):
         if self._is_running and getattr(self, 'current_token', None) == token:
@@ -441,10 +452,12 @@ class TelegramBotManager:
                 is_movie = sess.get('is_movie', False) or len(sess.get('episodes', [])) <= 1
                 if is_movie:
                     targets = sess.get('episodes') or [{'name': 'Полный фильм', 'id': '1'}]
+                    sel_v = sess.get('selected_voice') or (sess['voiceovers'][0] if sess.get('voiceovers') else {'name': 'По умолчанию', 'id': '59'})
+                    v_name = sel_v.get('name', 'По умолчанию')
                     text = (
                         f"✅ <b>Параметры выбраны!</b>\n"
                         f"🎬 <b>{html.escape(sess['title'])}</b>\n"
-                        f"🎙️ Озвучка: <b>{html.escape(sess.get('selected_voice', {}).get('name', 'По умолчанию'))}</b>\n"
+                        f"🎙️ Озвучка: <b>{html.escape(v_name)}</b>\n"
                         f"⚙️ Качество: <b>{html.escape(selected_q)}</b>\n\n"
                         f"🚀 <b>Скачивание фильма запущено на ПК!</b>"
                     )
@@ -459,10 +472,9 @@ class TelegramBotManager:
                         logger.debug(f"Error updating completion message: {e}")
 
                     on_complete = sess.get('on_complete')
-                    sel_v = sess.get('selected_voice')
                     self._interactive_sessions.pop(sess_id, None)
                     if on_complete:
-                        on_complete(sel_v, selected_q, targets)
+                        self.dispatch_to_main_thread(on_complete, sel_v, selected_q, targets)
                 else:
                     self._render_episodes_step(sess, call)
             except Exception as e:
@@ -491,11 +503,15 @@ class TelegramBotManager:
                     except Exception:
                         pass
 
+                sel_v = sess.get('selected_voice') or (sess['voiceovers'][0] if sess.get('voiceovers') else {'name': 'По умолчанию', 'id': '59'})
+                v_name = sel_v.get('name', 'По умолчанию')
+                sel_q = sess.get('selected_quality', '1080p')
+
                 text = (
                     f"✅ <b>Загрузка запущена!</b>\n"
                     f"🎬 <b>{html.escape(sess['title'])}</b>\n"
-                    f"🎙️ Озвучка: <b>{html.escape(sess.get('selected_voice', {}).get('name', 'По умолчанию'))}</b>\n"
-                    f"⚙️ Качество: <b>{html.escape(sess.get('selected_quality', '1080p'))}</b>\n"
+                    f"🎙️ Озвучка: <b>{html.escape(v_name)}</b>\n"
+                    f"⚙️ Качество: <b>{html.escape(sel_q)}</b>\n"
                     f"📺 Серии: <b>{html.escape(desc)}</b>\n\n"
                     f"🚀 <b>Задачи успешно добавлены в очередь на ПК!</b>"
                 )
@@ -510,11 +526,9 @@ class TelegramBotManager:
                     logger.debug(f"Error updating completion message: {e}")
 
                 on_complete = sess.get('on_complete')
-                sel_v = sess.get('selected_voice')
-                sel_q = sess.get('selected_quality')
                 self._interactive_sessions.pop(sess_id, None)
                 if on_complete:
-                    on_complete(sel_v, sel_q, targets)
+                    self.dispatch_to_main_thread(on_complete, sel_v, sel_q, targets)
             except Exception as e:
                 logger.error(f"Error handling tge callback: {e}")
 
@@ -551,7 +565,7 @@ class TelegramBotManager:
                 except Exception:
                     pass
                 if sess and sess.get('on_cancel'):
-                    sess['on_cancel']()
+                    self.dispatch_to_main_thread(sess['on_cancel'])
                 self._interactive_sessions.pop(sess_id, None)
             except Exception as e:
                 logger.error(f"Error handling tgc callback: {e}")

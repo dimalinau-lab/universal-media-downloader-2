@@ -26,8 +26,20 @@ if hasattr(sys.stderr, 'reconfigure'):
         pass
 
 
+def get_base_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_bundle_dir():
+    if getattr(sys, 'frozen', False):
+        return getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(sys.executable), '_internal'))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def setup_logging():
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    log_dir = os.path.join(get_base_dir(), 'logs')
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, 'app.log')
 
@@ -42,11 +54,12 @@ def setup_logging():
         root_logger.addHandler(file_handler)
 
         # Консольный логгер в реальном времени (INFO+)
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
-        console_handler.setFormatter(console_formatter)
-        console_handler.setLevel(logging.INFO)
-        root_logger.addHandler(console_handler)
+        if sys.stdout:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
+            console_handler.setFormatter(console_formatter)
+            console_handler.setLevel(logging.INFO)
+            root_logger.addHandler(console_handler)
 
     # Приглушаем излишне шумные сторонние библиотеки в консоли
     logging.getLogger('selenium').setLevel(logging.WARNING)
@@ -59,8 +72,8 @@ def excepthook(exc_type, exc_value, exc_tb):
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 
-def get_app_settings(project_root):
-    data_dir = os.path.join(project_root, 'data')
+def get_app_settings(base_dir):
+    data_dir = os.path.join(base_dir, 'data')
     ini_path = os.path.join(data_dir, 'settings.ini')
     portable_marker = os.path.join(data_dir, 'portable.dat')
 
@@ -87,16 +100,19 @@ def main():
         # Включаем корректное масштабирование для экранов ноутбуков (125%, 150%)
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
-        project_root = os.path.dirname(os.path.abspath(__file__))
+        base_dir = get_base_dir()
+        bundle_dir = get_bundle_dir()
         app = QApplication(sys.argv)
 
-        settings = get_app_settings(project_root)
+        settings = get_app_settings(base_dir)
 
-        translator = Translator(project_root=project_root)
+        translator = Translator(project_root=bundle_dir)
         saved_language = settings.value('language', 'ru')
         translator.set_language(saved_language)
 
-        icon_path = os.path.join(project_root, 'assets', 'icon.png')
+        icon_path = os.path.join(bundle_dir, 'assets', 'icon.png')
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(base_dir, 'assets', 'icon.png')
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
         else:

@@ -984,12 +984,18 @@ class MainWindow(QMainWindow):
     def open_save_folder(self):
         folder = self.settings.value('save_path', '')
         if not folder or not os.path.isdir(folder):
-            folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            if getattr(sys, 'frozen', False):
+                folder = os.path.dirname(sys.executable)
+            else:
+                folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         self._open_path(folder)
 
     def open_logs_folder(self):
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        folder = os.path.join(project_root, 'logs')
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        folder = os.path.join(base_dir, 'logs')
         if not os.path.isdir(folder):
             os.makedirs(folder, exist_ok=True)
         self._open_path(folder)
@@ -1036,8 +1042,11 @@ class MainWindow(QMainWindow):
                                 self.translator.translate('file_not_found', 'Файл еще не скачан или не найден.'))
 
     def _check_first_launch(self):
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        data_dir = os.path.join(project_root, 'data')
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        data_dir = os.path.join(base_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
         counter_file = os.path.join(data_dir, 'launch_count.json')
 
@@ -1668,7 +1677,10 @@ class MainWindow(QMainWindow):
     def update_disk_space(self):
         save_path = self.settings.value('save_path', '')
         if not save_path or not os.path.exists(save_path):
-            save_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            if getattr(sys, 'frozen', False):
+                save_path = os.path.dirname(sys.executable)
+            else:
+                save_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         try:
             total, used, free = shutil.disk_usage(save_path)
             free_gb = free / (1024 ** 3)

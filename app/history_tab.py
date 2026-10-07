@@ -98,8 +98,11 @@ class HistoryTab(QWidget):
         self.translator = translator
         self.parent_window = parent
 
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        data_dir = os.path.join(project_root, 'data')
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        data_dir = os.path.join(base_dir, 'data')
         self.history_manager = HistoryManager(data_dir)
 
         self.initUI()
