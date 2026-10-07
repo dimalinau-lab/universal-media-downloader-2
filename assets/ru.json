@@ -270,5 +270,15 @@
   "copied": "Скопировано",
   "on": "Вкл",
   "off": "Выкл",
-  "close": "Закрыть"
+  "close": "Закрыть",
+  "video_codec_preference": "Предпочтительный видеокодек",
+  "diagnostics_settings": "Диагностика окружения и сети",
+  "download_storage_settings": "Загрузка и хранилище",
+  "formats_codecs_settings": "Форматы, кодеки и звук",
+  "cookies_settings": "Cookies и авторизация",
+  "app_system_settings": "Приложение и система",
+  "deno_status_title": "Среда Deno (обход защиты YouTube):",
+  "ffmpeg_status_title": "Встроенный FFmpeg / FFprobe:",
+  "network_test_btn": "Проверить отклик серверов",
+  "network_status_idle": "Нажмите для проверки сетевой задержки к YouTube, VK, RuTube, KinoPub"
 }

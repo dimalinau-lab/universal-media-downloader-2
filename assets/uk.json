@@ -270,5 +270,15 @@
   "copied": "Скопійовано",
   "on": "Увімк",
   "off": "Вимк",
-  "close": "Закрити"
+  "close": "Закрити",
+  "video_codec_preference": "Переважний відеокодек",
+  "diagnostics_settings": "Діагностика середовища та мережі",
+  "download_storage_settings": "Завантаження та сховище",
+  "formats_codecs_settings": "Формати, кодеки та звук",
+  "cookies_settings": "Cookies та авторизація",
+  "app_system_settings": "Програма та система",
+  "deno_status_title": "Середовище Deno (обхід захисту YouTube):",
+  "ffmpeg_status_title": "Вбудований FFmpeg / FFprobe:",
+  "network_test_btn": "Перевірити відгук серверів",
+  "network_status_idle": "Натисніть для перевірки мережевої затримки до YouTube, VK, RuTube, KinoPub"
 }

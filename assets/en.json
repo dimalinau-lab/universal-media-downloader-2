@@ -269,5 +269,15 @@
   "container": "Container",
   "on": "On",
   "off": "Off",
-  "close": "Close"
+  "close": "Close",
+  "video_codec_preference": "Preferred Video Codec",
+  "diagnostics_settings": "Environment & Network Diagnostics",
+  "download_storage_settings": "Downloads & Storage",
+  "formats_codecs_settings": "Formats, Codecs & Audio",
+  "cookies_settings": "Cookies & Authentication",
+  "app_system_settings": "Application & System",
+  "deno_status_title": "Deno Runtime (YouTube challenge bypass):",
+  "ffmpeg_status_title": "Built-in FFmpeg / FFprobe:",
+  "network_test_btn": "Test Server Latency",
+  "network_status_idle": "Click to test response times for YouTube, VK, RuTube, KinoPub"
 }

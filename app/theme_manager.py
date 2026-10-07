@@ -70,6 +70,15 @@ class ThemeManager:
                 font-weight: 500;
             }
 
+            QToolTip {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 12px;
+            }
+
             #DownloadsList, QTableWidget {
                 background-color: transparent;
                 border: none;
@@ -179,6 +188,15 @@ class ThemeManager:
                 padding: 0 4px;
                 color: #000000;
                 font-weight: 500;
+            }
+
+            QToolTip {
+                background-color: #f9f9f9;
+                color: #202020;
+                border: 1px solid rgba(0, 0, 0, 0.15);
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 12px;
             }
 
             #DownloadsList, QTableWidget {
