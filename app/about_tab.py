@@ -105,7 +105,7 @@ class AboutTab(QWidget):
         self.lbl_title.setText(self.translator.translate('app_title'))
         self.lbl_desc.setText(self.translator.translate('description'))
         self.btn_support.setText(self.translator.translate('support_author', 'Поддержать автора'))
-        self.lbl_version.setText(self.translator.translate('about_version', 'Версия: 3.2 (Alpha)'))
+        self.lbl_version.setText(self.translator.translate('about_version', 'Версия: 3.2'))
         self.lbl_author.setText(self.translator.translate('about_author', 'Автор: Magerko\nДополнено: MrPablo'))
 
 

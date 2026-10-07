@@ -127,7 +127,7 @@
   "tg_error_empty_token": "Please enter the bot token first!",
   "tg_success_start": "Telegram bot started successfully!",
   "tg_error_start": "Failed to connect:",
-  "about_version": "Version: 3.2 (Alpha)",
+  "about_version": "Version: 3.2",
   "about_author": "Author: Magerko\nModified by: MrPablo",
   "support_author": "Support the Author",
   "tg_btn_clear": "Reset Token",
