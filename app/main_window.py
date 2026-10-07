@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QListWidget, QListWidgetItem, QStackedWidget,
                              QToolButton, QFrame, QApplication, QDialog,
                              QSystemTrayIcon, QMenu, QButtonGroup)
-from PyQt6.QtCore import Qt, QSettings, QSize, QThreadPool, QUrl, QTimer
-from PyQt6.QtGui import QFont, QIcon, QDropEvent, QMovie, QDesktopServices, QAction
+from PyQt6.QtGui import (QFont, QIcon, QDropEvent, QMovie, QDesktopServices, QAction,
+                         QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent)
 
 from .settings_tab import SettingsTab
 from .about_tab import AboutTab
@@ -90,6 +90,37 @@ class CountdownShutdownDialog(QDialog):
         self.cancelled = True
         self.timer.stop()
         self.reject()
+
+
+class DragOverlayWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet("""
+            QWidget#DragOverlay {
+                background-color: rgba(18, 24, 38, 0.92);
+                border: 3px dashed #0078d4;
+                border-radius: 14px;
+            }
+        """)
+        self.setObjectName("DragOverlay")
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(12)
+
+        icon = IconWidget(FluentIcon.FOLDER_ADD)
+        icon.setFixedSize(54, 54)
+
+        lbl_title = SubtitleLabel("Отпустите ссылки или .txt файлы здесь")
+        lbl_title.setStyleSheet("font-size: 19px; font-weight: bold; color: #ffffff;")
+
+        lbl_sub = CaptionLabel("Ссылки будут проверены и добавлены в очередь загрузки")
+        lbl_sub.setStyleSheet("font-size: 13px; color: #60cdff;")
+
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl_title, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl_sub, 0, Qt.AlignmentFlag.AlignCenter)
+        self.hide()
 
 
 class MainWindow(QMainWindow):
@@ -210,6 +241,7 @@ class MainWindow(QMainWindow):
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+        self.drag_overlay = DragOverlayWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -890,6 +922,8 @@ class MainWindow(QMainWindow):
         item_widget.open_folder_requested.connect(self.open_save_folder)
 
         item_widget.open_file_requested.connect(lambda: self.open_downloaded_file(task))
+        item_widget.media_info_requested.connect(lambda: self.open_task_media_info(task))
+        item_widget.convert_audio_requested.connect(lambda: self.open_task_convert_audio(task))
 
         item_widget.copy_link_requested.connect(lambda: QApplication.clipboard().setText(task.url))
         item_widget.start_or_retry_requested.connect(lambda: self.download_manager.start_or_retry_task(task))
@@ -981,6 +1015,26 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, self.translator.translate('warning', 'Внимание'),
                                 self.translator.translate('file_not_found',
                                                           'Файл не найден! Возможно, он еще конвертируется или был удален.'))
+
+    def open_task_media_info(self, task):
+        actual_path = task.final_filepath or task.current_filename
+        if actual_path and os.path.exists(actual_path):
+            from .media_info_dialog import MediaInfoDialog
+            dlg = MediaInfoDialog(actual_path, self.ffprobe_path, self.translator, self)
+            dlg.exec()
+        else:
+            QMessageBox.warning(self, self.translator.translate('warning', 'Внимание'),
+                                self.translator.translate('file_not_found', 'Файл еще не скачан или не найден.'))
+
+    def open_task_convert_audio(self, task):
+        actual_path = task.final_filepath or task.current_filename
+        if actual_path and os.path.exists(actual_path):
+            from .audio_convert_dialog import AudioConvertDialog
+            dlg = AudioConvertDialog(actual_path, self.ffmpeg_path, self.translator, self)
+            dlg.exec()
+        else:
+            QMessageBox.warning(self, self.translator.translate('warning', 'Внимание'),
+                                self.translator.translate('file_not_found', 'Файл еще не скачан или не найден.'))
 
     def _check_first_launch(self):
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -1294,19 +1348,19 @@ class MainWindow(QMainWindow):
             file_path=task.final_filepath
         )
 
-    def _on_bot_url_received(self, url):
-        """Обработчик ссылок, присланных из Telegram бота"""
+    def _on_bot_url_received(self, url, quality=None):
+        """Обработчик ссылок, присланных из Telegram бота или Local API / расширения"""
         self._is_adding_from_bot = True  # Ставим железный флаг
-        self.download_manager.add_urls([url])
+        self.download_manager.add_urls([url], quality_override=quality)
         self._is_adding_from_bot = False  # Снимаем флаг
 
         self._add_recent(url)
         self._rebuild_recent_buttons()
 
-        if self.isHidden() and hasattr(self, 'tray_icon'):
+        if self.isHidden() and hasattr(self, 'tray_icon') and self.tray_icon:
             self.tray_icon.showMessage(
-                "Ссылка от бота",
-                f"Получена ссылка, начинаю анализ:\n{url}",
+                "Ссылка получена",
+                f"Начинаю обработку:\n{url}",
                 QSystemTrayIcon.MessageIcon.Information,
                 3000
             )
@@ -1442,6 +1496,9 @@ class MainWindow(QMainWindow):
         elif status == DownloadTask.Status.COMPLETED:
             if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
                 self.bot_manager.send_message(f"✅ Успешно скачано на ПК:\n{task.title}")
+                actual_file = task.final_filepath or task.current_filename
+                if actual_file and os.path.exists(actual_file):
+                    self.bot_manager.send_file(actual_file, caption=f"📁 {task.title}")
             self._save_to_history(task)
             self.update_disk_space()
             if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
@@ -1625,4 +1682,84 @@ class MainWindow(QMainWindow):
             self.btn_disk_space.setIcon(FluentIcon.SAVE)
             self.btn_disk_space.setToolTip(f"{self.translator.translate('open_save_folder', 'Открыть папку загрузок')}: {save_path}")
         except Exception:
-            self.btn_disk_space.setText("")
+            self.btn_disk_space.setText("")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'drag_overlay') and self.drag_overlay and self.centralWidget():
+            self.drag_overlay.setGeometry(self.centralWidget().rect())
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+            if hasattr(self, 'drag_overlay') and self.drag_overlay and self.centralWidget():
+                self.drag_overlay.setGeometry(self.centralWidget().rect())
+                self.drag_overlay.show()
+                self.drag_overlay.raise_()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent):
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent):
+        if hasattr(self, 'drag_overlay') and self.drag_overlay:
+            self.drag_overlay.hide()
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent):
+        if hasattr(self, 'drag_overlay') and self.drag_overlay:
+            self.drag_overlay.hide()
+
+        urls_found = []
+        # 1. Извлечение из файлов (например брошен .txt со ссылками)
+        if event.mimeData().hasUrls():
+            for qurl in event.mimeData().urls():
+                if qurl.isLocalFile():
+                    local_path = qurl.toLocalFile()
+                    if os.path.exists(local_path) and (local_path.endswith('.txt') or not os.path.splitext(local_path)[1]):
+                        try:
+                            with open(local_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                for line in f:
+                                    for u in re.findall(r'https?://[^\s<>"]+', line):
+                                        u = u.strip().rstrip('.,;)]}>')
+                                        if u and u not in urls_found:
+                                            urls_found.append(u)
+                        except Exception as e:
+                            logger.error(f"Error reading dropped file {local_path}: {e}")
+                else:
+                    u_str = qurl.toString().strip()
+                    if u_str.startswith(('http://', 'https://')) and u_str not in urls_found:
+                        urls_found.append(u_str)
+
+        # 2. Извлечение из текста (перетаскивание текста/ссылки из браузера)
+        if event.mimeData().hasText():
+            text = event.mimeData().text().strip()
+            for u in re.findall(r'https?://[^\s<>"]+', text):
+                u = u.strip().rstrip('.,;)]}>')
+                if u and u not in urls_found:
+                    urls_found.append(u)
+
+        if urls_found:
+            event.acceptProposedAction()
+            self.page_stack.setCurrentIndex(0)
+            self.download_manager.add_urls(urls_found)
+            for u in urls_found:
+                self._add_recent(u)
+            self._rebuild_recent_buttons()
+            try:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title=self.translator.translate('batch_added_title', "Пакетное добавление"),
+                    content=f"Добавлено {len(urls_found)} ссылок через Drag & Drop.",
+                    position=InfoBarPosition.TOP,
+                    duration=3500,
+                    parent=self
+                )
+            except Exception:
+                pass
+        else:
+            event.ignore()

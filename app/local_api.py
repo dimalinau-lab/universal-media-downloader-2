@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 class ApiSignals(QObject):
-    url_received = pyqtSignal(str)
+    url_received = pyqtSignal(str, str)
 
 
 signals = ApiSignals()
@@ -24,6 +24,19 @@ class LocalApiRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self._send_cors_headers()
         self.end_headers()
+
+    def do_GET(self):
+        if self.path in ('/status', '/ping', '/'):
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            resp = json.dumps({"status": "running", "version": "3.2-alpha", "name": "Universal Media Downloader"}).encode('utf-8')
+            self.wfile.write(resp)
+        else:
+            self.send_response(404)
+            self._send_cors_headers()
+            self.end_headers()
 
     def do_POST(self):
         if self.path == '/download':
@@ -51,10 +64,11 @@ class LocalApiRequestHandler(BaseHTTPRequestHandler):
                 post_body = self.rfile.read(content_len)
                 data = json.loads(post_body.decode('utf-8'))
                 url = data.get('url')
+                quality = data.get('quality', '')
                 if url and isinstance(url, str):
                     clean_url = url.strip()
                     if clean_url.startswith('http://') or clean_url.startswith('https://'):
-                        signals.url_received.emit(clean_url)
+                        signals.url_received.emit(clean_url, quality)
                         response_data = json.dumps({"status": "success", "message": "URL sent to UMD"}).encode('utf-8')
                         self.send_response(200)
                         self._send_cors_headers()

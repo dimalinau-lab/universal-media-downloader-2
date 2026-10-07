@@ -444,8 +444,15 @@ class DownloadWorker(QRunnable):
         pps = []
         merge_fmt = 'mp4'
 
-        if not fmt:
-            fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+        codec_pref = self.settings.value('video_codec_preference', 'auto')
+
+        if not fmt or fmt == 'best':
+            if codec_pref == 'h264':
+                fmt = 'bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best'
+            elif codec_pref == 'av1_vp9':
+                fmt = 'bestvideo[vcodec^=av01|vcodec^=vp9]+bestaudio/bestvideo+bestaudio/best'
+            else:
+                fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
         elif fmt == 'bestaudio/best':
             merge_fmt = None
             audio_codec = str(self.settings.value('audio_format', 'mp3')).lower()
@@ -465,8 +472,17 @@ class DownloadWorker(QRunnable):
             fmt = 'bestvideo/best'
         elif fmt == 'worst':
             fmt = 'worstvideo+worstaudio/worst'
-        elif fmt == 'best':
-            fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+        elif '[height<=' in fmt:
+            if codec_pref == 'h264' and '[vcodec' not in fmt:
+                h_match = re.search(r'height<=(\d+)', fmt)
+                if h_match:
+                    h = h_match.group(1)
+                    fmt = f'bestvideo[height<={h}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best'
+            elif codec_pref == 'av1_vp9' and '[vcodec' not in fmt:
+                h_match = re.search(r'height<=(\d+)', fmt)
+                if h_match:
+                    h = h_match.group(1)
+                    fmt = f'bestvideo[height<={h}][vcodec^=av01|vcodec^=vp9]+bestaudio/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best'
 
         return fmt, merge_fmt, pps
 

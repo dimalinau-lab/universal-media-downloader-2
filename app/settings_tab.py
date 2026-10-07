@@ -64,6 +64,31 @@ class CookieTestThread(QThread):
 
 
 
+class PingTestThread(QThread):
+    result_ready = pyqtSignal(str)
+
+    def run(self):
+        import time
+        import requests
+        sites = [
+            ("YouTube", "https://www.youtube.com"),
+            ("VK Video", "https://vk.com"),
+            ("RuTube", "https://rutube.ru"),
+            ("KinoPub/Rezka", "https://kinopub.me"),
+        ]
+        results = []
+        for name, url in sites:
+            try:
+                t0 = time.time()
+                resp = requests.get(url, timeout=4, headers={'User-Agent': 'Mozilla/5.0'})
+                latency = int((time.time() - t0) * 1000)
+                status_icon = "🟢" if resp.status_code < 400 else "🟡"
+                results.append(f"{status_icon} {name}: {latency} мс")
+            except Exception:
+                results.append(f"🔴 {name}: сбой сети/VPN")
+        self.result_ready.emit(" • ".join(results))
+
+
 class SettingsTab(QWidget):
     def __init__(self, translator: Translator, parent=None):
         super().__init__(parent)
@@ -180,6 +205,7 @@ class SettingsTab(QWidget):
         self.create_general_settings(main_layout)
         self.create_download_settings(main_layout)
         self.create_quality_settings(main_layout)
+        self.create_diagnostics_settings(main_layout)
 
         self.scroll_area.setWidget(self.scroll_content)
         outer_layout.addWidget(self.scroll_area)
@@ -502,6 +528,21 @@ class SettingsTab(QWidget):
         thumb_layout.addWidget(self.embed_thumbnail_checkbox)
         v_layout.addLayout(thumb_layout)
 
+        # Предпочитаемый видеокодек
+        codec_layout = QHBoxLayout()
+        self.codec_label = BodyLabel()
+        self.codec_label.setProperty("text_key", "video_codec_preference")
+        self.codec_label.setText("Предпочитаемый видеокодек")
+        self.codec_combo = ComboBox()
+        self.codec_combo.setFixedWidth(240)
+        self.codec_combo.addItem("Авто (наилучшее качество: VP9/AV1/H264)", userData="auto")
+        self.codec_combo.addItem("H.264 / AVC (макс. совместимость с ТВ)", userData="h264")
+        self.codec_combo.addItem("AV1 / VP9 (меньше размер на диск)", userData="av1_vp9")
+        codec_layout.addWidget(self.codec_label)
+        codec_layout.addStretch()
+        codec_layout.addWidget(self.codec_combo)
+        v_layout.addLayout(codec_layout)
+
         layout.addWidget(group_box)
 
 
@@ -542,6 +583,74 @@ class SettingsTab(QWidget):
                 row += 1
 
         layout.addWidget(group_box)
+
+    def create_diagnostics_settings(self, layout):
+        group_box = QGroupBox()
+        group_box.setProperty("title_key", "diagnostics_settings")
+        group_box.setTitle("Диагностика окружения и утилит")
+        group_box.setObjectName('SettingsGroup')
+        v_layout = QVBoxLayout(group_box)
+        v_layout.setSpacing(14)
+        v_layout.setContentsMargins(16, 22, 16, 16)
+
+        # Deno статус
+        deno_layout = QHBoxLayout()
+        deno_lbl = BodyLabel("Статус Deno (JS-challenge YouTube):")
+        import shutil
+        deno_installed = bool(shutil.which('deno') or os.path.exists(os.path.expanduser('~/.deno/bin/deno.exe')))
+        self.lbl_deno_status = BodyLabel("🟢 Deno установлен и активен" if deno_installed else "🟡 Deno не найден (рекомендуется)")
+        self.lbl_deno_status.setStyleSheet("color: #4caf50; font-weight: bold;" if deno_installed else "color: #ffa726; font-weight: bold;")
+
+        self.btn_copy_deno_cmd = PushButton("Копировать команду установки")
+        self.btn_copy_deno_cmd.setIcon(FluentIcon.COPY.icon())
+        self.btn_copy_deno_cmd.clicked.connect(lambda: QApplication.clipboard().setText("irm https://deno.land/install.ps1 | iex"))
+        self.btn_copy_deno_cmd.setVisible(not deno_installed)
+
+        deno_layout.addWidget(deno_lbl)
+        deno_layout.addSpacing(10)
+        deno_layout.addWidget(self.lbl_deno_status)
+        deno_layout.addStretch()
+        deno_layout.addWidget(self.btn_copy_deno_cmd)
+        v_layout.addLayout(deno_layout)
+
+        # FFmpeg статус
+        ffmpeg_layout = QHBoxLayout()
+        ffmpeg_lbl = BodyLabel("Встроенный FFmpeg / FFprobe:")
+        ffmpeg_ok = bool(hasattr(self.parent_window, 'ffmpeg_path') and self.parent_window.ffmpeg_path and os.path.exists(self.parent_window.ffmpeg_path))
+        lbl_ff_status = BodyLabel("🟢 Активен (assets/ffmpeg/bin)" if ffmpeg_ok else "🔴 Не найден")
+        lbl_ff_status.setStyleSheet("color: #4caf50; font-weight: bold;" if ffmpeg_ok else "color: #f44336; font-weight: bold;")
+        ffmpeg_layout.addWidget(ffmpeg_lbl)
+        ffmpeg_layout.addSpacing(10)
+        ffmpeg_layout.addWidget(lbl_ff_status)
+        ffmpeg_layout.addStretch()
+        v_layout.addLayout(ffmpeg_layout)
+
+        # Тест сетевой доступности
+        net_layout = QHBoxLayout()
+        self.btn_test_net = PushButton("Проверить доступность сервисов")
+        self.btn_test_net.setIcon(FluentIcon.GLOBE.icon())
+        self.btn_test_net.clicked.connect(self.on_test_net_clicked)
+        self.lbl_net_status = BodyLabel("Нажмите кнопку для проверки отклика YouTube, VK, RuTube, KinoPub...")
+        self.lbl_net_status.setStyleSheet("color: #888888; font-size: 12px;")
+        self.lbl_net_status.setWordWrap(True)
+
+        net_layout.addWidget(self.btn_test_net)
+        net_layout.addSpacing(10)
+        net_layout.addWidget(self.lbl_net_status, 1)
+        v_layout.addLayout(net_layout)
+
+        layout.addWidget(group_box)
+
+    def on_test_net_clicked(self):
+        self.btn_test_net.setEnabled(False)
+        self.lbl_net_status.setText("Тестирование соединения с серверами...")
+        self._ping_thread = PingTestThread(self)
+        self._ping_thread.result_ready.connect(self._on_ping_result)
+        self._ping_thread.start()
+
+    def _on_ping_result(self, res_text):
+        self.lbl_net_status.setText(res_text)
+        self.btn_test_net.setEnabled(True)
 
     def _platform_label(self, name):
         w = QWidget()
@@ -595,6 +704,7 @@ class SettingsTab(QWidget):
         self.audio_bitrate_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.embed_metadata_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.embed_thumbnail_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.codec_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.speed_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.custom_speed_spin.valueChanged.connect(self.on_setting_changed)
         self.custom_speed_unit.currentIndexChanged.connect(self.on_setting_changed)
@@ -622,6 +732,7 @@ class SettingsTab(QWidget):
             self.audio_bitrate_combo.currentIndexChanged,
             self.embed_metadata_checkbox.checkedChanged,
             self.embed_thumbnail_checkbox.checkedChanged,
+            self.codec_combo.currentIndexChanged,
             self.speed_combo.currentIndexChanged,
             self.custom_speed_spin.valueChanged,
             self.custom_speed_unit.currentIndexChanged,
@@ -726,6 +837,7 @@ class SettingsTab(QWidget):
         self.set_combo_by_data(self.audio_bitrate_combo, str(self.settings.value('audio_bitrate', '192')))
         self.embed_metadata_checkbox.setChecked(self.settings.value('embed_metadata', True, type=bool))
         self.embed_thumbnail_checkbox.setChecked(self.settings.value('embed_thumbnail', True, type=bool))
+        self.set_combo_by_data(self.codec_combo, self.settings.value('video_codec_preference', 'auto'))
 
         cookie_source_type = self.settings.value('cookie_source_type', 'browser')
         self.rb_cookie_file.setChecked(cookie_source_type == 'file')
@@ -798,6 +910,7 @@ class SettingsTab(QWidget):
         self.settings.setValue('audio_bitrate', self.audio_bitrate_combo.currentData())
         self.settings.setValue('embed_metadata', self.embed_metadata_checkbox.isChecked())
         self.settings.setValue('embed_thumbnail', self.embed_thumbnail_checkbox.isChecked())
+        self.settings.setValue('video_codec_preference', self.codec_combo.currentData())
 
         selected_speed_data = self.speed_combo.currentData()
         if selected_speed_data == -1:

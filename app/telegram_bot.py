@@ -1,3 +1,4 @@
+import os
 import queue
 import time
 import threading
@@ -98,17 +99,43 @@ class TelegramBotManager:
         """Асинхронная неблокирующая отправка сообщения через очередь (безопасно для GUI потока)"""
         if not self._is_running or not self.last_chat_id:
             return False
-        self._msg_queue.put((self.last_chat_id, text))
+        self._msg_queue.put(('msg', self.last_chat_id, text))
+        return True
+
+    def send_file(self, file_path, caption=""):
+        """Асинхронная отправка скачанного медиафайла владельцу в Telegram"""
+        if not self._is_running or not self.last_chat_id:
+            return False
+        if not file_path or not os.path.exists(file_path):
+            return False
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if size_mb > 49.0:
+            self.send_message(f"⚠️ Файл '{os.path.basename(file_path)}' ({size_mb:.1f} MB) превышает лимит Telegram (50 MB) и сохранен на вашем ПК.")
+            return False
+        self._msg_queue.put(('file', self.last_chat_id, file_path, caption))
         return True
 
     def _send_loop(self):
         while self._is_running:
             try:
-                chat_id, text = self._msg_queue.get(timeout=1.0)
+                item = self._msg_queue.get(timeout=1.0)
                 if not self._is_running or not self.bot:
                     break
                 try:
-                    self.bot.send_message(chat_id, text, timeout=10)
+                    mode = item[0]
+                    if mode == 'file':
+                        _, chat_id, file_path, caption = item
+                        ext = os.path.splitext(file_path)[1].lower()
+                        with open(file_path, 'rb') as f:
+                            if ext in ('.mp3', '.m4a', '.flac', '.wav', '.ogg'):
+                                self.bot.send_audio(chat_id, f, caption=caption, timeout=90)
+                            elif ext in ('.mp4', '.mkv', '.webm', '.mov'):
+                                self.bot.send_video(chat_id, f, caption=caption, timeout=120)
+                            else:
+                                self.bot.send_document(chat_id, f, caption=caption, timeout=90)
+                    else:
+                        _, chat_id, text = item
+                        self.bot.send_message(chat_id, text, timeout=10)
                 except Exception as e:
                     logger.error(f"Ошибка асинхронной отправки TG: {e}")
                 finally:

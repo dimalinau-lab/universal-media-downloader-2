@@ -1,45 +1,45 @@
-// Функция отправки ссылки в нашу программу
-function sendToUMD(url) {
+// Функция отправки ссылки в Universal Media Downloader
+function sendToUMD(url, quality = '') {
   fetch('http://127.0.0.1:65432/download', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ url: url })
+    body: JSON.stringify({ url: url, quality: quality })
   })
   .then(response => response.json())
   .then(data => {
-    console.log("Успех:", data);
+    console.log("Успешно отправлено в UMD:", data);
     chrome.action.setBadgeText({text: "OK!"});
-    setTimeout(() => chrome.action.setBadgeText({text: ""}), 2000);
+    chrome.action.setBadgeBackgroundColor({color: '#22c55e'});
+    setTimeout(() => chrome.action.setBadgeText({text: ""}), 2500);
   })
   .catch(err => {
-    console.error("Ошибка (Программа не запущена?):", err);
+    console.error("Ошибка (UMD не запущен?):", err);
     chrome.action.setBadgeText({text: "ERR"});
+    chrome.action.setBadgeBackgroundColor({color: '#ef4444'});
+    setTimeout(() => chrome.action.setBadgeText({text: ""}), 2500);
   });
 }
 
-chrome.action.onClicked.addListener((tab) => {
-  if (tab.url) {
-    chrome.action.setBadgeText({text: "..."});
-    sendToUMD(tab.url);
-  }
-});
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: "send_to_umd",
-    title: "Скачать через UMD",
-    contexts: ["page", "link", "video"]
+    title: "Скачать видео через UMD",
+    contexts: ["page", "link", "video", "audio"]
+  });
+  chrome.contextMenus.create({
+    id: "send_to_umd_audio",
+    title: "Скачать аудио (MP3) через UMD",
+    contexts: ["page", "link", "video", "audio"]
   });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "send_to_umd") {
-    let targetUrl = info.linkUrl || info.pageUrl;
-
-    if (targetUrl) {
-      chrome.action.setBadgeText({text: "..."});
-      sendToUMD(targetUrl);
-    }
+  let targetUrl = info.linkUrl || info.srcUrl || info.pageUrl;
+  if (targetUrl) {
+    chrome.action.setBadgeText({text: "..."});
+    let quality = (info.menuItemId === "send_to_umd_audio") ? "audio_mp3" : "";
+    sendToUMD(targetUrl, quality);
   }
 });
