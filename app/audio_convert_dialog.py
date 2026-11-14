@@ -1,8 +1,7 @@
 import os
 import subprocess
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QWidget,
-    QLabel, QMessageBox
+    QDialog, QVBoxLayout, QHBoxLayout, QMessageBox
 )
 from PyQt6.QtCore import Qt, QRunnable, QObject, pyqtSignal, QThreadPool
 from qfluentwidgets import (
@@ -50,33 +49,39 @@ class AudioConvertDialog(QDialog):
         self.out_path = ""
 
         self.setWindowTitle(self.translator.translate('audio_tool_title', "Извлечение и конвертация аудио"))
-        self.setFixedSize(500, 440)
+        self.setFixedSize(480, 325)
         self.initUI()
 
     def initUI(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
 
         # Шапка
         filename = os.path.basename(self.filepath)
+        header_layout = QVBoxLayout()
+        header_layout.setSpacing(3)
+
         title = StrongBodyLabel(filename)
         title.setWordWrap(True)
         title.setStyleSheet("font-size: 15px; font-weight: bold;")
-        layout.addWidget(title)
+        header_layout.addWidget(title)
 
         desc = CaptionLabel(self.translator.translate(
             'audio_tool_desc',
             "Извлеките чистый звук в нужном формате с фильтрами улучшения звучания."
         ))
+        desc.setWordWrap(True)
         desc.setStyleSheet("color: #888888;")
-        layout.addWidget(desc)
+        header_layout.addWidget(desc)
+        layout.addLayout(header_layout)
 
         # Выбор формата
         fmt_layout = QHBoxLayout()
         lbl_fmt = BodyLabel(self.translator.translate('target_format', "Формат файла:"))
         self.combo_format = ComboBox()
         self.combo_format.setFixedWidth(200)
+        self.combo_format.setFixedHeight(32)
         self.combo_format.addItem("MP3 (.mp3)", userData="mp3")
         self.combo_format.addItem("M4A / AAC (.m4a)", userData="m4a")
         self.combo_format.addItem("FLAC Lossless (.flac)", userData="flac")
@@ -95,6 +100,7 @@ class AudioConvertDialog(QDialog):
         self.lbl_bitrate = BodyLabel(self.translator.translate('audio_bitrate_label', "Битрейт аудио:"))
         self.combo_bitrate = ComboBox()
         self.combo_bitrate.setFixedWidth(200)
+        self.combo_bitrate.setFixedHeight(32)
         self.combo_bitrate.addItem("320 kbps (High Quality)", userData="320k")
         self.combo_bitrate.addItem("256 kbps (Very Good)", userData="256k")
         self.combo_bitrate.addItem("192 kbps (Standard)", userData="192k")
@@ -119,7 +125,8 @@ class AudioConvertDialog(QDialog):
 
         # Усиление громкости (Volume boost)
         vol_layout = QHBoxLayout()
-        self.lbl_vol = BodyLabel(self.translator.translate('audio_volume_boost', "Громкость: 100%"))
+        vol_title = self.translator.translate('audio_volume_boost', "Громкость")
+        self.lbl_vol = BodyLabel(f"{vol_title}: 100%")
         self.slider_vol = Slider(Qt.Orientation.Horizontal)
         self.slider_vol.setRange(50, 250)
         self.slider_vol.setValue(100)
@@ -137,6 +144,7 @@ class AudioConvertDialog(QDialog):
         out_layout = QHBoxLayout()
         lbl_out = BodyLabel(self.translator.translate('output_name', "Имя файла:"))
         self.input_name = LineEdit()
+        self.input_name.setFixedHeight(32)
         base_name, _ = os.path.splitext(filename)
         self.input_name.setText(f"{base_name}")
         out_layout.addWidget(lbl_out)
@@ -148,12 +156,14 @@ class AudioConvertDialog(QDialog):
         btn_box.setSpacing(10)
 
         self.btn_cancel = PushButton(self.translator.translate('cancel_action', "Отмена"))
+        self.btn_cancel.setFixedHeight(32)
         self.btn_cancel.clicked.connect(self.reject)
 
         self.btn_convert = PrimaryPushButton(
             FluentIcon.MUSIC,
             self.translator.translate('extract_audio_btn', "Извлечь аудио")
         )
+        self.btn_convert.setFixedHeight(32)
         self.btn_convert.clicked.connect(self._process_convert)
 
         btn_box.addStretch()

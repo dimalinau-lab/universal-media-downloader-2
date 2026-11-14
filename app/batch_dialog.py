@@ -1,12 +1,9 @@
 import re
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QWidget,
-    QPlainTextEdit, QLabel, QApplication, QMessageBox
+    QDialog, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QApplication, QMessageBox
 )
-from PyQt6.QtCore import Qt
 from qfluentwidgets import (
-    PrimaryPushButton, PushButton, TransparentToolButton,
-    FluentIcon, ComboBox, StrongBodyLabel, BodyLabel, CaptionLabel
+    PrimaryPushButton, PushButton, FluentIcon, ComboBox, StrongBodyLabel, BodyLabel, CaptionLabel
 )
 
 

@@ -1,13 +1,13 @@
 import sys
 import os
+import re
 import math
 import subprocess
-import traceback
 import hashlib
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QListWidget, QListWidgetItem, QPushButton, QLabel, QMessageBox,
-                             QDialog, QLineEdit, QSlider, QMenu)
-from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject, QThreadPool
+                             QDialog, QMenu)
+from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject, QThreadPool, QTimer
 from PyQt6.QtGui import QDesktopServices, QPixmap, QImage, QAction
 from qfluentwidgets import (TransparentToolButton, FluentIcon, Slider,
                             PushButton, PrimaryPushButton, LineEdit, BodyLabel,
@@ -116,7 +116,7 @@ class LocalFileItemWidget(QWidget):
         self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumbnail_label.setStyleSheet("background-color: #2b2b2b; border-radius: 8px;")
         self.thumbnail_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.thumbnail_label.mousePressEvent = lambda e: self.preview_file()
+        self.thumbnail_label.mousePressEvent = lambda _e: self.preview_file()
         main_layout.addWidget(self.thumbnail_label)
 
         info_layout = QVBoxLayout()
@@ -134,9 +134,25 @@ class LocalFileItemWidget(QWidget):
         self.url_label.setMinimumWidth(50)
 
         status_layout = QHBoxLayout()
+        status_layout.setSpacing(8)
         self.status_label = QLabel()
         self.status_label.setObjectName('StatusLabelItem')
         self.status_label.setStyleSheet("color: #007acc; font-weight: bold;")
+
+        self.badge_quality = QLabel()
+        self.badge_quality.setObjectName('BadgeQuality')
+        self.badge_quality.setFixedHeight(20)
+        self.badge_quality.setStyleSheet("""
+            QLabel#BadgeQuality {
+                background-color: #007acc;
+                color: white;
+                font-weight: bold;
+                font-size: 11px;
+                border-radius: 4px;
+                padding: 1px 7px;
+            }
+        """)
+        self.badge_quality.hide()
 
         size_bytes = os.path.getsize(self.filepath) if os.path.exists(self.filepath) else 0
         self.size_label = QLabel(self.format_size(size_bytes))
@@ -145,6 +161,7 @@ class LocalFileItemWidget(QWidget):
         self.size_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
         status_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.badge_quality)
         status_layout.addStretch()
         status_layout.addWidget(self.size_label)
 
@@ -154,6 +171,8 @@ class LocalFileItemWidget(QWidget):
         info_layout.addStretch()
 
         main_layout.addLayout(info_layout, 1)
+
+        self.detect_initial_quality()
 
         btn_grid = QGridLayout()
         btn_grid.setSpacing(4)
@@ -292,9 +311,83 @@ class LocalFileItemWidget(QWidget):
         worker.signals.loaded.connect(self.set_thumbnail)
         self.parent_tab.parent_window.thread_pool.start(worker)
 
+    def detect_initial_quality(self):
+        ext = os.path.splitext(self.filepath)[1].lower()
+        if ext in ('.mp3', '.m4a', '.wav', '.flac', '.aac', '.opus', '.ogg'):
+            self.set_quality_badge("MP3" if ext == '.mp3' else ext[1:].upper())
+            return
+
+        filename = os.path.basename(self.filepath)
+        # Check if quality tag is in filename, e.g. 1080p, 720p, 360p, 2160p, 4k
+        m = re.search(r'[\s_\[\(](\d{3,4})p[\s_\]\)]', filename, re.IGNORECASE)
+        if m:
+            self.set_quality_badge(f"{m.group(1)}p")
+            return
+        elif any(k in filename.lower() for k in ('4k', '2160p')):
+            self.set_quality_badge("2160p")
+            return
+        elif '1080p' in filename.lower():
+            self.set_quality_badge("1080p")
+            return
+        elif '720p' in filename.lower():
+            self.set_quality_badge("720p")
+            return
+        elif '480p' in filename.lower():
+            self.set_quality_badge("480p")
+            return
+        elif '360p' in filename.lower():
+            self.set_quality_badge("360p")
+            return
+
+        # Check in active or finished download tasks
+        try:
+            pw = getattr(self.parent_tab, 'parent_window', None)
+            dm = getattr(pw, 'download_manager', None)
+            if dm and hasattr(dm, 'tasks'):
+                for t in dm.tasks:
+                    if getattr(t, 'final_filepath', None) == self.filepath:
+                        qb = getattr(t, 'quality_badge', '') or getattr(t, 'custom_quality', '')
+                        if qb:
+                            self.set_quality_badge(qb)
+                            return
+                for t in dm.tasks:
+                    t_title = getattr(t, 'title', '')
+                    if t_title and len(t_title) > 5 and t_title[:20].lower() in filename.lower():
+                        qb = getattr(t, 'quality_badge', '') or getattr(t, 'custom_quality', '')
+                        if qb:
+                            self.set_quality_badge(qb)
+                            return
+        except Exception:
+            pass
+
+    def set_quality_badge(self, text: str):
+        if not text:
+            self.badge_quality.hide()
+            return
+        clean_text = text.replace(' ▾', '').strip()
+        self.badge_quality.setText(clean_text)
+        self.badge_quality.show()
+
     def set_thumbnail(self, image_or_pixmap):
         if isinstance(image_or_pixmap, QImage):
             pixmap = QPixmap.fromImage(image_or_pixmap)
+            h = image_or_pixmap.height()
+            w = image_or_pixmap.width()
+            eff_h = min(h, w) if (w > h and h > 0) else max(h, w)
+            if eff_h >= 2000:
+                self.set_quality_badge("2160p (4K)")
+            elif eff_h >= 1350:
+                self.set_quality_badge("1440p (2K)")
+            elif eff_h >= 950:
+                self.set_quality_badge("1080p")
+            elif eff_h >= 650:
+                self.set_quality_badge("720p")
+            elif eff_h >= 430:
+                self.set_quality_badge("480p")
+            elif eff_h >= 300:
+                self.set_quality_badge("360p")
+            elif eff_h > 0:
+                self.set_quality_badge(f"{eff_h}p")
         elif isinstance(image_or_pixmap, QPixmap):
             pixmap = image_or_pixmap
         else:
@@ -490,10 +583,10 @@ class VideoPreviewDialog(QDialog):
     def playback_state_changed(self, state):
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self.btn_play.setText("Пауза")
-            self.btn_play.setIcon(FluentIcon.PAUSE.icon())
+            self.btn_play.setIcon(FluentIcon.PAUSE)
         else:
             self.btn_play.setText("Играть")
-            self.btn_play.setIcon(FluentIcon.PLAY.icon())
+            self.btn_play.setIcon(FluentIcon.PLAY)
 
     def toggle_play(self):
         if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -526,10 +619,10 @@ class VideoPreviewDialog(QDialog):
         self.audio_output.setVolume(value / 100.0)
         if value > 0:
             self.is_muted = False
-            self.btn_mute.setIcon(FluentIcon.VOLUME.icon())
+            self.btn_mute.setIcon(FluentIcon.VOLUME)
         else:
             self.is_muted = True
-            self.btn_mute.setIcon(FluentIcon.MUTE.icon())
+            self.btn_mute.setIcon(FluentIcon.MUTE)
 
     def toggle_mute(self):
         if self.is_muted:
@@ -742,8 +835,14 @@ class VideoCutterDialog(QDialog):
         layout.addWidget(self.slider)
 
         controls_layout = QHBoxLayout()
-        self.btn_play = PushButton(FluentIcon.PLAY, "Play / Pause")
+        self.btn_play = PushButton(FluentIcon.PLAY, "Play")
+        self.btn_play.setFixedHeight(32)
         self.btn_play.clicked.connect(self.toggle_play)
+
+        self.btn_restart = TransparentToolButton(FluentIcon.ROTATE)
+        self.btn_restart.setFixedSize(32, 32)
+        self.btn_restart.setToolTip("В начало (00:00:00)")
+        self.btn_restart.clicked.connect(self.rewind_to_start)
 
         self.lbl_time = BodyLabel("00:00:00 / 00:00:00")
 
@@ -758,7 +857,8 @@ class VideoCutterDialog(QDialog):
         self.volume_slider.valueChanged.connect(self.set_volume)
 
         controls_layout.addWidget(self.btn_play)
-        controls_layout.addSpacing(15)
+        controls_layout.addWidget(self.btn_restart)
+        controls_layout.addSpacing(10)
         controls_layout.addWidget(self.lbl_time)
         controls_layout.addStretch()
         controls_layout.addWidget(self.btn_mute)
@@ -808,6 +908,7 @@ class VideoCutterDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def init_player(self):
+        self._preview_initialized = False
         self.media_player = QMediaPlayer()
         self.audio_output = QAudioOutput()
 
@@ -818,21 +919,33 @@ class VideoCutterDialog(QDialog):
 
         self.media_player.positionChanged.connect(self.position_changed)
         self.media_player.durationChanged.connect(self.duration_changed)
+        self.media_player.playbackStateChanged.connect(self._on_playback_state_changed)
 
         self.media_player.setSource(QUrl.fromLocalFile(self.filepath))
 
         self.is_muted = False
         self.last_volume = 50
 
+    def rewind_to_start(self):
+        self.media_player.setPosition(0)
+
+    def _on_playback_state_changed(self, state):
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self.btn_play.setIcon(FluentIcon.PAUSE)
+            self.btn_play.setText("Пауза")
+        else:
+            self.btn_play.setIcon(FluentIcon.PLAY)
+            self.btn_play.setText("Play")
+
     def set_volume(self, value):
         volume = value / 100.0
         self.audio_output.setVolume(volume)
         if value > 0:
             self.is_muted = False
-            self.btn_mute.setIcon(FluentIcon.VOLUME.icon())
+            self.btn_mute.setIcon(FluentIcon.VOLUME)
         else:
             self.is_muted = True
-            self.btn_mute.setIcon(FluentIcon.MUTE.icon())
+            self.btn_mute.setIcon(FluentIcon.MUTE)
 
     def toggle_mute(self):
         if self.is_muted:
@@ -845,6 +958,8 @@ class VideoCutterDialog(QDialog):
         if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.media_player.pause()
         else:
+            if self.media_player.duration() > 0 and self.media_player.position() >= self.media_player.duration():
+                self.media_player.setPosition(0)
             self.media_player.play()
 
     def position_changed(self, position):
@@ -856,6 +971,34 @@ class VideoCutterDialog(QDialog):
         self.update_time_label()
         if self.end_input.text() in ("00:00:00", "") and duration > 0:
             self.end_input.setText(self.format_time(duration))
+
+        # Автоматическое смещение на 1-ю секунду для отображения содержательного кадра
+        if not self._preview_initialized and duration > 0:
+            self._preview_initialized = True
+            preview_target = min(1000, duration // 3) if duration >= 1500 else min(300, max(0, duration // 2))
+            if preview_target > 0:
+                QTimer.singleShot(150, lambda: self._apply_initial_preview(preview_target))
+
+    def _apply_initial_preview(self, target_ms):
+        if self.media_player.playbackState() == QMediaPlayer.PlaybackState.StoppedState:
+            self.media_player.pause()
+        self.media_player.setPosition(target_ms)
+        # Оставляем поле старта обрезки строго на 00:00:00
+        if not self.start_input.text() or self.start_input.text() == "00:00:00":
+            self.start_input.setText("00:00:00")
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Space:
+            self.toggle_play()
+            event.accept()
+        elif event.key() == Qt.Key.Key_Left:
+            self.media_player.setPosition(max(0, self.media_player.position() - 1000))
+            event.accept()
+        elif event.key() == Qt.Key.Key_Right:
+            self.media_player.setPosition(min(self.media_player.duration(), self.media_player.position() + 1000))
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def set_position(self, position):
         self.media_player.setPosition(position)

@@ -1,4 +1,3 @@
-import sys
 import os
 import json
 import logging
@@ -35,8 +34,10 @@ class HistoryManager:
 
     def _save(self):
         try:
-            with open(self.history_file, 'w', encoding='utf-8') as f:
+            tmp_file = f"{self.history_file}.tmp.{os.getpid()}"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(self._history, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, self.history_file)
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
 
@@ -93,17 +94,15 @@ class HistoryManager:
 class HistoryTab(QWidget):
 
     redownload_requested = pyqtSignal(str)
+    redownload_timerange_requested = pyqtSignal(str)
 
     def __init__(self, translator, parent=None):
         super().__init__(parent)
         self.translator = translator
         self.parent_window = parent
 
-        if getattr(sys, 'frozen', False):
-            base_dir = os.path.dirname(sys.executable)
-        else:
-            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        data_dir = os.path.join(base_dir, 'data')
+        from app.path_manager import get_data_dir
+        data_dir = get_data_dir()
         self.history_manager = HistoryManager(data_dir)
 
         self.initUI()
@@ -200,7 +199,7 @@ class HistoryTab(QWidget):
             try:
                 dt = datetime.fromisoformat(date_str)
                 date_display = dt.strftime('%Y-%m-%d %H:%M')
-            except:
+            except Exception:
                 date_display = date_str[:16] if len(date_str) > 16 else date_str
 
             date_item = QTableWidgetItem(date_display)
@@ -272,6 +271,10 @@ class HistoryTab(QWidget):
         redownload_action.triggered.connect(lambda: self.redownload(entry))
         menu.addAction(redownload_action)
 
+        redownload_tr_action = QAction(self.translator.translate('redownload_timerange', 'Скачать отрезок...'), self)
+        redownload_tr_action.triggered.connect(lambda: self.redownload_timerange(entry))
+        menu.addAction(redownload_tr_action)
+
         copy_action = QAction(self.translator.translate('copy_link', 'Copy link'), self)
         copy_action.triggered.connect(lambda: self.copy_link(entry))
         menu.addAction(copy_action)
@@ -294,6 +297,12 @@ class HistoryTab(QWidget):
         url = entry.get('url')
         if url:
             self.redownload_requested.emit(url)
+
+    def redownload_timerange(self, entry):
+        """Re-download specific time range of the entry."""
+        url = entry.get('url')
+        if url:
+            self.redownload_timerange_requested.emit(url)
 
     def copy_link(self, entry):
         """Copy link to clipboard."""

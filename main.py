@@ -1,16 +1,35 @@
+
+
 import sys
+import os
+
+# Скрываем окно консоли в Windows при обычном запуске (если не передан флаг --console / --debug)
+if sys.platform == 'win32' and '--console' not in sys.argv and '--debug' not in sys.argv:
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # 0 = SW_HIDE
+    except Exception:
+        pass
+
 import logging
 import traceback
-import os
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon, QGuiApplication
 from PyQt6.QtCore import QSettings, Qt
-from app.main_window import MainWindow
 from app.translation import Translator
 from app.theme_manager import ThemeManager
 
 
 from logging.handlers import RotatingFileHandler
+from app.path_manager import (
+    elevate_privileges,
+    get_base_dir,
+    get_bundle_dir,
+    get_logs_dir,
+    get_data_dir,
+)
 
 
 # Обеспечиваем корректную работу UTF-8 в консоли Windows
@@ -25,21 +44,24 @@ if hasattr(sys.stderr, 'reconfigure'):
     except Exception:
         pass
 
+# Подавляем внутренний шум Qt Multimedia и FFmpeg в консоли (Could not update timestamps for skipped samples)
+os.environ.setdefault("QT_LOGGING_RULES", "qt.multimedia.ffmpeg.warning=false;qt.multimedia.*=false")
+try:
+    import ctypes
+    from PyQt6.QtCore import QLibraryInfo
+    qt_bin = QLibraryInfo.path(QLibraryInfo.LibraryPath.BinariesPath)
+    for dll in ('avutil-59.dll', 'avutil-58.dll'):
+        dll_path = os.path.join(qt_bin, dll)
+        if os.path.exists(dll_path):
+            ctypes.CDLL(dll_path).av_log_set_level(16)  # AV_LOG_ERROR
+            break
+except Exception:
+    pass
 
-def get_base_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def get_bundle_dir():
-    if getattr(sys, 'frozen', False):
-        return getattr(sys, '_MEIPASS', os.path.join(os.path.dirname(sys.executable), '_internal'))
-    return os.path.dirname(os.path.abspath(__file__))
 
 
 def setup_logging():
-    log_dir = os.path.join(get_base_dir(), 'logs')
+    log_dir = get_logs_dir()
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, 'app.log')
 
@@ -72,8 +94,8 @@ def excepthook(exc_type, exc_value, exc_tb):
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 
-def get_app_settings(base_dir):
-    data_dir = os.path.join(base_dir, 'data')
+def get_app_settings(base_dir=None):
+    data_dir = get_data_dir()
     ini_path = os.path.join(data_dir, 'settings.ini')
     portable_marker = os.path.join(data_dir, 'portable.dat')
 
@@ -84,14 +106,18 @@ def get_app_settings(base_dir):
             is_portable = True
 
     if is_portable:
-        os.makedirs(data_dir, exist_ok=True)
-        s = QSettings(ini_path, QSettings.Format.IniFormat)
-        s.setValue('portable_mode', True)
-        return s
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+            s = QSettings(ini_path, QSettings.Format.IniFormat)
+            s.setValue('portable_mode', True)
+            return s
+        except Exception:
+            pass
     return QSettings('Magerko', 'UniversalMediaDownloader')
 
 
 def main():
+    elevate_privileges()
     setup_logging()
     sys.excepthook = excepthook
     logger = logging.getLogger(__name__)
@@ -118,19 +144,21 @@ def main():
         else:
             logger.warning(f'Иконка не найдена по пути: {icon_path}')
 
+        from app.main_window import MainWindow
         window = MainWindow(translator, settings)
 
-        theme_manager = ThemeManager(window.settings)
+        theme_manager = ThemeManager(window.settings, window)
         theme_manager.apply_theme()
 
         window.show()
 
         sys.exit(app.exec())
 
-    except Exception as e:
+    except Exception:
         logger.exception('Произошла фатальная ошибка при запуске приложения.')
         traceback.print_exc()
 
 
 if __name__ == '__main__':
     main()
+    

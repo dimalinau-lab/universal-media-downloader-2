@@ -5,18 +5,18 @@ from qfluentwidgets import setTheme, Theme, setThemeColor
 
 
 class ThemeManager:
-    def __init__(self, settings: QSettings):
+    _accent_color_set = False
+
+    def __init__(self, settings: QSettings, window=None):
         self.settings = settings
+        self.window = window
 
     def apply_theme(self):
-        app = QApplication.instance()
-        if app is None:
-            return
-
         theme_str = self.settings.value('theme', 'dark')
 
-        # Устанавливаем красивый синий акцентный цвет для Fluent-элементов
-        setThemeColor('#005fb8')
+        if not ThemeManager._accent_color_set:
+            setThemeColor('#005fb8')
+            ThemeManager._accent_color_set = True
 
         if theme_str == 'dark':
             setTheme(Theme.DARK)
@@ -25,17 +25,31 @@ class ThemeManager:
             setTheme(Theme.LIGHT)
             stylesheet = self.get_light_theme()
 
-        app.setStyleSheet(stylesheet)
+        target = self.window if self.window is not None else QApplication.instance()
+        if target:
+            target.setStyleSheet(stylesheet)
+
+        if self.window is not None:
+            if hasattr(self.window, 'update_theme_icons'):
+                self.window.update_theme_icons()
+            if hasattr(self.window, '_settings_page') and self.window._settings_page:
+                if hasattr(self.window._settings_page, 'update_theme_icons'):
+                    self.window._settings_page.update_theme_icons()
+                if hasattr(self.window._settings_page, 'update_status_indicators'):
+                    self.window._settings_page.update_status_indicators()
+            if hasattr(self.window, '_about_page') and self.window._about_page:
+                if hasattr(self.window._about_page, 'update_theme_icons'):
+                    self.window._about_page.update_theme_icons()
 
     def get_dark_theme(self):
         return """
-            QWidget {
+            #MainWindow, QDialog {
                 font-family: 'Segoe UI Variable', 'Segoe UI', 'Roboto', sans-serif;
                 font-size: 14px;
             }
 
             /* Главные фоны (Цвета как в Windows 11 Dark Mode) */
-            #MainWindow { background-color: #202020; }
+            #MainWindow, QDialog { background-color: #202020; }
             #NavBar {
                 background-color: #202020;
                 border-right: 1px solid rgba(255, 255, 255, 0.05);
@@ -96,6 +110,31 @@ class ThemeManager:
             QLabel, QCheckBox, QRadioButton { color: #ffffff; background: transparent; }
             #TitleLabel, #AboutTitleLabel { font-weight: 600; font-size: 15px; }
             #UrlLabel, #StatusLabelItem, #HintLabel, #EmptyListItem, #AboutVersionLabel { color: #a0a0a0; }
+            #StatusLabelSuccess { color: #10b981 !important; font-weight: 600; }
+            #StatusLabelWarning { color: #f59e0b !important; font-weight: 600; }
+            #StatusLabelDanger { color: #ef4444 !important; font-weight: 600; }
+            #AboutCard, #NotesCard {
+                background-color: #272727;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+            #AboutCard:hover, #NotesCard:hover {
+                border: 1px solid rgba(255, 255, 255, 0.16);
+            }
+            #FeatureIconBadge {
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+            #AboutVersionBadge {
+                background-color: rgba(0, 95, 184, 0.25);
+                color: #60cdff;
+                border: 1px solid rgba(0, 95, 184, 0.5);
+                border-radius: 11px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
 
             /* Сайдбар кнопки (Мягкое полупрозрачное наведение) */
             #NavButton {
@@ -109,16 +148,50 @@ class ThemeManager:
             #NavButton:hover { background-color: rgba(255, 255, 255, 0.06); }
             #NavButton:pressed { background-color: rgba(255, 255, 255, 0.03); color: #aaaaaa; }
 
-            /* Второстепенные старые кнопки (если остались) */
+            /* Кнопки действий нижней панели */
+            #ActionButton {
+                background-color: #005fb8;
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                padding: 0 12px;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            #ActionButton:hover { background-color: #106ebe; }
+            #ActionButton:pressed { background-color: #005a9e; }
+
+            /* Второстепенные кнопки */
             #SecondaryButton {
                 background-color: rgba(255, 255, 255, 0.06);
                 color: #ffffff;
-                border: 1px solid rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 6px;
-                padding: 6px 16px;
+                padding: 0 12px;
+                font-size: 13px;
             }
             #SecondaryButton:hover { background-color: rgba(255, 255, 255, 0.1); }
             #SecondaryButton:pressed { background-color: rgba(255, 255, 255, 0.03); }
+
+            /* Кнопка режима отрезка (таймкоды) */
+            #TimerangeButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 5px;
+            }
+            #TimerangeButton:hover {
+                background-color: rgba(255, 255, 255, 0.08);
+            }
+            #TimerangeButton:pressed {
+                background-color: rgba(255, 255, 255, 0.04);
+            }
+            #TimerangeButton:checked {
+                background-color: #005fb8;
+                border: 1px solid #106ebe;
+            }
+            #TimerangeButton:checked:hover {
+                background-color: #106ebe;
+            }
 
             /* Обычный прогресс-бар (запасной) */
             #ItemProgressBar, QProgressBar {
@@ -149,13 +222,13 @@ class ThemeManager:
 
     def get_light_theme(self):
         return """
-            QWidget {
+            #MainWindow, QDialog {
                 font-family: 'Segoe UI Variable', 'Segoe UI', 'Roboto', sans-serif;
                 font-size: 14px;
             }
 
             /* Главные фоны */
-            #MainWindow { background-color: #f3f3f3; }
+            #MainWindow, QDialog { background-color: #f3f3f3; }
             #NavBar {
                 background-color: #f3f3f3;
                 border-right: 1px solid rgba(0, 0, 0, 0.05);
@@ -216,6 +289,31 @@ class ThemeManager:
             QLabel, QCheckBox, QRadioButton { color: #000000; background: transparent; }
             #TitleLabel, #AboutTitleLabel { font-weight: 600; font-size: 15px; }
             #UrlLabel, #StatusLabelItem, #HintLabel, #EmptyListItem, #AboutVersionLabel { color: #606060; }
+            #StatusLabelSuccess { color: #107c41 !important; font-weight: 600; }
+            #StatusLabelWarning { color: #b45309 !important; font-weight: 600; }
+            #StatusLabelDanger { color: #dc2626 !important; font-weight: 600; }
+            #AboutCard, #NotesCard {
+                background-color: #ffffff;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 8px;
+            }
+            #AboutCard:hover, #NotesCard:hover {
+                border: 1px solid rgba(0, 0, 0, 0.16);
+            }
+            #FeatureIconBadge {
+                background-color: rgba(0, 0, 0, 0.03);
+                border: 1px solid rgba(0, 0, 0, 0.06);
+                border-radius: 8px;
+            }
+            #AboutVersionBadge {
+                background-color: rgba(0, 95, 184, 0.12);
+                color: #005fb8;
+                border: 1px solid rgba(0, 95, 184, 0.3);
+                border-radius: 11px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
 
             /* Сайдбар кнопки */
             #NavButton {
@@ -229,16 +327,50 @@ class ThemeManager:
             #NavButton:hover { background-color: rgba(0, 0, 0, 0.04); }
             #NavButton:pressed { background-color: rgba(0, 0, 0, 0.02); color: #555555; }
 
-            /* Второстепенные старые кнопки */
-            #SecondaryButton {
-                background-color: rgba(0, 0, 0, 0.03);
-                color: #000000;
-                border: 1px solid rgba(0, 0, 0, 0.05);
+            /* Кнопки действий нижней панели */
+            #ActionButton {
+                background-color: #005fb8;
+                color: #ffffff;
+                border: 1px solid rgba(0, 0, 0, 0.08);
                 border-radius: 6px;
-                padding: 6px 16px;
+                padding: 0 12px;
+                font-size: 13px;
+                font-weight: 500;
             }
-            #SecondaryButton:hover { background-color: rgba(0, 0, 0, 0.06); }
+            #ActionButton:hover { background-color: #106ebe; }
+            #ActionButton:pressed { background-color: #005a9e; }
+
+            /* Второстепенные кнопки */
+            #SecondaryButton {
+                background-color: rgba(0, 0, 0, 0.04);
+                color: #202020;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 6px;
+                padding: 0 12px;
+                font-size: 13px;
+            }
+            #SecondaryButton:hover { background-color: rgba(0, 0, 0, 0.07); }
             #SecondaryButton:pressed { background-color: rgba(0, 0, 0, 0.02); }
+
+            /* Кнопка режима отрезка (таймкоды) */
+            #TimerangeButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 5px;
+            }
+            #TimerangeButton:hover {
+                background-color: rgba(0, 0, 0, 0.06);
+            }
+            #TimerangeButton:pressed {
+                background-color: rgba(0, 0, 0, 0.03);
+            }
+            #TimerangeButton:checked {
+                background-color: #005fb8;
+                border: 1px solid #106ebe;
+            }
+            #TimerangeButton:checked:hover {
+                background-color: #106ebe;
+            }
 
             /* Обычный прогресс-бар */
             #ItemProgressBar, QProgressBar {

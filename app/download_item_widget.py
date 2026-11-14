@@ -1,12 +1,14 @@
-import os
 import logging
+import re
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QMenu,
-                             QMessageBox, QApplication, QToolTip, QDialog, QGridLayout)
-from PyQt6.QtGui import QPixmap, QAction, QIcon, QKeySequence, QCursor
+                             QMessageBox, QApplication, QToolTip, QDialog, QGridLayout,
+                             QPushButton)
+from PyQt6.QtGui import QAction, QKeySequence, QCursor
 from PyQt6.QtCore import QSize, Qt, pyqtSignal, QRect, QObject, QEvent
 from qfluentwidgets import (TransparentToolButton, FluentIcon, ProgressBar,
                             StrongBodyLabel, BodyLabel, CaptionLabel,
-                            PushButton, PrimaryPushButton, LineEdit)
+                            PushButton, PrimaryPushButton, LineEdit,
+                            RoundMenu, Action)
 from .download_task import DownloadTask
 
 
@@ -14,10 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class TimeRangeDialog(QDialog):
-    def __init__(self, task: DownloadTask, translator, parent=None):
+    def __init__(self, task: DownloadTask, translator, parent=None, is_pre_download=False):
         super().__init__(parent)
         self.task = task
         self.translator = translator
+        self.is_pre_download = is_pre_download
         self.setWindowTitle(self.translator.translate('time_range_title', "Указать отрезок времени для скачивания"))
         self.setMinimumWidth(430)
         self.initUI()
@@ -75,20 +78,39 @@ class TimeRangeDialog(QDialog):
         layout.addLayout(grid)
 
         btn_box = QHBoxLayout()
-        btn_reset = PushButton(self.translator.translate('time_range_reset', "Сбросить"))
-        btn_reset.clicked.connect(self.on_reset)
+        if self.is_pre_download:
+            btn_full = PushButton(self.translator.translate('download_full_video', "Скачать целиком"))
+            btn_full.clicked.connect(self.on_full_download)
 
-        btn_cancel = PushButton(self.translator.translate('cancel_action', "Отмена"))
-        btn_cancel.clicked.connect(self.reject)
+            btn_cancel = PushButton(self.translator.translate('cancel_action', "Отмена"))
+            btn_cancel.clicked.connect(self.reject)
 
-        btn_apply = PrimaryPushButton(self.translator.translate('time_range_apply', "Применить"))
-        btn_apply.clicked.connect(self.on_apply)
+            btn_apply = PrimaryPushButton(self.translator.translate('download_time_range', "Скачать отрезок"))
+            btn_apply.clicked.connect(self.on_apply)
 
-        btn_box.addWidget(btn_reset)
-        btn_box.addStretch()
-        btn_box.addWidget(btn_cancel)
-        btn_box.addWidget(btn_apply)
+            btn_box.addWidget(btn_full)
+            btn_box.addStretch()
+            btn_box.addWidget(btn_cancel)
+            btn_box.addWidget(btn_apply)
+        else:
+            btn_reset = PushButton(self.translator.translate('time_range_reset', "Сбросить"))
+            btn_reset.clicked.connect(self.on_reset)
+
+            btn_cancel = PushButton(self.translator.translate('cancel_action', "Отмена"))
+            btn_cancel.clicked.connect(self.reject)
+
+            btn_apply = PrimaryPushButton(self.translator.translate('time_range_apply', "Применить"))
+            btn_apply.clicked.connect(self.on_apply)
+
+            btn_box.addWidget(btn_reset)
+            btn_box.addStretch()
+            btn_box.addWidget(btn_cancel)
+            btn_box.addWidget(btn_apply)
         layout.addLayout(btn_box)
+
+    def on_full_download(self):
+        self.task.clear_time_range()
+        self.accept()
 
     @staticmethod
     def _sec_to_str(sec):
@@ -219,12 +241,31 @@ class DownloadItemWidget(QWidget):
         self.btn_copy_url.setToolTip(self.translator.translate('copy_link', 'Копировать ссылку'))
         self.btn_copy_url.clicked.connect(self.copy_full_url)
 
-        self.badge_quality = CaptionLabel()
+        self.badge_quality = QPushButton()
         self.badge_quality.setObjectName('BadgeQuality')
-        self.badge_quality.setStyleSheet(
-            "background-color: rgba(0, 122, 204, 0.2); color: #29b6f6; "
-            "padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;"
-        )
+        self.badge_quality.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.badge_quality.setFixedHeight(22)
+        self.badge_quality.setStyleSheet("""
+            QPushButton#BadgeQuality {
+                background-color: rgba(0, 122, 204, 0.22);
+                color: #29b6f6;
+                border: 1px solid rgba(41, 182, 246, 0.4);
+                border-radius: 4px;
+                padding: 1px 7px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton#BadgeQuality:hover {
+                background-color: rgba(0, 122, 204, 0.45);
+                color: #ffffff;
+                border: 1px solid #29b6f6;
+            }
+            QPushButton#BadgeQuality:pressed {
+                background-color: rgba(0, 122, 204, 0.7);
+            }
+        """)
+        self.badge_quality.setToolTip("Нажмите для выбора качества видео или MP3")
+        self.badge_quality.clicked.connect(self.show_quality_selection_menu)
         self.badge_quality.hide()
 
         self.badge_timerange = CaptionLabel()
@@ -268,9 +309,10 @@ class DownloadItemWidget(QWidget):
 
         main_layout.addLayout(info_layout, 1)
 
-        buttons_layout = QVBoxLayout()
+        buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(6)
-        buttons_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         self.play_button = TransparentToolButton(FluentIcon.PLAY)
         self.play_button.setFixedSize(34, 34)
@@ -421,7 +463,9 @@ class DownloadItemWidget(QWidget):
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(percent)
-        self.status_label.setText(text)
+        clean_text = re.sub(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)', '', text or '')
+        clean_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', clean_text).strip()
+        self.status_label.setText(clean_text)
 
     def set_thumbnail(self, pixmap):
         scaled_pixmap = pixmap.scaled(self.thumbnail_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
@@ -438,7 +482,8 @@ class DownloadItemWidget(QWidget):
 
         badge_text = getattr(self.task, 'quality_badge', '')
         if badge_text:
-            self.badge_quality.setText(badge_text)
+            clean_badge = badge_text.replace(' ▾', '').strip()
+            self.badge_quality.setText(f"{clean_badge} ▾")
             self.badge_quality.show()
         else:
             self.badge_quality.hide()
@@ -466,13 +511,18 @@ class DownloadItemWidget(QWidget):
         self.timerange_button.setVisible(is_pending_or_err or is_stopped or is_completed)
         self.folder_button.setVisible(True)
 
+        raw_err = self.task.error_message or ""
+        clean_err = re.sub(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)', '', raw_err)
+        clean_err = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', clean_err)
+        clean_err = re.sub(r'^(?:Ошибка загрузчика:\s*)+(?:ERROR:\s*)+', '', clean_err, flags=re.IGNORECASE).strip()
+
         status_text_map = {
             DownloadTask.Status.PENDING: self.translator.translate('status_pending', 'Ожидание...'),
             DownloadTask.Status.FETCHING_INFO: self.translator.translate('status_fetching_info', 'Получение данных...'),
             DownloadTask.Status.DOWNLOADING: self.translator.translate('status_downloading', 'Скачивание...'),
             DownloadTask.Status.PROCESSING: self.translator.translate('status_processing', 'Обработка...'),
             DownloadTask.Status.COMPLETED: self.translator.translate('status_completed', 'Скачано'),
-            DownloadTask.Status.ERROR: f"{self.translator.translate('status_error', 'Ошибка')}: {self.task.error_message}",
+            DownloadTask.Status.ERROR: f"{self.translator.translate('status_error', 'Ошибка')}: {clean_err}",
             DownloadTask.Status.STOPPED: self.translator.translate('status_stopped', 'Стрим завершен и сохранен'),
         }
 
@@ -484,3 +534,243 @@ class DownloadItemWidget(QWidget):
         self.status_label.setText(base_text)
         self.setProperty('status', status.value)
         self.style().polish(self)
+        if hasattr(self.task, 'list_item') and self.task.list_item:
+            self.task.list_item.setSizeHint(self.sizeHint())
+
+    def get_available_qualities_with_sizes(self) -> list:
+        info = getattr(self.task, 'info', None)
+        if not info or not isinstance(info, dict):
+            info = {}
+
+        formats = info.get('formats', [])
+        duration = info.get('duration', 0)
+        curr_sz = getattr(self.task, 'file_size', 0) or 0
+
+        # 1. Check for available_streams (e.g. Voidboost / KinoPub / Rezka)
+        av_streams = getattr(self.task, 'available_streams', None) or info.get('available_streams')
+        if av_streams and isinstance(av_streams, dict):
+            curr_badge = (getattr(self.task, 'quality_badge', '') or getattr(self.task, 'custom_quality', '') or '720p').replace(' ▾', '').strip()
+            curr_h_m = re.search(r'(\d+)', curr_badge)
+            curr_h = int(curr_h_m.group(1)) if curr_h_m else 720
+
+            results = []
+            for label, s_url in av_streams.items():
+                m_label = re.search(r'(\d+)', label)
+                h = int(m_label.group(1)) if m_label else 720
+                is_ultra = 'ultra' in label.lower()
+                res_score = h * 10 + (5 if is_ultra else 0)
+
+                est_sz = int(curr_sz * ((h / curr_h) ** 1.3)) if (curr_sz > 0 and curr_h > 0) else 0
+
+                desc = label
+                if is_ultra:
+                    desc = f"{h}p Ultra"
+                elif h >= 2160:
+                    desc = "2160p (4K)"
+                elif h >= 1440:
+                    desc = "1440p (2K)"
+                elif h >= 1080:
+                    desc = "1080p (Full HD)"
+                elif h >= 720:
+                    desc = "720p (HD)"
+                elif h >= 480:
+                    desc = "480p (SD)"
+                elif h >= 360:
+                    desc = "360p (SD)"
+
+                results.append({
+                    'key': label,
+                    'badge': label,
+                    'label': desc,
+                    'size_bytes': est_sz,
+                    'is_audio': False,
+                    'direct_url': s_url,
+                    '_score': res_score
+                })
+
+            results.sort(key=lambda x: x['_score'], reverse=True)
+
+            mp3_size = int((320 * 1000 / 8) * duration) if duration else (int(curr_sz * 0.15) if curr_sz > 0 else 0)
+            results.append({
+                'key': 'audio_mp3',
+                'badge': 'MP3',
+                'label': '🎵 MP3 (320 kbps)',
+                'size_bytes': mp3_size,
+                'is_audio': True
+            })
+            return results
+
+        # 2. Best audio format
+        best_audio = None
+        for f in formats:
+            if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                if not best_audio or (f.get('abr') or 0) > (best_audio.get('abr') or 0):
+                    best_audio = f
+
+        audio_size = 0
+        if best_audio:
+            audio_size = best_audio.get('filesize') or best_audio.get('filesize_approx') or 0
+            if not audio_size and duration and best_audio.get('abr'):
+                audio_size = int((best_audio['abr'] * 1000 / 8) * duration)
+
+        # 3. Group formats by height
+        by_height = {}
+        for f in formats:
+            h = f.get('height')
+            if not h:
+                continue
+            if f.get('ext') in ('mhtml', 'sb3') or f.get('format_note') == 'storyboard':
+                continue
+            if h not in by_height:
+                by_height[h] = f
+            else:
+                old_val = by_height[h].get('filesize') or by_height[h].get('tbr') or 0
+                new_val = f.get('filesize') or f.get('tbr') or 0
+                if new_val > old_val:
+                    by_height[h] = f
+
+        # If by_height has <= 1 resolution, expand with standard resolutions so user is never trapped
+        if len(by_height) <= 1:
+            base_h = list(by_height.keys())[0] if by_height else 720
+            base_sz = curr_sz
+            if by_height and base_h in by_height:
+                base_sz = by_height[base_h].get('filesize') or by_height[base_h].get('filesize_approx') or curr_sz
+
+            is_kodik = any(d in self.task.url for d in ('solodcdn', 'kodik')) and re.search(r'/\d{3,4}\.mp4', self.task.url)
+            for alt_h in (1080, 720, 480, 360):
+                if alt_h not in by_height:
+                    approx_sz = int(base_sz * ((alt_h / base_h) ** 1.3)) if (base_sz > 0 and base_h > 0) else 0
+                    direct_u = re.sub(r'/\d{3,4}\.mp4', f'/{alt_h}.mp4', self.task.url) if is_kodik else None
+                    by_height[alt_h] = {
+                        'format_id': f"{alt_h}p",
+                        'height': alt_h,
+                        'filesize_approx': approx_sz,
+                        'url': direct_u
+                    }
+
+        results = []
+        if by_height:
+            for h in sorted(by_height.keys(), reverse=True):
+                vf = by_height[h]
+                v_size = vf.get('filesize') or vf.get('filesize_approx') or 0
+                if not v_size and duration and (vf.get('tbr') or vf.get('vbr')):
+                    bitrate = vf.get('tbr') or vf.get('vbr')
+                    v_size = int((bitrate * 1000 / 8) * duration)
+
+                total_size = v_size + (audio_size if vf.get('acodec') == 'none' else 0)
+
+                label = f"{h}p"
+                if h >= 2160:
+                    label = "2160p (4K)"
+                elif h >= 1440:
+                    label = "1440p (2K)"
+                elif h >= 1080:
+                    label = "1080p (Full HD)"
+                elif h >= 720:
+                    label = "720p (HD)"
+                elif h >= 480:
+                    label = "480p (SD)"
+                elif h >= 360:
+                    label = "360p (SD)"
+
+                results.append({
+                    'key': f"{h}p",
+                    'badge': f"{h}p",
+                    'label': label,
+                    'size_bytes': total_size,
+                    'is_audio': False,
+                    'direct_url': vf.get('url') if (vf.get('url') and str(vf.get('url')).startswith('http')) else None
+                })
+        elif info.get('available_qualities'):
+            for q in info.get('available_qualities', []):
+                results.append({
+                    'key': q,
+                    'badge': q,
+                    'label': q,
+                    'size_bytes': 0,
+                    'is_audio': False
+                })
+
+        # Add MP3 option
+        mp3_size = audio_size
+        if not mp3_size and duration:
+            mp3_size = int((320 * 1000 / 8) * duration)
+        elif not mp3_size and curr_sz:
+            mp3_size = int(curr_sz * 0.15)
+
+        results.append({
+            'key': 'audio_mp3',
+            'badge': 'MP3',
+            'label': '🎵 MP3 (320 kbps)',
+            'size_bytes': mp3_size,
+            'is_audio': True
+        })
+
+        return results
+
+    def show_quality_selection_menu(self):
+        items = self.get_available_qualities_with_sizes()
+        if not items:
+            return
+
+        menu = RoundMenu(parent=self)
+        curr_badge = getattr(self.task, 'quality_badge', '').replace(' ▾', '').strip().lower()
+        curr_override = getattr(self.task, 'quality_override', '') or ''
+
+        for it in items:
+            sz_str = ""
+            if it.get('size_bytes', 0) > 0:
+                b = float(it['size_bytes'])
+                for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                    if b < 1024.0:
+                        sz_str = f"{b:.1f} {unit}"
+                        break
+                    b /= 1024.0
+
+            label_text = f"{it['label']} — {sz_str}" if sz_str else it['label']
+            action = Action(label_text, self)
+
+            is_active = (curr_badge and curr_badge == it['badge'].lower()) or (curr_override and curr_override == it['key'])
+            if is_active:
+                action.setIcon(FluentIcon.ACCEPT)
+
+            action.triggered.connect(lambda _chk, item=it: self.apply_quality_selection(item))
+            menu.addAction(action)
+
+        menu.exec(self.badge_quality.mapToGlobal(self.badge_quality.rect().bottomLeft()))
+
+    def apply_quality_selection(self, it: dict):
+        self.task.quality_override = it['key']
+        self.task.quality_badge = it['badge']
+        self.task.custom_quality = it['badge']
+        if it.get('direct_url'):
+            self.task.url = it['direct_url']
+        elif getattr(self.task, 'available_streams', None) and it['badge'] in self.task.available_streams:
+            self.task.url = self.task.available_streams[it['badge']]
+        elif any(d in self.task.url for d in ('solodcdn', 'kodik')) and re.search(r'/\d{3,4}\.mp4', self.task.url):
+            m = re.search(r'(\d+)', it['badge'])
+            if m:
+                self.task.url = re.sub(r'/\d{3,4}\.mp4', f"/{m.group(1)}.mp4", self.task.url)
+
+        if it.get('is_audio'):
+            self.task.audio_only = True
+        else:
+            self.task.audio_only = False
+
+        sz_bytes = it.get('size_bytes', 0)
+        if sz_bytes > 0:
+            self.task.set_file_size(sz_bytes)
+
+        # If task was COMPLETED, reset to PENDING so user can immediately download in new quality
+        if self.task.status == DownloadTask.Status.COMPLETED:
+            self.task.set_status(DownloadTask.Status.PENDING)
+            self.task.progress = 0
+            self.task.progress_text = ""
+            self.task.error_message = ""
+            self.task.final_filepath = ""
+
+        self.update_ui()
+
+    def sizeHint(self):
+        base_h = super().sizeHint().height()
+        return QSize(800, max(105, base_h))

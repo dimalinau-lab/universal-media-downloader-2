@@ -1,7 +1,7 @@
 import os
 import re
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QFrame, QPushButton, QWidget, QPlainTextEdit)
+                             QFrame, QWidget, QPlainTextEdit)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap, QCursor
 from qfluentwidgets import (ProgressBar, PrimaryPushButton, PushButton,

@@ -5,8 +5,32 @@ import threading
 import logging
 import html
 import uuid
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+class _LazyTelebot:
+    _module = None
+
+    def __getattr__(self, name):
+        if _LazyTelebot._module is None:
+            import telebot as _real
+            _LazyTelebot._module = _real
+        return getattr(_LazyTelebot._module, name)
+
+telebot = _LazyTelebot()
+
+
+class _LazyInlineKeyboardMarkup:
+    def __new__(cls, *args, **kwargs):
+        from telebot.types import InlineKeyboardMarkup as _Real
+        return _Real(*args, **kwargs)
+
+
+class _LazyInlineKeyboardButton:
+    def __new__(cls, *args, **kwargs):
+        from telebot.types import InlineKeyboardButton as _Real
+        return _Real(*args, **kwargs)
+
+
+InlineKeyboardMarkup = _LazyInlineKeyboardMarkup
+InlineKeyboardButton = _LazyInlineKeyboardButton
 from PyQt6.QtCore import QObject, pyqtSignal
 
 logger = logging.getLogger(__name__)
@@ -90,7 +114,7 @@ class TelegramBotManager:
             else:
                 self.bot.reply_to(message, "Просто отправь мне ссылку на видео, и я скачаю его!")
 
-        @self.bot.callback_query_handler(func=lambda call: True)
+        @self.bot.callback_query_handler(func=lambda _call: True)
         def handle_callback_query(call):
             self._handle_callback_query(call)
 

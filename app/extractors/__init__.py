@@ -1,12 +1,9 @@
-from .base import BaseExtractor
 from .animego import AnimeGoExtractor
 from .pinterest import PinterestExtractor
-from .reddit import RedditExtractor
 
 EXTRACTORS = [
     AnimeGoExtractor,
     PinterestExtractor,
-    RedditExtractor,
 ]
 
 

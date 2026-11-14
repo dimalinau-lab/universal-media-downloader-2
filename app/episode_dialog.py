@@ -1,16 +1,16 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QHBoxLayout,
-    QListWidget, QListWidgetItem, QInputDialog, QMessageBox, QWidget
+    QListWidget, QListWidgetItem, QInputDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt
-import re
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 
 class EpisodeSelectionDialog(QDialog):
-    def __init__(self, voiceovers, seasons, episodes, qualities, is_movie=False, voice_qualities=None, parent=None):
+    def __init__(self, voiceovers, seasons, episodes, qualities, is_movie=False, voice_qualities=None, parent=None, preferred_quality=None):
         super().__init__(parent)
         self.setWindowTitle("Параметры загрузки")
         self.setModal(True)
@@ -24,6 +24,7 @@ class EpisodeSelectionDialog(QDialog):
         self.default_qualities = qualities if isinstance(qualities, list) else ["1080p", "720p", "480p", "360p"]
         self.voice_qualities = voice_qualities if isinstance(voice_qualities, dict) else {}
         self.is_movie = is_movie
+        self.preferred_quality = preferred_quality
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -123,7 +124,27 @@ class EpisodeSelectionDialog(QDialog):
                 val = label
             self.quality_combo.addItem(label, userData=val)
 
-        idx = self.quality_combo.findText(current_text)
+        idx = -1
+        if current_text:
+            idx = self.quality_combo.findText(current_text)
+
+        if idx < 0 and self.preferred_quality:
+            pref_str = str(self.preferred_quality).lower()
+            match = re.search(r'(\d+)', pref_str)
+            target_res = match.group(1) if match else None
+            for i in range(self.quality_combo.count()):
+                t = self.quality_combo.itemText(i).lower()
+                d = str(self.quality_combo.itemData(i)).lower()
+                if target_res and f"{target_res}p" in t:
+                    idx = i
+                    break
+                if target_res and target_res in t:
+                    idx = i
+                    break
+                if pref_str in t or pref_str in d:
+                    idx = i
+                    break
+
         if idx >= 0:
             self.quality_combo.setCurrentIndex(idx)
         elif self.quality_combo.count() > 0:
@@ -131,7 +152,7 @@ class EpisodeSelectionDialog(QDialog):
 
     def _on_voiceover_changed(self):
         v = self.get_selected_voiceover()
-        v_id = str(v.get('id', ''))
+        v_id = str(v.get('id', '')) if isinstance(v, dict) else str(v or '')
         quals = self.voice_qualities.get(v_id)
         if quals:
             self._populate_qualities(quals)
@@ -168,7 +189,7 @@ class EpisodeSelectionDialog(QDialog):
         self.episodes_list.blockSignals(False)
         self._update_count_label()
 
-    def _on_item_changed(self, item):
+    def _on_item_changed(self, _item):
         self._update_count_label()
 
     def _update_count_label(self):

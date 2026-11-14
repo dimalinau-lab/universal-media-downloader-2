@@ -3,8 +3,8 @@ import subprocess
 import sys
 import shutil
 from packaging import version
-from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
-from PyQt6.QtWidgets import QMessageBox, QPushButton
+from PyQt6.QtCore import QObject, pyqtSignal, QRunnable
+from PyQt6.QtWidgets import QMessageBox
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class UpdateChecker(QObject):
             self.translator.translate('update_now', 'Update Now'),
             QMessageBox.ButtonRole.AcceptRole
         )
-        later_btn = msg.addButton(
+        msg.addButton(
             self.translator.translate('remind_later', 'Remind Later'),
             QMessageBox.ButtonRole.RejectRole
         )

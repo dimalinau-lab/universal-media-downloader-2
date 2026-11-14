@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 class Translator(QObject):
     language_changed = pyqtSignal()
+    _cache = {}
 
     def __init__(self, project_root=None, parent=None):
         super().__init__(parent)
@@ -35,6 +36,10 @@ class Translator(QObject):
         return {}
 
     def load_translations(self):
+        if self.current_language in self._cache:
+            self.translations = self._cache[self.current_language]
+            return
+
         candidates = [
             os.path.join(self.project_root, 'assets', 'locales', f'{self.current_language}.json'),
             os.path.join(self.project_root, 'assets', f'{self.current_language}.json'),
@@ -55,6 +60,7 @@ class Translator(QObject):
         if not data:
             logger.warning(f'Не удалось загрузить ни один файл перевода для языка: {self.current_language}')
         self.translations = data or {}
+        self._cache[self.current_language] = self.translations
 
     def translate(self, key: str, fallback: str = None) -> str:
         if not isinstance(key, str):

@@ -2,7 +2,7 @@ import os
 import re
 import threading
 from enum import Enum
-from PyQt6.QtCore import QObject, pyqtSignal, QUrl
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage
 
 
@@ -40,7 +40,6 @@ class DownloadTask(QObject):
         self.output_path = ""
         self.temp_path = ""
         self.video_id = None
-        self.current_tmpfilename = None
         self.current_filename = None
         self.final_filepath = None
         self.thumbnail_loading = False
@@ -51,6 +50,7 @@ class DownloadTask(QObject):
         self.time_range = None  # tuple (start_sec, end_sec)
         self.time_range_str = ""  # string label e.g. "00:01:20 - 00:03:45"
         self.info = {}
+        self.available_streams = {}
         self.is_removed = False
 
     def set_time_range(self, start_sec: float, end_sec: float, label: str = ""):
@@ -74,6 +74,10 @@ class DownloadTask(QObject):
 
     def update_info(self, info):
         self.info = info
+        if getattr(self, 'available_streams', None) and not info.get('available_streams'):
+            self.info['available_streams'] = self.available_streams
+        elif info.get('available_streams'):
+            self.available_streams = info['available_streams']
         if hasattr(self, 'custom_title') and self.custom_title:
             self.title = self.custom_title
         else:
@@ -118,7 +122,43 @@ class DownloadTask(QObject):
 
         self.quality_badge = badge
 
-        filesize = info.get('filesize') or info.get('filesize_approx')
+        # Smart size estimation based on selected quality / badge
+        calc_size = None
+        formats = info.get('formats', [])
+        duration = info.get('duration', 0)
+        is_audio_mode = badge in ('MP3', 'AUDIO') or getattr(self, 'quality_override', '') in ('audio_only', 'audio_mp3') or getattr(self, 'audio_only', False)
+
+        if formats:
+            if is_audio_mode:
+                best_a = None
+                for f in formats:
+                    if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                        if not best_a or (f.get('abr') or 0) > (best_a.get('abr') or 0):
+                            best_a = f
+                if best_a:
+                    calc_size = best_a.get('filesize') or best_a.get('filesize_approx')
+                    if not calc_size and duration and best_a.get('abr'):
+                        calc_size = int((best_a['abr'] * 1000 / 8) * duration)
+                if not calc_size and duration:
+                    calc_size = int((320 * 1000 / 8) * duration)
+            elif badge and badge.rstrip('p').isdigit():
+                target_h = int(badge.rstrip('p'))
+                audio_sz = 0
+                for f in formats:
+                    if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                        audio_sz = max(audio_sz, f.get('filesize') or f.get('filesize_approx') or 0)
+                cand_vf = None
+                for f in formats:
+                    if f.get('height') == target_h:
+                        if not cand_vf or (f.get('filesize') or f.get('tbr') or 0) > (cand_vf.get('filesize') or cand_vf.get('tbr') or 0):
+                            cand_vf = f
+                if cand_vf:
+                    v_sz = cand_vf.get('filesize') or cand_vf.get('filesize_approx') or 0
+                    if not v_sz and duration and (cand_vf.get('tbr') or cand_vf.get('vbr')):
+                        v_sz = int(((cand_vf.get('tbr') or cand_vf.get('vbr')) * 1000 / 8) * duration)
+                    calc_size = v_sz + (audio_sz if cand_vf.get('acodec') == 'none' else 0)
+
+        filesize = calc_size or info.get('filesize') or info.get('filesize_approx')
         if filesize:
             self.set_file_size(filesize)
 
@@ -128,11 +168,16 @@ class DownloadTask(QObject):
             self.thumbnail_loading = True
             self.thumbnail_load_requested.emit(self.thumbnail_url, self)
 
-    def set_file_size(self, bytes_val):
+    def set_file_size(self, bytes_val, force=False):
         if not bytes_val:
             return
         try:
             b = float(bytes_val)
+            if not force and self._status == self.Status.DOWNLOADING and hasattr(self, '_raw_file_size_bytes'):
+                if b < self._raw_file_size_bytes * 0.7:
+                    # Защита от сброса веса видеопотока при начале скачивания меньшего аудиопотока
+                    return
+            self._raw_file_size_bytes = b
             for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
                 if b < 1024.0:
                     new_str = f"{b:.1f} {unit}"
@@ -143,12 +188,6 @@ class DownloadTask(QObject):
                 b /= 1024.0
         except ValueError:
             pass
-
-    def update_current_paths(self, tmpfilename=None, filename=None):
-        if tmpfilename:
-            self.current_tmpfilename = tmpfilename
-        if filename:
-            self.current_filename = filename
 
     def set_thumbnail(self, image_or_pixmap):
         if isinstance(image_or_pixmap, QImage):
@@ -162,20 +201,29 @@ class DownloadTask(QObject):
         self.thumbnail_loading = False
 
     def update_progress(self, percent, text):
+        from .threads import clean_ansi
         self.progress = percent
-        self.progress_text = text
-        self.progress_updated.emit(percent, text)
+        cleaned = clean_ansi(text)
+        self.progress_text = cleaned
+        self.progress_updated.emit(percent, cleaned)
 
     def set_error(self, message):
-        self.error_message = message
+        from .threads import clean_ansi
+        cleaned = clean_ansi(message)
+        self.error_message = cleaned
         self.set_status(self.Status.ERROR)
 
     def set_completed(self, filepath):
         self.final_filepath = filepath
+        if filepath and os.path.exists(filepath):
+            try:
+                self.set_file_size(os.path.getsize(filepath))
+            except Exception:
+                pass
         self.set_status(self.Status.COMPLETED)
         self.update_progress(100, "")
 
-    def request_stop(self, *args, **kwargs):
+    def request_stop(self, *_args, **kwargs):
         self.is_removed = kwargs.get('is_removed', False)
         self._stop_event.set()
 

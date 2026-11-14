@@ -51,11 +51,14 @@ class AnimeGoExtractor(BaseExtractor):
             'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
         }
 
-    def fetch_metadata(self, url: str) -> dict:
+    def fetch_metadata(self, url: str, progress_callback=None) -> dict:
         """
         Парсит страницу AnimeGo или плеер Kodik / AniBoom.
         """
         logger.info(f"[AnimeGo] Запрос метаданных для {url}...")
+        if progress_callback:
+            progress_callback(15, "Подключение к AnimeGo...")
+
         resp = self.session.get(url, headers=self.headers, timeout=12)
         if resp.status_code != 200:
             raise RuntimeError(f"Сайт AnimeGo вернул HTTP {resp.status_code}")
@@ -73,6 +76,9 @@ class AnimeGoExtractor(BaseExtractor):
 
         title = re.sub(r'\s*смотреть онлайн.*', '', raw_title, flags=re.I).strip()
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip() or "Anime"
+
+        if progress_callback:
+            progress_callback(35, f"Загружено: {safe_title[:35]}...")
 
         # 2. Постер
         poster_url = None
@@ -92,6 +98,8 @@ class AnimeGoExtractor(BaseExtractor):
 
         if anime_id:
             # Получение озвучек и плееров через внутренний AJAX API AnimeGo
+            if progress_callback:
+                progress_callback(60, "Запрос озвучек и плееров...")
             try:
                 p_url = f"https://animego.me/player/{anime_id}"
                 p_resp = self.session.get(
@@ -132,6 +140,8 @@ class AnimeGoExtractor(BaseExtractor):
                 logger.warning(f"[AnimeGo] Не удалось получить плееры через API: {e}")
 
             # Получение списка серий
+            if progress_callback:
+                progress_callback(85, "Получение списка серий...")
             try:
                 ep_url = f"https://animego.me/player/{anime_id}/episodes"
                 ep_resp = self.session.get(
@@ -156,6 +166,9 @@ class AnimeGoExtractor(BaseExtractor):
                             })
             except Exception as e:
                 logger.warning(f"[AnimeGo] Не удалось получить серии через API: {e}")
+
+        if progress_callback:
+            progress_callback(100, "Анализ завершен!")
 
         # Fallback озвучки
         if not voiceovers:

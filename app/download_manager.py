@@ -7,27 +7,14 @@ import re
 import time
 import subprocess
 import requests
-import tempfile
-import zipfile
-import urllib.parse
 from urllib.parse import urlparse
-from bs4 import BeautifulSoup
 
-from PyQt6.QtCore import QObject, pyqtSignal, Qt, QRunnable
-from PyQt6.QtWidgets import QApplication, QMessageBox
-
-from selenium import webdriver
-from selenium.webdriver.edge.service import Service as EdgeService
-from selenium.webdriver.edge.options import Options as EdgeOptions
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.common.by import By
+from PyQt6.QtCore import QObject, pyqtSignal, QRunnable
+from PyQt6.QtWidgets import QMessageBox
 
 import threading
 from .threads import InfoWorker, DownloadWorker, ThumbnailWorker
 from .download_task import DownloadTask
-from .episode_dialog import EpisodeSelectionDialog
-from .kinopub_dialog import KinoPubScanDialog, KinoPubSeriesProgressDialog, format_kinopub_error
 from .extractors import find_extractor_for_url
 
 logger = logging.getLogger(__name__)
@@ -92,10 +79,20 @@ def create_browser_driver(headless: bool = True, user_agent: str = BROWSER_USER_
     1. Microsoft Edge (с профилем или без)
     2. Google Chrome (с профилем или без)
     """
-    profile_dir = os.path.join(get_base_dir(), 'browser_profile')
+    from .path_manager import get_browser_profile_dir
+    profile_dir = get_browser_profile_dir()
     if use_profile:
-        os.makedirs(profile_dir, exist_ok=True)
-        purge_profile_proxies(profile_dir)
+        try:
+            os.makedirs(profile_dir, exist_ok=True)
+            purge_profile_proxies(profile_dir)
+        except Exception as e:
+            logger.warning(f"Не удалось подготовить папку browser_profile: {e}")
+
+    from selenium import webdriver
+    from selenium.webdriver.edge.service import Service as EdgeService
+    from selenium.webdriver.edge.options import Options as EdgeOptions
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    from selenium.webdriver.chrome.options import Options as ChromeOptions
 
     # 1. Попытка запустить Microsoft Edge
     try:
@@ -518,6 +515,7 @@ class LampaScannerWorker(QRunnable):
         self.signals = LampaWorkerSignals()
 
     def run(self):
+        from selenium.webdriver.common.by import By
         driver = None
         try:
             driver = create_browser_driver(headless=False, user_agent=BROWSER_USER_AGENT, use_profile=True)
@@ -698,6 +696,7 @@ class KinoPubFetchWorker(QRunnable):
                 return
 
             self.signals.progress.emit(65, 'parse', 'Парсинг озвучек, сезонов и серий...')
+            from bs4 import BeautifulSoup
             soup = BeautifulSoup(page_source, 'html.parser')
             title_el = soup.select_one('.b-post__title h1')
             anime_title = title_el.text.strip() if title_el else "Видео"
@@ -767,10 +766,16 @@ class KinoPubFetchWorker(QRunnable):
                     browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
                     if browser and browser != 'none':
                         try:
-                            import yt_dlp.cookies
-                            cj = yt_dlp.cookies.extract_cookies_from_browser(browser)
-                            if cj:
-                                session.cookies.update(cj)
+                            from .browser_cookies import extract_cookies_live
+                            extracted = extract_cookies_live(browser)
+                            if extracted:
+                                for ck in extracted:
+                                    session.cookies.set(ck['name'], ck['value'], domain=ck.get('domain', ''), path=ck.get('path', '/'))
+                            else:
+                                import yt_dlp.cookies
+                                cj = yt_dlp.cookies.extract_cookies_from_browser(browser)
+                                if cj:
+                                    session.cookies.update(cj)
                         except Exception as ce:
                             logger.debug(f"Could not load browser cookies into session: {ce}")
 
@@ -1079,6 +1084,7 @@ class KinoPubSeriesWorker(QRunnable):
                             break
 
                 if streams_raw:
+                    parsed_streams = parse_voidboost_streams(streams_raw)
                     best_link, actual_qual = extract_best_link(streams_raw, target_res=self.selected_quality)
                     if best_link:
                         safe_e_name = re.sub(r'[\\/*?:"<>|]', "", ep_name)
@@ -1089,11 +1095,18 @@ class KinoPubSeriesWorker(QRunnable):
                         q_badge = actual_qual or str(self.selected_quality)
                         if not q_badge.endswith('p') and 'ultra' not in q_badge.lower():
                             q_badge = f"{q_badge}p"
+
+                        stream_dict = {}
+                        if parsed_streams:
+                            for s in parsed_streams:
+                                stream_dict[s['label']] = s['best_url']
+
                         results.append({
                             'url': best_link,
                             'title': custom_title,
                             'quality': q_badge,
-                            'referer': self.url
+                            'referer': self.url,
+                            'available_streams': stream_dict
                         })
                         logger.info(f"[KinoPubSeries] [+] Ссылка получена: '{custom_title}' [{q_badge}] -> {best_link[:80]}...")
                     else:
@@ -1130,6 +1143,7 @@ class KinoPubSeriesWorker(QRunnable):
 class CustomExtractorSignals(QObject):
     ready = pyqtSignal(dict, object)
     error = pyqtSignal(str)
+    progress = pyqtSignal(int, str)
 
 
 class CustomExtractorFetchWorker(QRunnable):
@@ -1138,14 +1152,30 @@ class CustomExtractorFetchWorker(QRunnable):
         self.url = url
         self.extractor = extractor
         self.signals = CustomExtractorSignals()
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
 
     def run(self):
         try:
-            meta = self.extractor.fetch_metadata(self.url)
-            self.signals.ready.emit(meta, self.extractor)
+            def on_progress(percent, msg):
+                if not self._is_cancelled:
+                    self.signals.progress.emit(percent, msg)
+
+            import inspect
+            sig = inspect.signature(self.extractor.fetch_metadata)
+            if 'progress_callback' in sig.parameters:
+                meta = self.extractor.fetch_metadata(self.url, progress_callback=on_progress)
+            else:
+                meta = self.extractor.fetch_metadata(self.url)
+
+            if not self._is_cancelled:
+                self.signals.ready.emit(meta, self.extractor)
         except Exception as e:
-            logger.error(f"[CustomExtractor] Ошибка извлечения {self.url}: {e}", exc_info=True)
-            self.signals.error.emit(str(e))
+            if not self._is_cancelled:
+                logger.error(f"[CustomExtractor] Ошибка извлечения {self.url}: {e}", exc_info=True)
+                self.signals.error.emit(str(e))
 
 
 # ==================================
@@ -1221,7 +1251,7 @@ class DownloadManager(QObject):
         if m: return f"https://kick.com/video/{m.group(1)}"
         return u
 
-    def add_urls(self, urls, quality_override=None, is_from_bot=False):
+    def add_urls(self, urls, quality_override=None, is_from_bot=False, prompt_time_range=False):
         for url in urls:
             url = self._normalize_url(url)
 
@@ -1245,6 +1275,7 @@ class DownloadManager(QObject):
 
             task = DownloadTask(url)
             task.is_from_bot = is_from_bot
+            task.prompt_time_range = prompt_time_range
             if quality_override:
                 task.quality_override = quality_override
                 if quality_override in ('audio_only', 'audio_mp3'):
@@ -1292,7 +1323,216 @@ class DownloadManager(QObject):
         if hasattr(task, 'custom_quality') and task.custom_quality:
             info['quality_badge'] = task.custom_quality
         task.update_info(info)
+        self._apply_preferred_quality_badge(task, info)
         self._update_summary()
+
+    def _query_direct_stream_size(self, task):
+        """Быстро запрашивает размер прямого видеопотока через HEAD/GET-запрос без тяжелого yt-dlp"""
+        def _fetch():
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                }
+                if getattr(task, 'referer', None):
+                    headers['Referer'] = task.referer
+                    headers['Origin'] = task.referer.rstrip('/')
+                session = requests.Session()
+                session.trust_env = False
+                session.verify = False
+
+                if '.m3u8' in task.url.lower():
+                    # Для HLS плейлиста HEAD вернет размер текстового файла (.m3u8 ~600 байт).
+                    # Считываем манифест и рассчитываем реальный вес серии по BANDWIDTH и длительности!
+                    r = session.get(task.url, headers=headers, timeout=5, verify=False)
+                    if r.status_code == 200 and '#EXTM3U' in r.text:
+                        stream_infs = re.findall(r'BANDWIDTH=(\d+)(?:.*?RESOLUTION=(\d+)x(\d+))?', r.text)
+                        target_h = None
+                        q_badge = getattr(task, 'quality_badge', '') or getattr(task, 'custom_quality', '')
+                        m = re.search(r'(\d+)', q_badge)
+                        if m:
+                            target_h = int(m.group(1))
+
+                        duration_s = getattr(task, 'duration', 0) or 1440  # ~24 мин стандартная серия аниме
+                        dummy_formats = []
+                        chosen_bw = None
+                        if stream_infs:
+                            parsed = []
+                            for inf in stream_infs:
+                                bw = int(inf[0])
+                                w = int(inf[1]) if len(inf) > 1 and inf[1] else 0
+                                h = int(inf[2]) if len(inf) > 2 and inf[2] else 0
+                                parsed.append((bw, w, h))
+                                approx_sz = int((bw * duration_s) / 8)
+                                dummy_formats.append({
+                                    'format_id': str(bw),
+                                    'height': h,
+                                    'width': w,
+                                    'tbr': bw / 1000,
+                                    'vcodec': 'h264',
+                                    'acodec': 'none',
+                                    'filesize_approx': approx_sz,
+                                })
+                            if target_h:
+                                matches = [p for p in parsed if p[2] <= target_h and p[2] > 0]
+                                if matches:
+                                    chosen_bw = max(matches, key=lambda x: x[2])[0]
+                            if not chosen_bw and parsed:
+                                chosen_bw = parsed[0][0]
+
+                        if dummy_formats:
+                            info_dict = getattr(task, 'info', {}) or {}
+                            info_dict['formats'] = dummy_formats
+                            info_dict['duration'] = duration_s
+                            task.info = info_dict
+
+                        if chosen_bw:
+                            est_size = int((chosen_bw * duration_s) / 8)
+                            if est_size > 5 * 1024 * 1024:
+                                self.run_on_main(task.set_file_size, est_size)
+                                self.run_on_main(task.info_updated.emit)
+                        self.run_on_main(task.set_status, DownloadTask.Status.PENDING)
+                    return
+
+                r = session.head(task.url, headers=headers, timeout=5, allow_redirects=True, verify=False)
+                cl = r.headers.get('Content-Length')
+                if cl and cl.isdigit():
+                    sz = int(cl)
+                    if sz > 100 * 1024:
+                        self.run_on_main(task.set_file_size, sz)
+                        # Создаем базовые форматы для прямого MP4 видео
+                        target_h = 360
+                        q_badge = getattr(task, 'quality_badge', '') or getattr(task, 'custom_quality', '')
+                        m_h = re.search(r'(\d+)', q_badge)
+                        if m_h:
+                            target_h = int(m_h.group(1))
+                        else:
+                            m_url = re.search(r'[/_](\d{3,4})p?[\._/]', task.url)
+                            if m_url:
+                                target_h = int(m_url.group(1))
+
+                        info_dict = getattr(task, 'info', {}) or {}
+                        av_streams = getattr(task, 'available_streams', None) or info_dict.get('available_streams')
+                        if av_streams:
+                            dummy_formats = []
+                            for label, s_url in av_streams.items():
+                                m_l = re.search(r'(\d+)', label)
+                                alt_h = int(m_l.group(1)) if m_l else target_h
+                                dummy_formats.append({
+                                    'format_id': label,
+                                    'height': alt_h,
+                                    'width': int(alt_h * 16 / 9),
+                                    'filesize': int(sz * (alt_h / target_h) ** 1.3) if target_h > 0 else sz,
+                                    'filesize_approx': int(sz * (alt_h / target_h) ** 1.3) if target_h > 0 else sz,
+                                    'vcodec': 'h264',
+                                    'acodec': 'aac',
+                                    'direct_url': s_url
+                                })
+                            info_dict['formats'] = dummy_formats
+                            info_dict['available_streams'] = av_streams
+                            task.info = info_dict
+                        elif not info_dict.get('formats'):
+                            dummy_formats = [{
+                                'format_id': f"{target_h}p",
+                                'height': target_h,
+                                'width': int(target_h * 16 / 9),
+                                'filesize': sz,
+                                'filesize_approx': sz,
+                                'vcodec': 'h264',
+                                'acodec': 'aac',
+                            }]
+                            if any(d in task.url for d in ('solodcdn', 'kodik')):
+                                m_kodik = re.search(r'/(\d{3,4})\.mp4', task.url)
+                                if m_kodik:
+                                    curr_h = int(m_kodik.group(1))
+                                    for alt_h in (360, 480, 720, 1080):
+                                        if alt_h == curr_h:
+                                            continue
+                                        dummy_formats.append({
+                                            'format_id': f"{alt_h}p",
+                                            'height': alt_h,
+                                            'width': int(alt_h * 16 / 9),
+                                            'filesize': int(sz * (alt_h / curr_h) ** 1.3) if curr_h > 0 else 0,
+                                            'filesize_approx': int(sz * (alt_h / curr_h) ** 1.3) if curr_h > 0 else 0,
+                                            'vcodec': 'h264',
+                                            'acodec': 'aac',
+                                            'direct_url': re.sub(r'/\d{3,4}\.mp4', f'/{alt_h}.mp4', task.url)
+                                        })
+                            else:
+                                for alt_h in (1080, 720, 480, 360):
+                                    if alt_h == target_h:
+                                        continue
+                                    dummy_formats.append({
+                                        'format_id': f"{alt_h}p",
+                                        'height': alt_h,
+                                        'width': int(alt_h * 16 / 9),
+                                        'filesize': int(sz * (alt_h / target_h) ** 1.3) if target_h > 0 else 0,
+                                        'filesize_approx': int(sz * (alt_h / target_h) ** 1.3) if target_h > 0 else 0,
+                                        'vcodec': 'h264',
+                                        'acodec': 'aac',
+                                    })
+                            info_dict['formats'] = dummy_formats
+                            task.info = info_dict
+                        self.run_on_main(task.info_updated.emit)
+                        self.run_on_main(task.set_status, DownloadTask.Status.PENDING)
+            except Exception as e:
+                logger.debug(f"Direct stream size check failed for {task.url}: {e}")
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply_preferred_quality_badge(self, task, info):
+        if getattr(task, 'quality_override', None) or getattr(task, 'custom_quality', None):
+            return
+
+        u = task.url.lower()
+        platform_key = None
+        if 'youtube.com' in u or 'youtu.be' in u:
+            platform_key = 'quality_youtube'
+        elif 'rutube.ru' in u:
+            platform_key = 'quality_rutube'
+        elif 'tiktok.com' in u:
+            platform_key = 'quality_tiktok'
+        elif 'instagram.com' in u:
+            platform_key = 'quality_instagram'
+        elif 'vk.com' in u or 'vkvideo.ru' in u:
+            platform_key = 'quality_vk'
+        elif 'pornhub.com' in u:
+            platform_key = 'quality_pornhub'
+        elif 'facebook.com' in u or 'fb.watch' in u:
+            platform_key = 'quality_facebook'
+        elif 'twitter.com' in u or 'x.com' in u:
+            platform_key = 'quality_x_twitter'
+        elif 'kinopoisk.ru' in u:
+            platform_key = 'quality_kinopoisk'
+        elif 'twitch.tv' in u:
+            platform_key = 'quality_twitch'
+        elif 'kick.com' in u:
+            platform_key = 'quality_kick'
+        elif 'kinopub' in u or 'kino.pub' in u or 'rezka' in u or 'voidboost' in u:
+            platform_key = 'quality_kinopub'
+        elif 'animego' in u or 'aniboom' in u or 'kodik' in u:
+            platform_key = 'quality_animego'
+        elif 'vi3000' in u or 'lampa' in u or 'cub' in u:
+            platform_key = 'quality_lampa'
+        elif 'pinterest.com' in u or 'pin.it' in u:
+            platform_key = 'quality_pinterest'
+
+        pref_fmt = self.settings.value(platform_key, '') if platform_key else ''
+        if not pref_fmt:
+            return
+
+        if pref_fmt == 'bestaudio/best':
+            task.audio_only = True
+            audio_fmt = str(self.settings.value('audio_format', 'mp3')).upper()
+            task.quality_badge = audio_fmt if audio_fmt else "AUDIO"
+            task.info_updated.emit()
+        elif '[height<=' in pref_fmt:
+            h_match = re.search(r'height<=(\d+)', pref_fmt)
+            if h_match:
+                pref_h = int(h_match.group(1))
+                avail_h = info.get('height')
+                target_h = min(avail_h, pref_h) if (avail_h and isinstance(avail_h, int)) else pref_h
+                task.quality_badge = f"{target_h}p"
+                task.info_updated.emit()
 
     def on_info_error(self, task, error):
         task.set_error(self.translator.translate('error_getting_info'))
@@ -1380,8 +1620,11 @@ class DownloadManager(QObject):
             self._update_summary()
 
     def start_or_retry_task(self, task):
-        if task.status in (DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED, DownloadTask.Status.PENDING):
+        if task.status in (DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED, DownloadTask.Status.PENDING, DownloadTask.Status.COMPLETED):
             task.set_status(DownloadTask.Status.PENDING)
+            task.progress = 0
+            task.progress_text = ""
+            task.error_message = ""
             if not self.is_downloading_active:
                 self.start_all()
             else:
@@ -1391,20 +1634,38 @@ class DownloadManager(QObject):
         return [t for t in self.tasks if
                 t.status in (DownloadTask.Status.COMPLETED, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED)]
 
-    def _extract_best_link(self, streams_raw, target_res=None):
-        if target_res is None:
-            quality_setting = self.settings.value('quality_kinopub', '1080')
-            target_res = 1080
-            for q in [360, 480, 720, 1080, 1440, 2160]:
-                if str(q) in str(quality_setting): target_res = q
-        return extract_best_link(streams_raw, target_res=target_res)
-
     def _start_custom_extractor_scan(self, url, extractor, is_from_bot=False):
         self.status_updated.emit(f"Анализ {extractor.name}...")
         worker = CustomExtractorFetchWorker(url, extractor)
-        worker.signals.ready.connect(lambda meta, ext=extractor: self._on_custom_extractor_ready(meta, ext, is_from_bot=is_from_bot))
-        worker.signals.error.connect(lambda err, ext=extractor: self._on_custom_extractor_error(err, ext, is_from_bot=is_from_bot))
+
+        scan_dialog = None
+        if not is_from_bot and getattr(extractor, 'platform_id', '') == 'animego':
+            try:
+                from .animego_progress_dialog import AnimeGoScanDialog
+                scan_dialog = AnimeGoScanDialog(url, parent=self.parent_window)
+                worker.signals.progress.connect(scan_dialog.update_progress)
+                scan_dialog.cancelled.connect(worker.cancel)
+            except Exception as e:
+                logger.warning(f"Failed to create AnimeGoScanDialog: {e}")
+                scan_dialog = None
+
+        def on_ready(meta, ext):
+            if scan_dialog and scan_dialog.isVisible():
+                scan_dialog.update_progress(100, "Готово!")
+                scan_dialog.accept()
+            self._on_custom_extractor_ready(meta, ext, is_from_bot=is_from_bot)
+
+        def on_error(err, ext):
+            if scan_dialog and scan_dialog.isVisible():
+                scan_dialog.show_error(err)
+            self._on_custom_extractor_error(err, ext, is_from_bot=is_from_bot)
+
+        worker.signals.ready.connect(lambda meta, ext=extractor: self.run_on_main(on_ready, meta, ext))
+        worker.signals.error.connect(lambda err, ext=extractor: self.run_on_main(on_error, err, ext))
         self.thread_pool.start(worker)
+
+        if scan_dialog:
+            scan_dialog.exec()
 
     def _on_custom_extractor_error(self, err, extractor, is_from_bot=False):
         logger.error(f"[{extractor.name}] Ошибка анализа: {err}")
@@ -1431,13 +1692,16 @@ class DownloadManager(QObject):
             qualities = meta.get('available_qualities', ['1080p', '720p', '480p'])
             is_movie = meta.get('is_movie', False) and len(ep_list) <= 1
 
+            pref_q = self.settings.value('quality_animego', '1080p')
+            from .episode_dialog import EpisodeSelectionDialog
             dialog = EpisodeSelectionDialog(
                 v_list,
                 s_list,
                 ep_list,
                 qualities,
                 is_movie=is_movie,
-                parent=self.parent_window
+                parent=self.parent_window,
+                preferred_quality=pref_q
             )
             if dialog.exec():
                 selected_targets = dialog.get_selected_targets()
@@ -1478,11 +1742,14 @@ class DownloadManager(QObject):
                     elif meta.get('referer'):
                         task.referer = meta.get('referer')
                     task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
+                    task.set_status(DownloadTask.Status.PENDING)
                     self.tasks.append(task)
                     self.task_added.emit(task)
                     if task.thumbnail_url:
                         self.queue_thumbnail_load(task.thumbnail_url, task)
-                    self.start_task(task)
+                    self._query_direct_stream_size(task)
+                    if is_from_bot or self.settings.value('auto_start_downloads', False, type=bool):
+                        self.start_task(task)
                     added_count += 1
 
                 if added_count == 0:
@@ -1508,11 +1775,14 @@ class DownloadManager(QObject):
             if meta.get('referer'):
                 task.referer = meta.get('referer')
             task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
+            task.set_status(DownloadTask.Status.PENDING)
             self.tasks.append(task)
             self.task_added.emit(task)
             if task.thumbnail_url:
                 self.queue_thumbnail_load(task.thumbnail_url, task)
-            self.fetch_video_info(task)
+            self._query_direct_stream_size(task)
+            if is_from_bot or self.settings.value('auto_start_downloads', False, type=bool):
+                self.start_task(task)
             self._update_summary()
 
     def _start_custom_extractor_from_bot(self, meta, extractor, selected_v, selected_q, selected_targets):
@@ -1560,7 +1830,9 @@ class DownloadManager(QObject):
                     elif self.meta.get('referer'):
                         task.referer = self.meta.get('referer')
                     task.thumbnail_load_requested.connect(self.dm.queue_thumbnail_load)
+                    task.set_status(DownloadTask.Status.PENDING)
                     self.dm.run_on_main(self.dm._add_and_start_task, task)
+                    self.dm._query_direct_stream_size(task)
                     added_count += 1
 
                 if added_count == 0:
@@ -1597,8 +1869,9 @@ class DownloadManager(QObject):
                 if task.thumbnail_url:
                     self.queue_thumbnail_load(task.thumbnail_url, task)
                 new_tasks.append(task)
-            for t in new_tasks:
-                self.start_task(t)
+            if self.settings.value('auto_start_downloads', False, type=bool):
+                for t in new_tasks:
+                    self.start_task(t)
         else:
             task = DownloadTask(url)
             task.set_error("Видео не включено или браузер закрыт.")
@@ -1615,6 +1888,7 @@ class DownloadManager(QObject):
             self.thread_pool.start(worker)
             return
 
+        from .kinopub_dialog import KinoPubScanDialog
         dialog = existing_dialog or KinoPubScanDialog(url, parent=self.parent_window)
         worker = KinoPubFetchWorker(url, settings=self.settings)
 
@@ -1640,6 +1914,7 @@ class DownloadManager(QObject):
         self._on_kinopub_meta_ready(meta, is_from_bot=False)
 
     def _on_kinopub_scan_error(self, err, dialog, url, is_from_bot=False):
+        from .kinopub_dialog import format_kinopub_error
         info = format_kinopub_error(str(err))
         logger.error(f"KinoPub scan error for {url}: {err}")
         self.status_updated.emit(f"KinoPub: {info['short_status']}")
@@ -1674,6 +1949,9 @@ class DownloadManager(QObject):
 
         if post_id:
             logger.info(f"[KinoPub] Открытие диалога выбора серий для '{meta.get('safe_anime_title')}' (post_id: {post_id})...")
+            from .episode_dialog import EpisodeSelectionDialog
+            from .kinopub_dialog import KinoPubSeriesProgressDialog
+            pref_q = self.settings.value('quality_kinopub', 'best')
             dialog = EpisodeSelectionDialog(
                 voiceovers,
                 seasons,
@@ -1681,7 +1959,8 @@ class DownloadManager(QObject):
                 qualities,
                 voice_qualities=voice_qualities,
                 is_movie=is_movie,
-                parent=self.parent_window
+                parent=self.parent_window,
+                preferred_quality=pref_q
             )
             if dialog.exec():
                 selected_v_obj = dialog.get_selected_voiceover()
@@ -1696,7 +1975,7 @@ class DownloadManager(QObject):
                 safe_s_name = re.sub(r'[\\/*?:"<>|]', "", selected_s_obj.get('name', '1 Сезон'))
                 targets = dialog.get_selected_targets()
 
-                logger.info(f"[KinoPub] Диалог завершился подтверждением (OK).")
+                logger.info("[KinoPub] Диалог завершился подтверждением (OK).")
                 logger.info(f"[KinoPub] Параметры: Озвучка='{safe_v_name}' (ID: {selected_voice}), Сезон='{safe_s_name}', Качество='{selected_quality}', Выбрано серий={len(targets)}")
 
                 if not targets:
@@ -1755,7 +2034,7 @@ class DownloadManager(QObject):
                 series_dialog.raise_()
                 series_dialog.activateWindow()
 
-                logger.info(f"[KinoPub] Запуск KinoPubSeriesWorker в пуле потоков thread_pool...")
+                logger.info("[KinoPub] Запуск KinoPubSeriesWorker в пуле потоков thread_pool...")
                 self.thread_pool.start(series_worker)
             else:
                 logger.info("[KinoPub] Выбор серий отменен пользователем.")
@@ -1770,15 +2049,18 @@ class DownloadManager(QObject):
                 task.custom_quality = str(meta['available_qualities'][0])
                 task.quality_badge = task.custom_quality
             task.referer = meta.get('url')
+            if meta.get('available_streams'):
+                task.available_streams = meta['available_streams']
             if meta.get('poster_url'):
                 task.thumbnail_url = meta['poster_url']
             task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
             self.tasks.append(task)
             self.task_added.emit(task)
-            self.fetch_video_info(task)
+            self._query_direct_stream_size(task)
             if task.thumbnail_url:
                 self.queue_thumbnail_load(task.thumbnail_url, task)
-            self.start_task(task)
+            if is_from_bot or self.settings.value('auto_start_downloads', False, type=bool):
+                self.start_task(task)
             self._update_summary()
         else:
             task = DownloadTask(url)
@@ -1855,23 +2137,28 @@ class DownloadManager(QObject):
                     task.quality_badge = res['quality']
                 if res.get('referer'):
                     task.referer = res['referer']
+                if res.get('available_streams'):
+                    task.available_streams = res['available_streams']
                 if poster:
                     task.thumbnail_url = poster
                 task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
                 self.tasks.append(task)
                 self.task_added.emit(task)
-                self.fetch_video_info(task)
+                self._query_direct_stream_size(task)
                 if task.thumbnail_url:
                     self.queue_thumbnail_load(task.thumbnail_url, task)
                 new_tasks.append(task)
                 logger.info(f"[KinoPub] Добавлена серия в очередь: '{task.custom_title}' [{task.quality_badge}]")
 
-            self.is_downloading_active = True
-            self.download_started.emit()
-            self.status_updated.emit(f"Добавлено серий: {len(results)}. Запуск загрузки...")
-            for t in new_tasks:
-                logger.info(f"[KinoPub] Запуск загрузки для: '{t.custom_title}'")
-                self.start_task(t)
+            if is_from_bot or self.settings.value('auto_start_downloads', False, type=bool):
+                self.is_downloading_active = True
+                self.download_started.emit()
+                self.status_updated.emit(f"Добавлено серий: {len(results)}. Запуск загрузки...")
+                for t in new_tasks:
+                    logger.info(f"[KinoPub] Запуск загрузки для: '{t.custom_title}'")
+                    self.start_task(t)
+            else:
+                self.status_updated.emit(f"Добавлено серий: {len(results)}. Готово к загрузке.")
         else:
             logger.warning("[KinoPub] Список серий пуст — ни одна ссылка не была получена.")
             self.status_updated.emit("Не удалось получить ссылки на серии.")
@@ -1888,12 +2175,4 @@ class DownloadManager(QObject):
             self.bot_manager.send_message(f"❌ Ошибка KinoPub / Rezka:\n{err}")
         elif self.parent_window:
             QMessageBox.critical(self.parent_window, "Ошибка KinoPub / Rezka", f"Не удалось получить ссылки на серии:\n\n{err}")
-        self._update_summary()
-
-    def _on_kinopub_error(self, url, err):
-        info = format_kinopub_error(str(err))
-        task = DownloadTask(url)
-        task.set_error(info['short_status'])
-        self.tasks.append(task)
-        self.task_added.emit(task)
         self._update_summary()

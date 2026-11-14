@@ -1,18 +1,15 @@
 import sys
 import os
-import re
 import logging
 import subprocess
-import platform
-import urllib.parse
 import shutil
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QGridLayout, QGroupBox, QLabel, QComboBox,
                              QMessageBox, QApplication, QToolTip)
 from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QObject, QEvent
-from PyQt6.QtGui import QPixmap, QCursor
+from PyQt6.QtGui import QPixmap, QCursor, QColor
 from qfluentwidgets import (SwitchButton, ComboBox, SpinBox, DoubleSpinBox, RadioButton,
-                             PushButton, BodyLabel, CaptionLabel, FluentIcon, SingleDirectionScrollArea, LineEdit, IconWidget)
+                             PushButton, BodyLabel, FluentIcon, SingleDirectionScrollArea, IconWidget)
 from .translation import Translator
 from .theme_manager import ThemeManager
 
@@ -36,6 +33,25 @@ SPEED_PRESETS = [
     (200 * 1024 * 1024, None, "200 МБ/с"),
     (-1, "speed_custom", "Своё значение..."),
 ]
+
+PLATFORM_QUALITY_KEYS = {
+    'YouTube': 'quality_youtube',
+    'RuTube': 'quality_rutube',
+    'TikTok': 'quality_tiktok',
+    'Instagram': 'quality_instagram',
+    'VK': 'quality_vk',
+    'PornHub': 'quality_pornhub',
+    'Facebook': 'quality_facebook',
+    'X (Twitter)': 'quality_x_twitter',
+    'Kinopoisk': 'quality_kinopoisk',
+    'KinoPub / Rezka': 'quality_kinopub',
+    'KinoPub': 'quality_kinopub',
+    'AnimeGO': 'quality_animego',
+    'Lampa (vi3000)': 'quality_lampa',
+    'Twitch': 'quality_twitch',
+    'Kick': 'quality_kick',
+    'Pinterest': 'quality_pinterest',
+}
 
 
 class DelayedToolTipFilter(QObject):
@@ -87,22 +103,17 @@ class CookieTestThread(QThread):
 
     def run(self):
         try:
-            import yt_dlp.cookies
-            jar = yt_dlp.cookies.extract_cookies_from_browser(self.browser)
-            count = len(list(jar))
+            from .browser_cookies import extract_cookies_live, BROWSER_DEFINITIONS
+            cookies = extract_cookies_live(self.browser)
+            count = len(cookies)
+            b_name = BROWSER_DEFINITIONS.get(self.browser, {}).get('name', self.browser.capitalize())
             if count > 0:
-                self.result_ready.emit(True, f"Успешно! Найдено {count} cookies в {self.browser.capitalize()}.")
+                self.result_ready.emit(True, f"Успешно! Найдено и расшифровано {count} cookies в {b_name}.")
             else:
-                self.result_ready.emit(True, f"Браузер {self.browser.capitalize()} доступен (активных cookies не найдено).")
+                msg = f"Файл cookies в {b_name} заблокирован запущенным браузером или не найден. Закройте браузер или укажите файл cookies.txt (пункт «Файл cookie»)."
+                self.result_ready.emit(False, msg)
         except Exception as e:
-            err_str = str(e)
-            if 'DPAPI' in err_str or 'decrypt' in err_str.lower():
-                msg = f"Защита App-Bound Encryption (Chrome 127+) блокирует прямое чтение. Чтобы не закрывать браузер, выберите «Файл cookie» выше (через cookies.txt)."
-            elif 'locked' in err_str.lower() or 'could not copy' in err_str.lower():
-                msg = f"{self.browser.capitalize()} запущен и блокирует базу. Чтобы не закрывать браузер, выберите «Файл cookie» выше (через cookies.txt)."
-            else:
-                msg = f"Не удалось прочитать: {err_str}"
-            self.result_ready.emit(False, msg)
+            self.result_ready.emit(False, f"Не удалось прочитать: {e}")
 
 
 class PingTestThread(QThread):
@@ -121,7 +132,7 @@ class PingTestThread(QThread):
         for name, url in sites:
             try:
                 t0 = time.time()
-                resp = requests.get(url, timeout=4, headers={'User-Agent': 'Mozilla/5.0'})
+                requests.get(url, timeout=4, headers={'User-Agent': 'Mozilla/5.0'})
                 latency = int((time.time() - t0) * 1000)
                 color = "#107c41" if latency < 600 else ("#d97706" if latency < 1200 else "#d83b01")
                 results.append(f'<b>{name}:</b> <span style="color:{color}; font-weight:600;">{latency} мс</span>')
@@ -142,30 +153,12 @@ class SettingsTab(QWidget):
         self.translator.language_changed.connect(self.update_translations)
 
     def detect_available_browsers(self):
-        browsers_to_check = {
-            'chrome': ['Google Chrome', 'Chrome', 'google-chrome', 'chrome'],
-            'firefox': ['Firefox', 'firefox'],
-            'brave': ['Brave Browser', 'Brave', 'brave-browser', 'brave'],
-            'edge': ['Microsoft Edge', 'msedge', 'microsoft-edge'],
-            'opera': ['Opera', 'opera'],
-            'vivaldi': ['Vivaldi', 'vivaldi'],
-            'safari': ['Safari', 'safari'],
-            'chromium': ['Chromium', 'chromium-browser', 'chromium']
-        }
-
-        self.available_browsers = ['none']
-        system = platform.system()
-
-        for browser_key, names in browsers_to_check.items():
-            if system == 'Windows':
-                if self._check_browser_windows(names):
-                    self.available_browsers.append(browser_key)
-            elif system == 'Darwin':
-                if self._check_browser_macos(names):
-                    self.available_browsers.append(browser_key)
-            else:
-                if self._check_browser_linux(names):
-                    self.available_browsers.append(browser_key)
+        try:
+            from .browser_cookies import detect_installed_browsers
+            installed = detect_installed_browsers()
+            self.available_browsers = [('none', 'Отключено')] + installed
+        except Exception:
+            self.available_browsers = [('none', 'Отключено')]
 
     def _check_browser_windows(self, names):
         import winreg
@@ -179,7 +172,7 @@ class SettingsTab(QWidget):
                 try:
                     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{path}\\{name}.exe"):
                         return True
-                except:
+                except Exception:
                     pass
 
         common_paths = [
@@ -207,7 +200,7 @@ class SettingsTab(QWidget):
                                         capture_output=True, text=True, timeout=2)
                 if result.returncode == 0 and result.stdout.strip():
                     return True
-            except:
+            except Exception:
                 pass
         return False
 
@@ -217,7 +210,7 @@ class SettingsTab(QWidget):
                 result = subprocess.run(['which', name], capture_output=True, text=True, timeout=2)
                 if result.returncode == 0 and result.stdout.strip():
                     return True
-            except:
+            except Exception:
                 pass
         return False
 
@@ -286,7 +279,7 @@ class SettingsTab(QWidget):
         self.save_path_lbl.setStyleSheet("color: #005fb8;")
 
         self.save_path_btn = PushButton("Изменить")
-        self.save_path_btn.setIcon(FluentIcon.FOLDER.icon())
+        self.save_path_btn.setIcon(FluentIcon.FOLDER)
 
         save_path_layout.addWidget(self.save_path_lbl_title)
         save_path_layout.addSpacing(10)
@@ -298,6 +291,23 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.save_path_lbl_title, tip_save)
         self._apply_tooltip(self.save_path_lbl, tip_save)
         self._apply_tooltip(self.save_path_btn, tip_save)
+
+        # Автоматический старт загрузки
+        autostart_layout = QHBoxLayout()
+        self.auto_start_label = BodyLabel()
+        self.auto_start_label.setProperty("text_key", "auto_start_downloads")
+        self.auto_start_label.setText(self.translator.translate("auto_start_downloads", "Автоматически начинать скачивание"))
+        self.auto_start_checkbox = SwitchButton()
+        self.auto_start_checkbox.setOnText("Вкл")
+        self.auto_start_checkbox.setOffText("Выкл")
+        autostart_layout.addWidget(self.auto_start_label)
+        autostart_layout.addStretch()
+        autostart_layout.addWidget(self.auto_start_checkbox)
+        v_layout.addLayout(autostart_layout)
+
+        tip_autostart = "Если включено, скачивание начинается сразу при добавлении ссылки. Если выключено — ссылки добавляются в очередь в ожидание ручного запуска."
+        self._apply_tooltip(self.auto_start_label, tip_autostart)
+        self._apply_tooltip(self.auto_start_checkbox, tip_autostart)
 
         # Ограничение скорости
         speed_layout = QHBoxLayout()
@@ -517,7 +527,8 @@ class SettingsTab(QWidget):
         layout.addWidget(group_box)
 
     def create_quality_settings(self, layout):
-        group_box = QGroupBox()
+        self.quality_group_box = QGroupBox()
+        group_box = self.quality_group_box
         group_box.setProperty("title_key", "quality_settings")
         group_box.setTitle(self.translator.translate("quality_settings", "Настройки качества по платформам"))
         group_box.setObjectName('SettingsGroup')
@@ -535,8 +546,13 @@ class SettingsTab(QWidget):
         grid_layout.setColumnStretch(5, 1)
         grid_layout.setColumnStretch(8, 1)
 
-        platforms = ['YouTube', 'RuTube', 'TikTok', 'Instagram', 'VK', 'PornHub', 'Facebook', 'X (Twitter)',
-                     'Kinopoisk', 'Twitch', 'Kick', 'KinoPub']
+        platforms = [
+            'YouTube', 'RuTube', 'TikTok',
+            'Instagram', 'VK', 'PornHub',
+            'Facebook', 'X (Twitter)', 'Kinopoisk',
+            'KinoPub / Rezka', 'AnimeGO', 'Lampa (vi3000)',
+            'Twitch', 'Kick', 'Pinterest'
+        ]
         self.quality_combos = {}
 
         row, col = 0, 0
@@ -599,9 +615,13 @@ class SettingsTab(QWidget):
         self.rb_cookie_browser.setText(self.translator.translate("cookie_browser", "Из браузера"))
         self.cookie_browser_combo = ComboBox()
         self.cookie_browser_combo.setFixedWidth(200)
-        for browser in self.available_browsers:
-            display_name = browser.capitalize() if browser != 'none' else 'None'
-            self.cookie_browser_combo.addItem(display_name, userData=browser)
+        for item in self.available_browsers:
+            if isinstance(item, tuple):
+                browser_key, display_name = item
+            else:
+                browser_key = item
+                display_name = browser_key.capitalize() if browser_key != 'none' else 'Отключено'
+            self.cookie_browser_combo.addItem(display_name, userData=browser_key)
 
         browser_opt_layout.addWidget(self.rb_cookie_browser)
         browser_opt_layout.addStretch()
@@ -611,9 +631,9 @@ class SettingsTab(QWidget):
         # Тестирование чтения cookies и справка
         cookie_test_layout = QHBoxLayout()
         self.btn_test_cookies = PushButton("Проверить cookies")
-        self.btn_test_cookies.setIcon(FluentIcon.ACCEPT.icon())
+        self.btn_test_cookies.setIcon(FluentIcon.ACCEPT)
         self.btn_cookie_help = PushButton("Без закрытия браузера")
-        self.btn_cookie_help.setIcon(FluentIcon.HELP.icon())
+        self.btn_cookie_help.setIcon(FluentIcon.HELP)
         self.btn_cookie_help.clicked.connect(self.show_cookie_help_dialog)
         self.lbl_cookie_status = BodyLabel("")
         self.lbl_cookie_status.setWordWrap(True)
@@ -632,7 +652,7 @@ class SettingsTab(QWidget):
         self.cookies_lbl = BodyLabel()
         self.cookies_lbl.setStyleSheet("color: #005fb8;")
         self.cookies_btn = PushButton("Выбрать файл")
-        self.cookies_btn.setIcon(FluentIcon.DOCUMENT.icon())
+        self.cookies_btn.setIcon(FluentIcon.DOCUMENT)
 
         file_opt_layout.addWidget(self.rb_cookie_file)
         file_opt_layout.addSpacing(10)
@@ -661,25 +681,13 @@ class SettingsTab(QWidget):
         self.lbl_deno_title.setProperty("text_key", "deno_status_title")
         self.lbl_deno_title.setText(self.translator.translate("deno_status_title", "Среда Deno (обход защиты YouTube):"))
 
-        deno_installed = bool(shutil.which('deno') or os.path.exists(os.path.expanduser('~/.deno/bin/deno.exe')))
-
         self.lbl_deno_icon = IconWidget()
         self.lbl_deno_icon.setFixedSize(16, 16)
         self.lbl_deno_status = BodyLabel()
 
-        if deno_installed:
-            self.lbl_deno_icon.setIcon(FluentIcon.ACCEPT)
-            self.lbl_deno_status.setText("Установлен и активен")
-            self.lbl_deno_status.setStyleSheet("color: #107c41; font-weight: 600;")
-        else:
-            self.lbl_deno_icon.setIcon(FluentIcon.INFO)
-            self.lbl_deno_status.setText("Не обнаружен в системе (рекомендуется)")
-            self.lbl_deno_status.setStyleSheet("color: #d97706; font-weight: 600;")
-
         self.btn_copy_deno_cmd = PushButton("Копировать команду установки")
-        self.btn_copy_deno_cmd.setIcon(FluentIcon.COPY.icon())
+        self.btn_copy_deno_cmd.setIcon(FluentIcon.COPY)
         self.btn_copy_deno_cmd.clicked.connect(lambda: QApplication.clipboard().setText("irm https://deno.land/install.ps1 | iex"))
-        self.btn_copy_deno_cmd.setVisible(not deno_installed)
 
         deno_layout.addWidget(self.lbl_deno_title)
         deno_layout.addSpacing(10)
@@ -701,20 +709,9 @@ class SettingsTab(QWidget):
         self.lbl_ffmpeg_title.setProperty("text_key", "ffmpeg_status_title")
         self.lbl_ffmpeg_title.setText(self.translator.translate("ffmpeg_status_title", "Встроенный FFmpeg / FFprobe:"))
 
-        ffmpeg_ok = bool(hasattr(self.parent_window, 'ffmpeg_path') and self.parent_window.ffmpeg_path and os.path.exists(self.parent_window.ffmpeg_path))
-
         self.lbl_ff_icon = IconWidget()
         self.lbl_ff_icon.setFixedSize(16, 16)
         self.lbl_ff_status = BodyLabel()
-
-        if ffmpeg_ok:
-            self.lbl_ff_icon.setIcon(FluentIcon.ACCEPT)
-            self.lbl_ff_status.setText("Активен (assets/ffmpeg/bin)")
-            self.lbl_ff_status.setStyleSheet("color: #107c41; font-weight: 600;")
-        else:
-            self.lbl_ff_icon.setIcon(FluentIcon.CLOSE)
-            self.lbl_ff_status.setText("Не найден")
-            self.lbl_ff_status.setStyleSheet("color: #d83b01; font-weight: 600;")
 
         ffmpeg_layout.addWidget(self.lbl_ffmpeg_title)
         ffmpeg_layout.addSpacing(10)
@@ -728,10 +725,12 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.lbl_ffmpeg_title, tip_ff)
         self._apply_tooltip(self.lbl_ff_status, tip_ff)
 
+        self.update_status_indicators()
+
         # Тест сетевой доступности
         net_layout = QHBoxLayout()
         self.btn_test_net = PushButton("Проверить отклик серверов")
-        self.btn_test_net.setIcon(FluentIcon.SPEED_HIGH.icon())
+        self.btn_test_net.setIcon(FluentIcon.SPEED_HIGH)
         self.btn_test_net.clicked.connect(self.on_test_net_clicked)
         self.lbl_net_status = BodyLabel()
         self.lbl_net_status.setTextFormat(Qt.TextFormat.RichText)
@@ -878,9 +877,13 @@ class SettingsTab(QWidget):
             'Facebook': 'facebook.png',
             'X (Twitter)': 'x_(twitter).png',
             'Kinopoisk': 'kinopoisk.png',
+            'KinoPub / Rezka': 'hdrezka.png',
+            'KinoPub': 'hdrezka.png',
+            'AnimeGO': 'animego.png',
+            'Lampa (vi3000)': 'lampa.png',
             'Twitch': 'twitch.png',
             'Kick': 'kick.png',
-            'KinoPub': 'hdrezka.png'
+            'Pinterest': 'pinterest.png'
         }
         fpath = os.path.join(logos_dir, fname_map.get(name, ''))
         if os.path.exists(fpath):
@@ -898,6 +901,7 @@ class SettingsTab(QWidget):
 
     def connect_signals(self):
         self.theme_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.auto_start_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.parallel_downloads_spin.valueChanged.connect(self.on_setting_changed)
         self.save_path_btn.clicked.connect(self.on_select_save_path)
         self.subtitles_checkbox.checkedChanged.connect(self.on_setting_changed)
@@ -926,6 +930,7 @@ class SettingsTab(QWidget):
     def disconnect_signals(self):
         signals_to_disconnect = [
             self.theme_combo.currentIndexChanged,
+            self.auto_start_checkbox.checkedChanged,
             self.parallel_downloads_spin.valueChanged,
             self.save_path_btn.clicked,
             self.subtitles_checkbox.checkedChanged,
@@ -979,6 +984,7 @@ class SettingsTab(QWidget):
         cbox.addItem(self.translator.translate('worst_quality'), userData='worst')
 
     def populate_speed_presets(self):
+        self.speed_combo.blockSignals(True)
         curr_data = self.speed_combo.currentData() if self.speed_combo.count() > 0 else None
         self.speed_combo.clear()
         for bytes_val, key, default_text in SPEED_PRESETS:
@@ -986,28 +992,34 @@ class SettingsTab(QWidget):
             self.speed_combo.addItem(label, userData=bytes_val)
         if curr_data is not None:
             self.set_combo_by_data(self.speed_combo, curr_data)
+        self.speed_combo.blockSignals(False)
 
     def update_translations(self):
-        widgets_with_keys = self.findChildren(QWidget)
-        for widget in widgets_with_keys:
-            key = widget.property("text_key")
-            if key and hasattr(widget, 'setText'):
-                widget.setText(self.translator.translate(key))
-
-            title_key = widget.property("title_key")
+        if not hasattr(self, '_translatable_widgets') or self._translatable_widgets is None:
+            self._translatable_widgets = [
+                (w, w.property("text_key"), w.property("title_key"))
+                for w in self.findChildren(QWidget)
+                if w.property("text_key") or w.property("title_key")
+            ]
+        for widget, text_key, title_key in self._translatable_widgets:
+            if text_key and hasattr(widget, 'setText'):
+                widget.setText(self.translator.translate(text_key))
             if title_key and hasattr(widget, 'setTitle'):
                 widget.setTitle(self.translator.translate(title_key))
 
         self.populate_speed_presets()
 
+        detailed_platforms = ['YouTube', 'KinoPub / Rezka', 'KinoPub', 'AnimeGO', 'Lampa (vi3000)']
         for platform_name, combo in self.quality_combos.items():
             current_data = combo.currentData()
+            combo.blockSignals(True)
             combo.clear()
-            if platform_name in ['YouTube', 'KinoPub']:
+            if platform_name in detailed_platforms:
                 self.populate_youtube_qualities(combo)
             else:
                 self.populate_generic_qualities(combo)
             self.set_combo_by_data(combo, current_data)
+            combo.blockSignals(False)
 
         save_path = self.settings.value('save_path', '')
         if save_path:
@@ -1035,6 +1047,7 @@ class SettingsTab(QWidget):
         else:
             self.save_path_lbl.setText(self.translator.translate('folder_not_selected'))
 
+        self.auto_start_checkbox.setChecked(self.settings.value('auto_start_downloads', False, type=bool))
         self.subtitles_checkbox.setChecked(self.settings.value('subtitles_enabled', False, type=bool))
         self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
@@ -1097,8 +1110,8 @@ class SettingsTab(QWidget):
         self.frag_spin.setValue(max(1, min(16, concurrent_frags)))
 
         for platform_name, combo in self.quality_combos.items():
-            key = f"quality_{platform_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
-            default_quality = 'bestvideo+bestaudio/best' if platform_name == 'YouTube' else 'best'
+            key = PLATFORM_QUALITY_KEYS.get(platform_name, f"quality_{platform_name.lower()}")
+            default_quality = 'bestvideo+bestaudio/best' if platform_name in ['YouTube', 'AnimeGO', 'Lampa (vi3000)'] else 'best'
             quality = self.settings.value(key, default_quality)
             self.set_combo_by_data(combo, quality)
 
@@ -1106,6 +1119,7 @@ class SettingsTab(QWidget):
 
     def on_setting_changed(self):
         self.settings.setValue('theme', self.theme_combo.currentData())
+        self.settings.setValue('auto_start_downloads', self.auto_start_checkbox.isChecked())
         self.settings.setValue('parallel_downloads', self.parallel_downloads_spin.value())
         self.parent_window.thread_pool.setMaxThreadCount(max(self.parallel_downloads_spin.value() + 8, 10))
 
@@ -1147,14 +1161,20 @@ class SettingsTab(QWidget):
             self.settings.setValue('cookie_browser', browser_value)
 
         for platform_name, combo in self.quality_combos.items():
-            key = f"quality_{platform_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
+            key = PLATFORM_QUALITY_KEYS.get(platform_name, f"quality_{platform_name.lower()}")
             self.settings.setValue(key, combo.currentData())
 
         self.settings.sync()
         self.update_cookie_widgets_state()
 
         if self.sender() == self.theme_combo:
-            ThemeManager(self.settings).apply_theme()
+            ThemeManager(self.settings, self.parent_window).apply_theme()
+            if hasattr(self.parent_window, 'quick_theme_combo'):
+                self.parent_window.quick_theme_combo.blockSignals(True)
+                new_theme = self.theme_combo.currentData()
+                self.parent_window.quick_theme_combo.setCurrentIndex(0 if new_theme == 'dark' else 1)
+                self.parent_window.quick_theme_combo.blockSignals(False)
+            self.update_status_indicators()
 
 
 
@@ -1237,21 +1257,13 @@ class SettingsTab(QWidget):
         from PyQt6.QtCore import QUrl
 
         box = QMessageBox(self)
-        box.setWindowTitle("Использование cookies без закрытия Chrome")
+        box.setWindowTitle("Использование cookies авторизации")
         box.setText(
-            "<b>Как использовать cookies без закрытия Chrome и браузеров:</b><br><br>"
-            "В Windows запущенный Chrome монопольно блокирует файл базы данных cookies, "
-            "а с версии Chrome 127+ Google включил защиту <i>App-Bound Encryption</i>, запрещающую "
-            "внешним программам читать чужие куки напрямую из файлов.<br><br>"
-            "<b>Решение раз и навсегда (1 минута):</b><br>"
-            "1. Установите проверенное расширение для Chrome: <b>Get cookies.txt LOCALLY</b> "
-            "(бесплатное, безопасное, работает прямо внутри Chrome и с открытым исходным кодом).<br>"
-            "2. Перейдите на нужный сайт (например, YouTube) со своим аккаунтом.<br>"
-            "3. Нажмите иконку расширения → <b>«Export»</b> (сохранится файл <code>cookies.txt</code>).<br>"
-            "4. В настройках выше выберите радиокнопку <b>«Файл cookie»</b> и укажите этот файл.<br><br>"
-            "<b>Преимущества:</b><br>"
-            "• Chrome <b>вообще не нужно закрывать</b> (пусть открыты сотни вкладок).<br>"
-            "• Файл <code>cookies.txt</code> действует месяцами."
+            "<b>Использование cookies браузера:</b><br><br>"
+            "Программа безопасно считывает сохраненную сессию выбранного браузера для загрузки закрытых видео.<br><br>"
+            "• Если браузер запущен и блокирует свою базу данных, закройте браузер перед началом скачивания.<br><br>"
+            "• <b>Самый надежный способ (100% совместимость):</b> использовать бесплатное расширение "
+            "<b>Get cookies.txt LOCALLY</b> в вашем браузере, экспортировать файл и выбрать его в пункте <b>«Файл cookie»</b>."
         )
         btn_open = box.addButton("Открыть расширение в магазине Chrome", QMessageBox.ButtonRole.ActionRole)
         box.addButton("Понятно", QMessageBox.ButtonRole.AcceptRole)
@@ -1280,3 +1292,74 @@ class SettingsTab(QWidget):
             if combo.itemData(i) == data:
                 combo.setCurrentIndex(i)
                 break
+
+    def scroll_to_quality_settings(self):
+        if hasattr(self, 'quality_group_box') and self.quality_group_box and hasattr(self, 'scroll_area'):
+            target_y = self.quality_group_box.pos().y()
+            self.scroll_area.verticalScrollBar().setValue(max(0, target_y - 10))
+
+    def update_theme_icons(self):
+        """Обновляет иконки на кнопках вкладки настроек при смене темы."""
+        if hasattr(self, 'save_path_btn'):
+            self.save_path_btn.setIcon(FluentIcon.FOLDER)
+        if hasattr(self, 'btn_test_cookies'):
+            self.btn_test_cookies.setIcon(FluentIcon.ACCEPT)
+        if hasattr(self, 'btn_cookie_help'):
+            self.btn_cookie_help.setIcon(FluentIcon.HELP)
+        if hasattr(self, 'cookies_btn'):
+            self.cookies_btn.setIcon(FluentIcon.DOCUMENT)
+        if hasattr(self, 'btn_copy_deno_cmd'):
+            self.btn_copy_deno_cmd.setIcon(FluentIcon.COPY)
+        if hasattr(self, 'btn_test_net'):
+            self.btn_test_net.setIcon(FluentIcon.SPEED_HIGH)
+        self.update_status_indicators()
+
+    def update_status_indicators(self):
+        """Обновляет индикаторы Deno и FFmpeg с устойчивыми к смене темы цветами."""
+        theme_str = self.settings.value('theme', 'dark')
+        success_color = '#10b981' if theme_str == 'dark' else '#107c41'
+        warning_color = '#f59e0b' if theme_str == 'dark' else '#b45309'
+        danger_color = '#ef4444' if theme_str == 'dark' else '#dc2626'
+
+        deno_installed = bool(shutil.which('deno') or os.path.exists(os.path.expanduser('~/.deno/bin/deno.exe')))
+        if hasattr(self, 'lbl_deno_icon') and hasattr(self, 'lbl_deno_status'):
+            if deno_installed:
+                self.lbl_deno_icon.setIcon(FluentIcon.ACCEPT.colored(QColor('#107c41'), QColor('#10b981')))
+                self.lbl_deno_status.setText("Установлен и активен")
+                self.lbl_deno_status.setTextColor(QColor('#107c41'), QColor('#10b981'))
+                self.lbl_deno_status.setStyleSheet(f"color: {success_color} !important; font-weight: 600;")
+                self.lbl_deno_status.setObjectName("StatusLabelSuccess")
+            else:
+                self.lbl_deno_icon.setIcon(FluentIcon.INFO.colored(QColor('#b45309'), QColor('#f59e0b')))
+                self.lbl_deno_status.setText("Не обнаружен в системе (рекомендуется)")
+                self.lbl_deno_status.setTextColor(QColor('#b45309'), QColor('#f59e0b'))
+                self.lbl_deno_status.setStyleSheet(f"color: {warning_color} !important; font-weight: 600;")
+                self.lbl_deno_status.setObjectName("StatusLabelWarning")
+
+            f = self.lbl_deno_status.font()
+            f.setBold(True)
+            self.lbl_deno_status.setFont(f)
+            self.lbl_deno_status.style().polish(self.lbl_deno_status)
+
+        if hasattr(self, 'btn_copy_deno_cmd'):
+            self.btn_copy_deno_cmd.setVisible(not deno_installed)
+
+        ffmpeg_ok = bool(hasattr(self.parent_window, 'ffmpeg_path') and self.parent_window.ffmpeg_path and os.path.exists(self.parent_window.ffmpeg_path))
+        if hasattr(self, 'lbl_ff_icon') and hasattr(self, 'lbl_ff_status'):
+            if ffmpeg_ok:
+                self.lbl_ff_icon.setIcon(FluentIcon.ACCEPT.colored(QColor('#107c41'), QColor('#10b981')))
+                self.lbl_ff_status.setText("Активен (assets/ffmpeg/bin)")
+                self.lbl_ff_status.setTextColor(QColor('#107c41'), QColor('#10b981'))
+                self.lbl_ff_status.setStyleSheet(f"color: {success_color} !important; font-weight: 600;")
+                self.lbl_ff_status.setObjectName("StatusLabelSuccess")
+            else:
+                self.lbl_ff_icon.setIcon(FluentIcon.CLOSE.colored(QColor('#dc2626'), QColor('#ef4444')))
+                self.lbl_ff_status.setText("Не найден")
+                self.lbl_ff_status.setTextColor(QColor('#dc2626'), QColor('#ef4444'))
+                self.lbl_ff_status.setStyleSheet(f"color: {danger_color} !important; font-weight: 600;")
+                self.lbl_ff_status.setObjectName("StatusLabelDanger")
+
+            f = self.lbl_ff_status.font()
+            f.setBold(True)
+            self.lbl_ff_status.setFont(f)
+            self.lbl_ff_status.style().polish(self.lbl_ff_status)

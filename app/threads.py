@@ -1,16 +1,35 @@
 import sys
 import os
-import traceback
+import shutil
 import logging
-import glob
 import subprocess
 import time
 import hashlib
-import yt_dlp
+class _LazyYtDlp:
+    _module = None
+
+    def __getattr__(self, name):
+        if _LazyYtDlp._module is None:
+            import yt_dlp as _real
+            _LazyYtDlp._module = _real
+        return getattr(_LazyYtDlp._module, name)
+
+yt_dlp = _LazyYtDlp()
 import threading
 import re
+
+
+def clean_ansi(text: str) -> str:
+    """Полное удаление ANSI escape-кодов, терминальных последовательностей и мусорных глифов."""
+    if not text:
+        return ""
+    # Удаление управляющих кодов ESC [...m, ESC ]...BEL, а также непечатаемых символов
+    s = re.sub(r'(?:\x1b|[\uFFFD\x00-\x1F]|\x1b?\[)[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|[\x00-\x1f\x7f\ufffd]', '', str(text))
+    # Удаление артефактов шрифта при выводе ESC кодов: '[]', '[0;32m', '[[0m'
+    s = re.sub(r'\[\]\[[0-9;]*m|\[\]|\[+[\d;]+m', '', s)
+    return re.sub(r'\s+', ' ', s).strip()
 from PyQt6.QtCore import QRunnable, pyqtSignal, QObject
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QImage
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -83,34 +102,6 @@ class ThumbnailCache:
 thumbnail_cache = ThumbnailCache(max_size=100)
 
 
-class StreamAssembler(QRunnable):
-    def __init__(self, part_file, out_path, ffmpeg_path, task):
-        super().__init__()
-        self.part_file = part_file
-        self.out_path = out_path
-        self.ffmpeg_path = ffmpeg_path
-        self.task = task
-        self.signals = WorkerSignals()
-
-    def run(self):
-        try:
-            self.task.update_progress(95, "Склейка стрима начата...")
-            cmd = [
-                self.ffmpeg_path, '-y', '-err_detect', 'ignore_err',
-                '-fflags', '+genpts', '-threads', '0', '-i', self.part_file,
-                '-c', 'copy', self.out_path
-            ]
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            if os.path.exists(self.out_path):
-                self.task.set_completed(self.out_path)
-        except Exception as e:
-            logger.error(f"Ошибка в отдельном сборщике: {e}")
-            self.task.set_status(self.task.Status.ERROR)
-        finally:
-            self.signals.finished.emit()
-
-
 class WorkerSignals(QObject):
     info_fetched = pyqtSignal(dict)
     finished = pyqtSignal()
@@ -136,6 +127,78 @@ class InfoWorker(QRunnable):
             elif any(d in self.url for d in ('kinopub', 'rezka', 'voidboost')):
                 info_referer = 'https://kinopub.me/'
 
+            u_clean = self.url.lower().split('?')[0]
+            is_direct_stream = any(d in u_clean for d in ('solodcdn', 'rooster.cloud2')) or u_clean.endswith(('.mp4', '.mkv', '.webm', '.ts', '.mov', '.avi'))
+            if is_direct_stream:
+                try:
+                    s_head = requests.Session()
+                    s_head.trust_env = False
+                    h_resp = s_head.head(
+                        self.url,
+                        headers={
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Referer': info_referer,
+                            'Origin': info_referer.rstrip('/')
+                        },
+                        verify=False,
+                        timeout=4,
+                        allow_redirects=True
+                    )
+                    cl = h_resp.headers.get('Content-Length')
+                    filesize = int(cl) if cl and cl.isdigit() else 0
+                    if h_resp.status_code in (200, 206) and filesize > 1024:
+                        m_h = re.search(r'[/_](\d{3,4})p?[\._/]', self.url)
+                        target_h = int(m_h.group(1)) if m_h else 360
+                        title = f"Kodik Video ({target_h}p)" if any(d in self.url for d in ('solodcdn', 'kodik')) else os.path.splitext(os.path.basename(u_clean))[0]
+                        formats = [{
+                            'format_id': f"{target_h}p",
+                            'url': self.url,
+                            'ext': 'mp4',
+                            'height': target_h,
+                            'width': int(target_h * 16 / 9),
+                            'filesize': filesize,
+                            'filesize_approx': filesize,
+                            'vcodec': 'h264',
+                            'acodec': 'aac',
+                        }]
+                        if any(d in self.url for d in ('solodcdn', 'kodik')):
+                            m_kodik = re.search(r'/(\d{3,4})\.mp4', self.url)
+                            if m_kodik:
+                                curr_h = int(m_kodik.group(1))
+                                for alt_h in (360, 480, 720, 1080):
+                                    if alt_h == curr_h:
+                                        continue
+                                    formats.append({
+                                        'format_id': f"{alt_h}p",
+                                        'url': re.sub(r'/\d{3,4}\.mp4', f'/{alt_h}.mp4', self.url),
+                                        'ext': 'mp4',
+                                        'height': alt_h,
+                                        'width': int(alt_h * 16 / 9),
+                                        'filesize': int(filesize * (alt_h / curr_h) ** 1.3) if filesize else 0,
+                                        'filesize_approx': int(filesize * (alt_h / curr_h) ** 1.3) if filesize else 0,
+                                        'vcodec': 'h264',
+                                        'acodec': 'aac',
+                                    })
+                        direct_info = {
+                            'id': hashlib.md5(self.url.encode()).hexdigest()[:10],
+                            'title': title,
+                            'ext': 'mp4',
+                            'height': target_h,
+                            'formats': formats,
+                            'filesize': filesize,
+                            'filesize_approx': filesize,
+                            'extractor': 'generic',
+                            'extractor_key': 'DirectStream',
+                            'webpage_url': self.url,
+                        }
+                        try:
+                            self.signals.info_fetched.emit(direct_info)
+                        except RuntimeError:
+                            pass
+                        return
+                except Exception as e_head:
+                    logger.debug(f"Direct stream fast HEAD probe failed ({e_head}), falling back to yt-dlp")
+
             ydl_opts = {
                 'quiet': True,
                 'skip_download': True,
@@ -149,6 +212,41 @@ class InfoWorker(QRunnable):
                     'Origin': info_referer.rstrip('/')
                 }
             }
+
+            # High-speed analysis optimizations across all platforms
+            ydl_opts.update({
+                'noplaylist': True,
+                'writesubtitles': False,
+                'allsubtitles': False,
+                'writeautomaticsub': False,
+                'getcomments': False,
+                'no_color': True,
+            })
+
+            u_lower = self.url.lower()
+            is_youtube = any(d in u_lower for d in ('youtube.com', 'youtu.be'))
+            is_tiktok = any(d in u_lower for d in ('tiktok.com',))
+
+            if is_youtube:
+                ydl_opts.update({
+                    'socket_timeout': 10,
+                })
+            elif is_tiktok:
+                ydl_opts.update({
+                    'socket_timeout': 8,
+                    'extractor_args': {
+                        'tiktok': {
+                            'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'
+                        }
+                    }
+                })
+            else:
+                ydl_opts.update({
+                    'socket_timeout': 8,
+                    'extract_flat': 'discard_in_playlist',
+                    'check_formats': False,
+                    'lazy_playlist': True,
+                })
             use_cookies = self.settings.value('use_cookies', False, type=bool)
             if use_cookies:
                 source_type = self.settings.value('cookie_source_type', 'file')
@@ -157,19 +255,27 @@ class InfoWorker(QRunnable):
                     if cookie_file and os.path.exists(cookie_file):
                         ydl_opts['cookiefile'] = cookie_file
                 else:
-                    browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
-                    if browser and browser != 'none':
-                        try:
-                            ydl_opts['cookiesfrombrowser'] = (browser,)
-                        except Exception as e:
-                            logger.warning(f"Browser {browser} not available for cookies: {e}")
+                    # ИЗОЛЯЦИЯ: Живые куки браузера запрашиваются только для YouTube
+                    if is_youtube:
+                        browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
+                        if browser and browser != 'none':
+                            try:
+                                from .browser_cookies import get_best_browser_cookiefile
+                                live_file, count, b_name = get_best_browser_cookiefile(browser)
+                                if live_file and count > 0:
+                                    ydl_opts['cookiefile'] = live_file
+                            except Exception as e:
+                                logger.warning(f"Browser {browser} not available for cookies: {e}")
 
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(self.url, download=False)
                     if not info:
                         raise Exception("yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)")
-                    self.signals.info_fetched.emit(info)
+                    try:
+                        self.signals.info_fetched.emit(info)
+                    except RuntimeError:
+                        pass
             except Exception as e:
                 err_str = str(e).lower()
                 if ('cookie' in err_str or 'dpapi' in err_str) and ('cookiesfrombrowser' in ydl_opts or 'cookiefile' in ydl_opts):
@@ -180,12 +286,18 @@ class InfoWorker(QRunnable):
                         info = ydl.extract_info(self.url, download=False)
                         if not info:
                             raise Exception("yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)")
-                        self.signals.info_fetched.emit(info)
+                        try:
+                            self.signals.info_fetched.emit(info)
+                        except RuntimeError:
+                            pass
                 else:
                     raise
         except Exception as e:
             logger.error(f"InfoWorker error for {self.url}: {e}")
-            self.signals.error.emit(str(e))
+            try:
+                self.signals.error.emit(str(e))
+            except RuntimeError:
+                pass
 
 
 class ThumbnailWorker(QRunnable):
@@ -240,6 +352,20 @@ class PlaylistCheckWorker(QRunnable):
             self.signals.error.emit(str(e))
 
 
+class _YtdlLogger:
+    def __init__(self, parent_logger):
+        self.parent = parent_logger
+        self.last_error = ""
+
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg):
+        self.parent.warning(f"[yt-dlp] {msg}")
+    def error(self, msg):
+        self.last_error = str(msg)
+        self.parent.error(f"[yt-dlp] {msg}")
+
+
 class DownloadWorker(QRunnable):
     def __init__(self, task, settings, ffmpeg_path, translator):
         super().__init__()
@@ -255,7 +381,7 @@ class DownloadWorker(QRunnable):
         self._last_downloaded_filename = None
 
     def cancel(self):
-        print(f"[ОТЛАДКА] Пользователь нажал ОТМЕНУ для {self.task.url}")
+        logger.info(f"Пользователь нажал ОТМЕНУ для {self.task.url}")
         self._cancel_requested = True
         self._monitor_running = False
         self.task.request_stop()
@@ -264,11 +390,45 @@ class DownloadWorker(QRunnable):
         if self._cancel_requested or self.task.is_stop_requested():
             raise yt_dlp.utils.DownloadCancelled("Остановлено юзером")
 
+        fn = d.get('filename') or ''
+        info_dict = d.get('info_dict') or {}
+        fn_lower = fn.lower()
+        sub_exts = ('.vtt', '.srt', '.ass', '.lrc', '.sub', '.sbv')
+        is_subtitle = (
+            any(fn_lower.endswith(ext) or f'{ext}.part' in fn_lower or f'{ext}.ytdl' in fn_lower for ext in sub_exts)
+            or info_dict.get('ext') in ('vtt', 'srt', 'ass', 'lrc', 'sub', 'sbv')
+            or info_dict.get('extractor_key') == 'Subtitles'
+            or d.get('postprocessor') in ('FFmpegSubtitlesConvertor', 'FFmpegEmbedSubtitle')
+        )
+
         if d.get('status') == 'downloading':
+            if is_subtitle:
+                return
+
             total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
             downloaded = d.get('downloaded_bytes', 0)
-            speed = d.get('_speed_str', 'N/A').strip()
-            eta = d.get('_eta_str')
+
+            speed_val = d.get('speed')
+            if speed_val is not None and speed_val > 0:
+                if speed_val >= 1024 * 1024:
+                    speed = f"{speed_val / (1024 * 1024):.2f} MiB/s"
+                else:
+                    speed = f"{speed_val / 1024:.1f} KiB/s"
+            else:
+                speed_raw = d.get('_speed_str', '')
+                speed = clean_ansi(speed_raw) or 'N/A'
+
+            eta_val = d.get('eta')
+            if eta_val is not None and eta_val >= 0:
+                eta_val = int(eta_val)
+                if eta_val >= 3600:
+                    eta = f"{eta_val // 3600:02d}:{int((eta_val % 3600) // 60):02d}:{int(eta_val % 60):02d}"
+                else:
+                    eta = f"{int(eta_val // 60):02d}:{int(eta_val % 60):02d}"
+            else:
+                eta_raw = d.get('_eta_str', '')
+                eta = clean_ansi(eta_raw)
+
             eta_part = f" • ост. {eta}" if eta else ""
 
             frag_index = d.get('fragment_index')
@@ -276,7 +436,11 @@ class DownloadWorker(QRunnable):
             frag_info = f" [{frag_index}/{frag_count}]" if frag_index and frag_count else ""
 
             if total > 0:
-                self.task.set_file_size(total)
+                # Стабилизация размера: если размер уже определен, не перезаписываем его плавающими оценками каждого фрагмента
+                curr_size = getattr(self.task, 'file_size_str', '')
+                if not curr_size or curr_size in ('...', ''):
+                    if total > 100 * 1024 or getattr(self.task, 'audio_only', False):
+                        self.task.set_file_size(total)
                 percent = int((downloaded / total) * 90)
                 self.task.update_progress(percent, f"Скачивание: {percent}%{frag_info} • {speed}{eta_part}")
             elif frag_index and frag_count:
@@ -287,6 +451,8 @@ class DownloadWorker(QRunnable):
                 self.task.update_progress(0, f"Скачивание: {mb:.1f} MB • {speed}{eta_part}")
 
         elif d.get('status') == 'finished':
+            if is_subtitle:
+                return
             fn = d.get('filename')
             if fn:
                 self._last_downloaded_filename = fn
@@ -301,12 +467,22 @@ class DownloadWorker(QRunnable):
                         real_t = "AniBoom Video"
                 self.task.title = real_t
                 self.task.info_updated.emit()
-            print(f"[ОТЛАДКА] [VOD] Поток скачан: {fn}. Ждем склейку...")
+
+            real_h = info_dict.get('height')
+            if getattr(self.task, 'audio_only', False) or info_dict.get('vcodec') == 'none':
+                audio_fmt = str(self.settings.value('audio_format', 'mp3')).upper()
+                self.task.quality_badge = "MP3" if getattr(self.task, 'quality_override', '') == 'audio_mp3' or audio_fmt == 'MP3' else "AUDIO"
+                self.task.info_updated.emit()
+            elif real_h:
+                self.task.quality_badge = f"{real_h}p"
+                self.task.info_updated.emit()
+
+            logger.debug(f"[VOD] Поток скачан: {fn}. Ждем склейку...")
 
     def simple_pp_hook(self, d):
         status = d.get('status')
         pp = d.get('postprocessor')
-        print(f"[ОТЛАДКА] [VOD POSTPROCESSOR] {pp} -> {status}")
+        logger.debug(f"[VOD POSTPROCESSOR] {pp} -> {status}")
 
         if status == 'started':
             self.task.update_progress(95, "Склейка видео и звука...")
@@ -315,6 +491,11 @@ class DownloadWorker(QRunnable):
             pp_file = info_dict.get('filepath') or info_dict.get('_filename')
             if pp_file:
                 self._last_downloaded_filename = pp_file
+            if pp == 'FFmpegExtractAudio' or getattr(self.task, 'audio_only', False):
+                audio_fmt = str(self.settings.value('audio_format', 'mp3')).upper()
+                self.task.quality_badge = "MP3" if audio_fmt == 'MP3' else "AUDIO"
+            elif info_dict.get('height'):
+                self.task.quality_badge = f"{info_dict.get('height')}p"
             real_t = info_dict.get('title')
             custom_t = getattr(self.task, 'custom_title', None)
             if not custom_t and real_t and (not getattr(self.task, 'title', None) or self.task.title in ("...", "")):
@@ -347,7 +528,7 @@ class DownloadWorker(QRunnable):
                     self.task.update_progress(0, f"Запись эфира: {size_str} | {speed_str}")
                 else:
                     self.task.update_progress(0, "Подключение к потоку...")
-            except:
+            except Exception:
                 pass
             time.sleep(1)
 
@@ -361,7 +542,7 @@ class DownloadWorker(QRunnable):
         return dl_dir
 
     def run(self):
-        print(f"\n[ОТЛАДКА] --- СТАРТ ЗАДАЧИ: {self.task.url} ---")
+        logger.info(f"--- СТАРТ ЗАДАЧИ: {self.task.url} ---")
         try:
             save_path = self.settings.value('save_path', '')
             if not save_path or not os.path.isdir(save_path):
@@ -371,23 +552,30 @@ class DownloadWorker(QRunnable):
             is_twitch = 'twitch.tv' in self.task.url.lower()
 
             if is_twitch:
-                print("[ОТЛАДКА] Режим: СТРИМ TWITCH")
+                logger.info("[TWITCH] Режим: СТРИМ TWITCH")
                 self._run_twitch_stream(save_path)
             else:
-                print("[ОТЛАДКА] Режим: ОБЫЧНОЕ ВИДЕО (VOD)")
+                logger.info("[VOD] Режим: ОБЫЧНОЕ ВИДЕО (VOD)")
                 self._run_standard_vod(save_path)
 
         except yt_dlp.utils.DownloadCancelled:
-            print("[ОТЛАДКА] Загрузка отменена юзером/скриптом.")
+            logger.info("Загрузка отменена юзером/скриптом.")
             self.task.set_status(self.task.Status.STOPPED)
         except Exception as e:
-            import traceback
-            print(f"[ОТЛАДКА] КРИТИЧЕСКАЯ ОШИБКА В RUN: {traceback.format_exc()}")
-            self.signals.error.emit(f"Ошибка загрузчика: {str(e)}")
+            logger.error(f"Критическая ошибка в потоке загрузки: {e}", exc_info=True)
+            clean_err_msg = clean_ansi(str(e))
+            clean_err_msg = re.sub(r'^(?:ERROR:\s*)+', '', clean_err_msg, flags=re.IGNORECASE).strip()
+            try:
+                self.signals.error.emit(f"Ошибка загрузчика: {clean_err_msg}")
+            except RuntimeError:
+                pass
         finally:
-            print(f"[ОТЛАДКА] --- ПОТОК ЗАВЕРШЕН: {self.task.url} ---\n")
+            logger.info(f"--- ПОТОК ЗАВЕРШЕН: {self.task.url} ---")
             self._monitor_running = False
-            self.signals.finished.emit()
+            try:
+                self.signals.finished.emit()
+            except RuntimeError:
+                pass
 
     def _resolve_format_and_pps(self):
         u = self.task.url.lower()
@@ -416,6 +604,12 @@ class DownloadWorker(QRunnable):
             platform_key = 'quality_kick'
         elif 'kinopub' in u or 'kino.pub' in u or 'rezka' in u or 'voidboost' in u:
             platform_key = 'quality_kinopub'
+        elif 'animego' in u or 'aniboom' in u or 'kodik' in u:
+            platform_key = 'quality_animego'
+        elif 'vi3000' in u or 'lampa' in u or 'cub' in u:
+            platform_key = 'quality_lampa'
+        elif 'pinterest.com' in u or 'pin.it' in u:
+            platform_key = 'quality_pinterest'
 
         task_override = getattr(self.task, 'quality_override', None)
         task_audio_only = getattr(self.task, 'audio_only', False)
@@ -437,26 +631,52 @@ class DownloadWorker(QRunnable):
             if self.settings.value('embed_thumbnail', True, type=bool):
                 pps.append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
             return fmt, merge_fmt, pps
-        elif task_override == '1080p':
-            return 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best', 'mp4', []
-        elif task_override == '720p':
-            return 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best', 'mp4', []
+        elif task_override and (task_override.endswith('p') or task_override.isdigit()):
+            h = task_override.rstrip('p')
+            is_yt = ('youtube.com' in u or 'youtu.be' in u)
+            if is_yt:
+                fmt = (
+                    f'bestvideo[format_note!*=Premium][height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
+                    f'bestvideo[format_note!*=Premium][height<={h}]+bestaudio/'
+                    f'bestvideo[format_note!*=Premium][width<={h}]+bestaudio/'
+                    f'bestvideo[format_note!*=Premium]+bestaudio/'
+                    f'best[height<={h}]/best'
+                )
+            else:
+                fmt = (
+                    f'bestvideo[height<={h}]+bestaudio/'
+                    f'bestvideo[width<={h}]+bestaudio/'
+                    f'bestvideo[height<={h}]/'
+                    f'best[height<={h}]/'
+                    f'bestvideo+bestaudio/'
+                    f'best/b/all'
+                )
+            return fmt, 'mp4', []
         elif task_override == 'best':
-            return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best', 'mp4', []
+            is_yt = ('youtube.com' in u or 'youtu.be' in u)
+            if is_yt:
+                fmt = 'bestvideo[format_note!*=Premium][ext=mp4]+bestaudio[ext=m4a]/bestvideo[format_note!*=Premium]+bestaudio/best'
+            else:
+                fmt = 'bestvideo+bestaudio/best'
+            return fmt, 'mp4', []
 
         fmt = self.settings.value(platform_key, '') if platform_key else ''
         pps = []
         merge_fmt = 'mp4'
 
         codec_pref = self.settings.value('video_codec_preference', 'auto')
+        is_yt = ('youtube.com' in u or 'youtu.be' in u)
 
         if not fmt or fmt == 'best':
-            if codec_pref == 'h264':
-                fmt = 'bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best'
-            elif codec_pref == 'av1_vp9':
-                fmt = 'bestvideo[vcodec^=av01|vcodec^=vp9]+bestaudio/bestvideo+bestaudio/best'
+            if is_yt:
+                if codec_pref == 'h264':
+                    fmt = 'bestvideo[format_note!*=Premium][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[format_note!*=Premium][vcodec^=avc1]+bestaudio/bestvideo[format_note!*=Premium][ext=mp4]+bestaudio[ext=m4a]/bestvideo[format_note!*=Premium]+bestaudio/best'
+                elif codec_pref == 'av1_vp9':
+                    fmt = 'bestvideo[format_note!*=Premium][vcodec^=av01|vcodec^=vp9]+bestaudio/bestvideo[format_note!*=Premium]+bestaudio/best'
+                else:
+                    fmt = 'bestvideo[format_note!*=Premium][ext=mp4]+bestaudio[ext=m4a]/bestvideo[format_note!*=Premium]+bestaudio/best'
             else:
-                fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+                fmt = 'bestvideo+bestaudio/best'
         elif fmt == 'bestaudio/best':
             merge_fmt = None
             audio_codec = str(self.settings.value('audio_format', 'mp3')).lower()
@@ -473,33 +693,83 @@ class DownloadWorker(QRunnable):
             if self.settings.value('embed_thumbnail', True, type=bool):
                 pps.append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
         elif fmt == 'video_only_stripped':
-            fmt = 'bestvideo/best'
+            fmt = 'bestvideo[format_note!*=Premium]/bestvideo/best' if is_yt else 'bestvideo/best'
         elif fmt == 'worst':
             fmt = 'worstvideo+worstaudio/worst'
         elif '[height<=' in fmt:
-            if codec_pref == 'h264' and '[vcodec' not in fmt:
-                h_match = re.search(r'height<=(\d+)', fmt)
-                if h_match:
-                    h = h_match.group(1)
-                    fmt = f'bestvideo[height<={h}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best'
-            elif codec_pref == 'av1_vp9' and '[vcodec' not in fmt:
-                h_match = re.search(r'height<=(\d+)', fmt)
-                if h_match:
-                    h = h_match.group(1)
-                    fmt = f'bestvideo[height<={h}][vcodec^=av01|vcodec^=vp9]+bestaudio/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best'
+            h_match = re.search(r'height<=(\d+)', fmt)
+            if h_match:
+                h = h_match.group(1)
+                if is_yt:
+                    if codec_pref == 'h264' and '[vcodec' not in fmt:
+                        fmt = f'bestvideo[format_note!*=Premium][height<={h}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[format_note!*=Premium][width<={h}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[format_note!*=Premium][height<={h}]+bestaudio/best[height<={h}]/best'
+                    elif codec_pref == 'av1_vp9' and '[vcodec' not in fmt:
+                        fmt = f'bestvideo[format_note!*=Premium][height<={h}][vcodec^=av01|vcodec^=vp9]+bestaudio/bestvideo[format_note!*=Premium][width<={h}][vcodec^=av01|vcodec^=vp9]+bestaudio/bestvideo[format_note!*=Premium][height<={h}]+bestaudio/best[height<={h}]/best'
+                    else:
+                        fmt = f'bestvideo[format_note!*=Premium][height<={h}]+bestaudio/bestvideo[format_note!*=Premium][width<={h}]+bestaudio/bestvideo[format_note!*=Premium]+bestaudio/best[height<={h}]/best'
+                else:
+                    fmt = f'bestvideo[height<={h}]+bestaudio/bestvideo[width<={h}]+bestaudio/bestvideo[height<={h}]/best[height<={h}]/bestvideo+bestaudio/best/b/all'
+
+        if ('youtube.com' in u or 'youtu.be' in u) and fmt and fmt != 'bestaudio/best':
+            parts = fmt.split('/')
+            clean_parts = []
+            for part in parts:
+                if 'bestvideo' in part and '[format_note!*=Premium]' not in part:
+                    part = part.replace('bestvideo', 'bestvideo[format_note!*=Premium]')
+                if (part == 'best' or part.startswith('best[')) and '[format_note!*=Premium]' not in part:
+                    part = part.replace('best', 'best[format_note!*=Premium]', 1)
+                clean_parts.append(part)
+            fmt = '/'.join(clean_parts)
 
         return fmt, merge_fmt, pps
 
     def _run_standard_vod(self, save_path):
         self.task.is_stream_mode = False
-        print(f"[ОТЛАДКА] [VOD] Папка сохранения: {save_path}")
+        logger.debug(f"[VOD] Папка сохранения: {save_path}")
         self._start_time = time.time()
+
+        try:
+            free_space = shutil.disk_usage(save_path).free
+            if free_space < 100 * 1024 * 1024:
+                raise OSError(f"Недостаточно свободного места на диске ({free_space // (1024*1024)} МБ доступно)")
+        except OSError as e:
+            if "Недостаточно свободного места" in str(e):
+                raise
+            logger.warning(f"Не удалось проверить свободное место на диске: {e}")
+
+        fmt, merge_fmt, extra_pps = self._resolve_format_and_pps()
 
         custom_t = getattr(self.task, 'custom_title', None)
         task_t = getattr(self.task, 'title', None)
         base_title = (custom_t.strip() if custom_t else "") or (task_t.strip() if task_t and task_t not in ("...", "") else "")
         safe_title = re.sub(r'[\\/*?:"<>|]', "", base_title).strip() if base_title else ""
         safe_title = safe_title[:150]
+
+        # Определение тега качества для уникальности имени файла
+        raw_badge = (getattr(self.task, 'quality_badge', '') or getattr(self.task, 'custom_quality', '') or "").replace(' ▾', '').strip()
+        is_audio = getattr(self.task, 'audio_only', False) or getattr(self.task, 'quality_override', '') in ('audio_only', 'audio_mp3') or fmt == 'bestaudio/best'
+
+        q_tag = ""
+        if is_audio:
+            q_tag = "MP3"
+        elif raw_badge:
+            m_b = re.search(r'(\d{3,4}p|4K|2K|AUDIO|MP3)', raw_badge, re.IGNORECASE)
+            q_tag = m_b.group(1) if m_b else raw_badge
+        elif getattr(self.task, 'quality_override', None):
+            qo = str(self.task.quality_override).strip()
+            if qo.isdigit():
+                q_tag = f"{qo}p"
+            elif qo.endswith('p'):
+                q_tag = qo
+        elif '[height<=' in fmt:
+            h_m = re.search(r'height<=(\d+)', fmt)
+            if h_m:
+                q_tag = f"{h_m.group(1)}p"
+
+        if not q_tag:
+            u_m = re.search(r'[/_\[\(](\d{3,4})p?[\._/\]\)]', self.task.url)
+            if u_m:
+                q_tag = f"{u_m.group(1)}p"
 
         time_range = getattr(self.task, 'time_range', None)
         range_suffix = ""
@@ -509,10 +779,16 @@ class DownloadWorker(QRunnable):
             e_str = f"{int(e_sec//3600):02d}-{int((e_sec%3600)//60):02d}-{int(e_sec%60):02d}" if e_sec >= 3600 else f"{int(e_sec//60):02d}-{int(e_sec%60):02d}"
             range_suffix = f"_[{s_str}_{e_str}]"
 
+        q_suffix = ""
+        if q_tag:
+            if safe_title:
+                safe_title = re.sub(r'\s*\[\s*(?:\d{3,4}p|MP3|AUDIO|4K|2K)\s*\]\s*$', '', safe_title, flags=re.IGNORECASE).strip()
+            q_suffix = f" [{q_tag}]"
+
         if safe_title:
-            out_filename = f"{safe_title}{range_suffix}.%(ext)s"
+            out_filename = f"{safe_title}{q_suffix}{range_suffix}.%(ext)s"
         else:
-            out_filename = f"%(title)s{range_suffix}.%(ext)s"
+            out_filename = f"%(title)s{q_suffix}{range_suffix}.%(ext)s"
 
         out_template = os.path.join(save_path, out_filename)
 
@@ -529,11 +805,10 @@ class DownloadWorker(QRunnable):
             else:
                 referer_url = 'https://kinopub.me/'
 
-        fmt, merge_fmt, extra_pps = self._resolve_format_and_pps()
-
         ydl_opts = {
             'outtmpl': out_template,
             'format': fmt,
+            'overwrites': True,
             'ffmpeg_location': self.ffmpeg_path,
             'progress_hooks': [self.simple_progress_hook],
             'postprocessor_hooks': [self.simple_pp_hook],
@@ -542,6 +817,9 @@ class DownloadWorker(QRunnable):
             'noplaylist': True,
             'ignoreerrors': False,
             'nocheckcertificate': True,
+            'color': 'never',
+            'enable_js': True,
+            'remote_components': {'ejs:github': True},
 
             # --- ЗАЩИТА ОТ РАЗРЫВА СОЕДИНЕНИЯ С СЕРВЕРОМ ---
             'retries': 30,  # Количество попыток переподключения
@@ -549,15 +827,16 @@ class DownloadWorker(QRunnable):
             'file_access_retries': 10,  # Попытки доступа к файлу
             'continuedl': True,  # Обязательно докачивать файл при обрыве
             # -----------------------------------------------
+            'postprocessors': list(extra_pps)
+        }
 
-            'http_headers': {
+        if not ('youtube.com' in self.task.url or 'youtu.be' in self.task.url):
+            ydl_opts['http_headers'] = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': '*/*',
                 'Referer': referer_url,
                 'Origin': referer_url.strip('/')
-            },
-            'postprocessors': list(extra_pps)
-        }
+            }
         if merge_fmt:
             ydl_opts['merge_output_format'] = merge_fmt
 
@@ -589,12 +868,19 @@ class DownloadWorker(QRunnable):
                 if cookie_file and os.path.exists(cookie_file):
                     ydl_opts['cookiefile'] = cookie_file
             else:
-                browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
-                if browser and browser != 'none':
-                    try:
-                        ydl_opts['cookiesfrombrowser'] = (browser,)
-                    except Exception as e:
-                        print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
+                # ИЗОЛЯЦИЯ: Живые куки браузера запрашиваются строго для YouTube.
+                # Для AnimeGO, Kodik, Rutube, TikTok, Lampa и прямых m3u8/mp4 потоков куки браузера не трогаются.
+                is_yt = ('youtube.com' in self.task.url.lower() or 'youtu.be' in self.task.url.lower())
+                if is_yt:
+                    browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
+                    if browser and browser != 'none':
+                        try:
+                            from .browser_cookies import get_best_browser_cookiefile
+                            live_file, count, b_name = get_best_browser_cookiefile(browser)
+                            if live_file and count > 0:
+                                ydl_opts['cookiefile'] = live_file
+                        except Exception as e:
+                            logger.warning(f"Ошибка загрузки куки: {e}")
 
         if self.settings.value('sponsorblock_enabled', False, type=bool):
             sb_categories = ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction']
@@ -609,49 +895,123 @@ class DownloadWorker(QRunnable):
 
         if self.settings.value('subtitles_enabled', False, type=bool):
             ydl_opts['writesubtitles'] = True
-            ydl_opts['writeautomaticsub'] = True
+            ydl_opts['writeautomaticsub'] = False
             ydl_opts['subtitleslangs'] = ['ru', 'en']
-            ydl_opts['sleep_subtitles'] = 2
-
+            ydl_opts['ignoreerrors'] = 'only_download'  # Не обрывать загрузку видео при сбое дорожки субтитров
             ydl_opts['postprocessors'].append({
                 'key': 'FFmpegEmbedSubtitle',
                 'when': 'post_process',
+                'already_have_subtitle': False,
             })
 
         if not ydl_opts['postprocessors']:
             del ydl_opts['postprocessors']
 
+        is_yt = ('youtube.com' in self.task.url or 'youtu.be' in self.task.url)
+        needs_post_trim = False
         if time_range:
             start_s, end_s = time_range
-            ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func([], [(float(start_s), float(end_s))])
-            ydl_opts['force_keyframes_at_cuts'] = True
+            if is_yt:
+                # YouTube CDN блокирует прямые сегментные запросы через внешний FFmpeg (HTTP 403 Forbidden).
+                # Скачиваем видео штатным загрузчиком yt-dlp и мгновенно обрезаем локальным FFmpeg.
+                needs_post_trim = True
+            else:
+                ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func([], [(float(start_s), float(end_s))])
+                ydl_opts['force_keyframes_at_cuts'] = True
 
         if fmt == 'bestaudio/best' and self.settings.value('embed_thumbnail', True, type=bool):
             ydl_opts['writethumbnail'] = True
 
         # === ЗАПУСК СКАЧИВАНИЯ ===
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                print("[ОТЛАДКА] [VOD] yt-dlp: Начинаем скачивание...")
+        u_clean = self.task.url.lower().split('?')[0]
+        is_direct_stream = (any(d in u_clean for d in ('solodcdn', 'rooster.cloud2')) or
+                            u_clean.endswith(('.mp4', '.mkv', '.webm'))) and not time_range
+        if is_direct_stream:
+            if any(d in self.task.url for d in ('solodcdn', 'kodik')) and q_tag and q_tag.endswith('p'):
+                h_digits = q_tag[:-1]
+                if re.search(r'/\d{3,4}\.mp4', self.task.url):
+                    self.task.url = re.sub(r'/\d{3,4}\.mp4', f'/{h_digits}.mp4', self.task.url)
+            logger.info(f"[VOD] Обнаружен прямой видеопоток: {self.task.url}. Запуск прямого быстрого скачивания...")
+            try:
+                self._download_direct_stream(save_path, out_template, referer_url)
+                return
+            except Exception as direct_err:
+                logger.warning(f"[VOD] Прямое скачивание потока вызвало ошибку ({direct_err}), пробуем через yt-dlp...")
+
+        ytdl_logger = _YtdlLogger(logger)
+        ydl_opts['logger'] = ytdl_logger
+
+        def _execute_download(opts):
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                logger.info("[VOD] yt-dlp: Начинаем скачивание...")
                 if self.task.is_stop_requested() or self._cancel_requested:
                     raise yt_dlp.utils.DownloadCancelled("Stopped")
-                ydl.download([self.task.url])
-                print("[ОТЛАДКА] [VOD] yt-dlp: Завершено.")
+                ret_code = ydl.download([self.task.url])
+                logger.info(f"[VOD] yt-dlp: Завершено с кодом {ret_code}.")
+                if ret_code != 0:
+                    err_msg = ytdl_logger.last_error or f"yt-dlp завершился с кодом ошибки {ret_code}"
+                    raise yt_dlp.utils.DownloadError(err_msg)
+
+        try:
+            _execute_download(ydl_opts)
         except yt_dlp.utils.DownloadCancelled:
             raise
         except Exception as e:
             err_str = str(e).lower()
+            if any(d in err_str for d in ('unable to download webpage', '10054', 'connectionreset', 'connection aborted')):
+                if any(d in self.task.url.lower() for d in ('solodcdn', 'rooster.cloud2')) or self.task.url.lower().split('?')[0].endswith(('.mp4', '.mkv', '.webm', '.ts', '.mov', '.avi')):
+                    if any(d in self.task.url for d in ('solodcdn', 'kodik')) and q_tag and q_tag.endswith('p'):
+                        h_digits = q_tag[:-1]
+                        if re.search(r'/\d{3,4}\.mp4', self.task.url):
+                            self.task.url = re.sub(r'/\d{3,4}\.mp4', f'/{h_digits}.mp4', self.task.url)
+                    logger.warning(f"Прямой поток Kodik/MP4 вызвал сброс соединения ({e}). Запуск прямого HTTP потока...")
+                    self._download_direct_stream(save_path, out_template, referer_url)
+                    return
+            if 'requested format is not available' in err_str:
+                logger.warning(f"Запрошенный формат недоступен ({e}). Пробуем универсальный fallback (bestvideo+bestaudio/best)...")
+                ydl_opts['format'] = 'bestvideo+bestaudio/best'
+                try:
+                    _execute_download(ydl_opts)
+                    return
+                except Exception as fmt_fallback_err:
+                    e = fmt_fallback_err
+                    err_str = str(e).lower()
+            if 'download_ranges' in ydl_opts:
+                logger.warning(f"Прямое скачивание отрезка не удалось ({e}). Скачиваем видео целиком и обрежем локально...")
+                ydl_opts.pop('download_ranges', None)
+                ydl_opts.pop('force_keyframes_at_cuts', None)
+                needs_post_trim = True
+                try:
+                    _execute_download(ydl_opts)
+                except Exception as range_retry_err:
+                    e = range_retry_err
+                    err_str = str(e).lower()
             if ('cookie' in err_str or 'dpapi' in err_str) and ('cookiesfrombrowser' in ydl_opts or 'cookiefile' in ydl_opts):
-                print(f"[ОТЛАДКА] Сбой из-за куки ({e}), повторяем скачивание без куки...")
+                logger.warning(f"Сбой из-за куки ({e}), повторяем скачивание без куки...")
                 ydl_opts.pop('cookiesfrombrowser', None)
                 ydl_opts.pop('cookiefile', None)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    if self.task.is_stop_requested() or self._cancel_requested:
-                        raise yt_dlp.utils.DownloadCancelled("Stopped")
-                    ydl.download([self.task.url])
-                    print("[ОТЛАДКА] [VOD] yt-dlp (без куки): Завершено.")
-            elif 'subtitle' in err_str and ('writesubtitles' in ydl_opts or 'writeautomaticsub' in ydl_opts):
-                print(f"[ОТЛАДКА] Сбой скачивания субтитров ({e}), повторяем скачивание видео без субтитров...")
+                try:
+                    _execute_download(ydl_opts)
+                except Exception as retry_err:
+                    retry_err_str = str(retry_err).lower()
+                    if ('subtitle' in retry_err_str or '429' in retry_err_str) and ('writesubtitles' in ydl_opts or 'writeautomaticsub' in ydl_opts):
+                        logger.warning(f"Сбой субтитров в повторе ({retry_err}), завершаем скачивание видео без субтитров...")
+                        ydl_opts.pop('writesubtitles', None)
+                        ydl_opts.pop('writeautomaticsub', None)
+                        ydl_opts.pop('subtitleslangs', None)
+                        if 'postprocessors' in ydl_opts:
+                            ydl_opts['postprocessors'] = [p for p in ydl_opts['postprocessors'] if p.get('key') != 'FFmpegEmbedSubtitle']
+                            if not ydl_opts['postprocessors']:
+                                del ydl_opts['postprocessors']
+                        _execute_download(ydl_opts)
+                    elif 'empty' in retry_err_str or 'fragment' in retry_err_str or '403' in retry_err_str:
+                        logger.warning(f"Сбой фрагментов в повторе ({retry_err}), переключаемся на совместимый поток...")
+                        ydl_opts['format'] = 'bestvideo[format_note!*=Premium][protocol^=http]+bestaudio[protocol^=http]/bestvideo[format_note!*=Premium]+bestaudio/best[format_note!*=Premium]/best/worst'
+                        _execute_download(ydl_opts)
+                    else:
+                        raise retry_err
+            elif ('subtitle' in err_str or '429' in err_str) and ('writesubtitles' in ydl_opts or 'writeautomaticsub' in ydl_opts):
+                logger.warning(f"Сбой скачивания субтитров ({e}), повторяем скачивание видео без субтитров...")
                 ydl_opts.pop('writesubtitles', None)
                 ydl_opts.pop('writeautomaticsub', None)
                 ydl_opts.pop('subtitleslangs', None)
@@ -659,13 +1019,58 @@ class DownloadWorker(QRunnable):
                     ydl_opts['postprocessors'] = [p for p in ydl_opts['postprocessors'] if p.get('key') != 'FFmpegEmbedSubtitle']
                     if not ydl_opts['postprocessors']:
                         del ydl_opts['postprocessors']
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    if self.task.is_stop_requested() or self._cancel_requested:
-                        raise yt_dlp.utils.DownloadCancelled("Stopped")
-                    ydl.download([self.task.url])
-                    print("[ОТЛАДКА] [VOD] yt-dlp (без субтитров): Завершено.")
+                try:
+                    _execute_download(ydl_opts)
+                except Exception as sub_retry_err:
+                    sub_retry_str = str(sub_retry_err).lower()
+                    if 'empty' in sub_retry_str or 'fragment' in sub_retry_str or '403' in sub_retry_str:
+                        logger.warning(f"Сбой фрагментов ({sub_retry_err}), переключаемся на совместимый поток...")
+                        ydl_opts['format'] = 'bestvideo[format_note!*=Premium][protocol^=http]+bestaudio[protocol^=http]/bestvideo[format_note!*=Premium]+bestaudio/best[format_note!*=Premium]/best/worst'
+                        _execute_download(ydl_opts)
+                    else:
+                        raise
+            elif 'empty' in err_str or 'fragment' in err_str or '403' in err_str:
+                logger.warning(f"Сбой фрагментов/потока ({e}). Пробуем скачать совместимый формат без m3u8/premium...")
+                ydl_opts['format'] = 'bestvideo[format_note!*=Premium][protocol^=http]+bestaudio[protocol^=http]/bestvideo[format_note!*=Premium]+bestaudio/best[format_note!*=Premium]/best/worst'
+                try:
+                    _execute_download(ydl_opts)
+                except Exception as stream_err:
+                    stream_err_str = str(stream_err).lower()
+                    # Если прямой DASH поток заблокирован, пробуем прогрессивный поток (например, format 18/22)
+                    if '403' in stream_err_str or 'empty' in stream_err_str:
+                        logger.info("Попытка загрузки через прогрессивный поток best/worst...")
+                        ydl_opts['format'] = 'best/worst'
+                        try:
+                            _execute_download(ydl_opts)
+                        except Exception as prog_err:
+                            prog_err_str = str(prog_err).lower()
+                            # Если YouTube блокирует 403 даже прогрессивный поток без куки, пробуем резервные куки браузера
+                            if is_yt and ('403' in prog_err_str or 'sign in' in prog_err_str or 'empty' in prog_err_str) and not ydl_opts.get('cookiefile'):
+                                rescued = False
+                                try:
+                                    from .browser_cookies import get_best_browser_cookiefile
+                                    for b in ('edge', 'chrome', 'yandex', 'firefox', 'brave', 'opera'):
+                                        live_file, count, b_name = get_best_browser_cookiefile(b)
+                                        if live_file and count > 0:
+                                            logger.info(f"YouTube заблокировал анонимный доступ (403). Автоматически подключаем cookies из {b_name}...")
+                                            ydl_opts['cookiefile'] = live_file
+                                            ydl_opts['format'] = fmt
+                                            _execute_download(ydl_opts)
+                                            rescued = True
+                                            break
+                                except Exception as rescue_err:
+                                    logger.warning(f"Авто-восстановление через cookies не удалось: {rescue_err}")
+                                if not rescued:
+                                    raise yt_dlp.utils.DownloadError(
+                                        "YouTube заблокировал анонимное скачивание (HTTP 403). Для этого видео требуются cookies (включите в Настройках)."
+                                    )
+                            else:
+                                raise prog_err
+                    else:
+                        raise
             else:
                 raise
+
         time.sleep(1.5)
 
         final_file = None
@@ -674,21 +1079,28 @@ class DownloadWorker(QRunnable):
         # 1. Приоритет: точный файл, перехваченный через хуки yt-dlp
         if getattr(self, '_last_downloaded_filename', None):
             candidate = self._last_downloaded_filename
-            if os.path.exists(candidate) and not candidate.endswith('.part') and os.path.getsize(candidate) > 1024:
+            if os.path.exists(candidate) and candidate.endswith(valid_exts) and not candidate.endswith('.part') and os.path.getsize(candidate) > 1024:
                 final_file = candidate
             else:
                 base_cand, _ = os.path.splitext(candidate)
+                base_cand = re.sub(r'\.[a-z]{2}(?:-[A-Za-z]+)?$', '', base_cand)
                 for ext in valid_exts:
                     if os.path.exists(base_cand + ext) and os.path.getsize(base_cand + ext) > 1024:
                         final_file = base_cand + ext
                         break
 
         # 2. Поиск по целевому названию в папке сохранения
-        if not final_file and safe_title:
-            for f in os.listdir(save_path):
-                if f.startswith(safe_title) and f.endswith(valid_exts) and not f.endswith('.part'):
-                    final_file = os.path.join(save_path, f)
-                    break
+        target_name = f"{safe_title}{q_suffix}" if safe_title else ""
+        if not final_file and target_name:
+            candidates = [os.path.join(save_path, f) for f in os.listdir(save_path)
+                          if f.startswith(target_name) and f.endswith(valid_exts) and not f.endswith('.part')]
+            if candidates:
+                final_file = max(candidates, key=os.path.getmtime)
+            elif safe_title:
+                candidates = [os.path.join(save_path, f) for f in os.listdir(save_path)
+                              if f.startswith(safe_title) and f.endswith(valid_exts) and not f.endswith('.part')]
+                if candidates:
+                    final_file = max(candidates, key=os.path.getmtime)
 
         # 3. Запасной план: поиск самого свежего подходящего файла
         if not final_file:
@@ -699,28 +1111,251 @@ class DownloadWorker(QRunnable):
                 if os.path.getmtime(latest_file) >= (self._start_time - 10):
                     final_file = latest_file
 
+        if needs_post_trim and time_range and final_file and os.path.exists(final_file):
+            final_file = self._trim_media_file(final_file, time_range[0], time_range[1])
+            self._last_downloaded_filename = final_file
+
+        if is_audio and final_file and os.path.exists(final_file) and not final_file.lower().endswith(('.mp3', '.m4a', '.aac', '.flac', '.wav', '.ogg')):
+            logger.info(f"[VOD] Пост-извлечение MP3 звука из видео: {final_file}")
+            self.task.update_progress(96, "Извлечение MP3 звука...")
+            mp3_path = os.path.splitext(final_file)[0] + '.mp3'
+            cmd = [
+                self.ffmpeg_path, '-y',
+                '-i', final_file,
+                '-vn',
+                '-acodec', 'libmp3lame',
+                '-b:a', '320k',
+                mp3_path
+            ]
+            try:
+                creationflags = 0x08000000 if sys.platform == 'win32' else 0
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
+                if res.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 1024:
+                    try:
+                        os.remove(final_file)
+                    except OSError:
+                        pass
+                    final_file = mp3_path
+            except Exception as e_conv:
+                logger.warning(f"Ошибка пост-конвертации в MP3: {e_conv}")
+
         if final_file and os.path.exists(final_file) and os.path.getsize(final_file) > 1024:
             base_fname = os.path.splitext(os.path.basename(final_file))[0]
             if getattr(self.task, 'custom_title', None):
                 self.task.title = self.task.custom_title
             elif not getattr(self.task, 'title', None) or self.task.title in ("...", ""):
                 self.task.title = base_fname
+            actual_size = os.path.getsize(final_file)
+            self.task.set_file_size(actual_size, force=True)
             self.task.info_updated.emit()
-            print(f"[ОТЛАДКА] [VOD] Найден финальный файл: {final_file}")
+            logger.info(f"[VOD] Найден финальный файл: {final_file} ({actual_size} байт)")
             self.task.update_progress(100, "Скачано")
             self.task.set_completed(final_file)
         else:
             raise Exception("Сбой скачивания: Файл пуст или yt-dlp не смог обработать поток.")
 
+    def _download_direct_stream(self, save_path, out_template, referer_url):
+        self.task.is_stream_mode = False
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Referer': referer_url,
+            'Origin': referer_url.rstrip('/')
+        }
+        raw_target = out_template.replace('.%(ext)s', '.mp4') if '.%(ext)s' in out_template else out_template
+        target_path = raw_target if raw_target.endswith(('.mp4', '.mkv', '.webm')) else f"{raw_target}.mp4"
+        part_path = target_path + '.part'
+
+        session = requests.Session()
+        session.trust_env = False
+
+        existing_bytes = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+        if existing_bytes > 0:
+            headers['Range'] = f'bytes={existing_bytes}-'
+
+        r = session.get(self.task.url, headers=headers, stream=True, verify=False, timeout=15)
+        if r.status_code not in (200, 206):
+            headers.pop('Range', None)
+            existing_bytes = 0
+            r = session.get(self.task.url, headers=headers, stream=True, verify=False, timeout=15)
+
+        r.raise_for_status()
+
+        cl = r.headers.get('Content-Length')
+        total_bytes = int(cl) + existing_bytes if cl and cl.isdigit() else 0
+        if total_bytes > 0:
+            self.task.set_file_size(total_bytes)
+
+        mode = 'ab' if existing_bytes > 0 else 'wb'
+        downloaded = existing_bytes
+        start_t = time.time()
+        last_update_t = start_t
+        last_downloaded = downloaded
+        speed_smooth = 0.0
+
+        with open(part_path, mode) as f:
+            for chunk in r.iter_content(chunk_size=512 * 1024):
+                if self._cancel_requested or self.task.is_stop_requested():
+                    r.close()
+                    self.task.set_status(self.task.Status.STOPPED)
+                    return
+                if not chunk:
+                    continue
+                f.write(chunk)
+                downloaded += len(chunk)
+
+                now = time.time()
+                if now - last_update_t >= 0.5:
+                    elapsed = now - last_update_t
+                    bytes_diff = downloaded - last_downloaded
+                    inst_speed = bytes_diff / elapsed if elapsed > 0 else 0
+                    speed_smooth = 0.8 * speed_smooth + 0.2 * inst_speed if speed_smooth > 0 else inst_speed
+                    last_update_t = now
+                    last_downloaded = downloaded
+
+                    pct = int((downloaded / total_bytes) * 100) if total_bytes > 0 else 50
+                    speed_str = ""
+                    if speed_smooth > 0:
+                        b = float(speed_smooth)
+                        for unit in ['B/s', 'KB/s', 'MB/s', 'GB/s']:
+                            if b < 1024.0:
+                                speed_str = f"{b:.1f} {unit}"
+                                break
+                            b /= 1024.0
+                    self.task.update_progress(pct, f"Скачивание... {speed_str}".strip())
+
+        r.close()
+
+        if os.path.exists(target_path):
+            try:
+                os.remove(target_path)
+            except OSError:
+                pass
+        os.rename(part_path, target_path)
+
+        is_audio_mode = getattr(self.task, 'audio_only', False) or getattr(self.task, 'quality_override', '') in ('audio_only', 'audio_mp3') or getattr(self.task, 'quality_badge', '') in ('MP3', 'AUDIO')
+        if is_audio_mode and os.path.exists(target_path) and not target_path.lower().endswith(('.mp3', '.m4a', '.aac', '.flac', '.wav', '.ogg')):
+            self.task.update_progress(96, "Извлечение MP3 звука...")
+            mp3_path = os.path.splitext(target_path)[0] + '.mp3'
+            cmd = [
+                self.ffmpeg_path, '-y',
+                '-i', target_path,
+                '-vn',
+                '-acodec', 'libmp3lame',
+                '-b:a', '320k',
+                mp3_path
+            ]
+            try:
+                creationflags = 0x08000000 if sys.platform == 'win32' else 0
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
+                if res.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 1024:
+                    try:
+                        os.remove(target_path)
+                    except OSError:
+                        pass
+                    target_path = mp3_path
+            except Exception as e_conv:
+                logger.warning(f"Ошибка конвертации в MP3: {e_conv}")
+
+        if os.path.exists(target_path) and os.path.getsize(target_path) > 1024:
+            base_fname = os.path.splitext(os.path.basename(target_path))[0]
+            if getattr(self.task, 'custom_title', None):
+                self.task.title = self.task.custom_title
+            elif not getattr(self.task, 'title', None) or self.task.title in ("...", ""):
+                self.task.title = base_fname
+            actual_size = os.path.getsize(target_path)
+            self.task.set_file_size(actual_size, force=True)
+            self.task.info_updated.emit()
+            logger.info(f"[VOD] Прямой поток успешно сохранен: {target_path} ({actual_size} байт)")
+            self.task.update_progress(100, "Скачано")
+            self.task.set_completed(target_path)
+        else:
+            raise Exception("Сбой прямого скачивания: Файл пуст или не был сохранен.")
+
+    def _trim_media_file(self, file_path, start_s, end_s):
+        logger.info(f"[VOD] Локальная обрезка отрезка {start_s}s - {end_s}s для файла: {file_path}")
+        self.task.update_progress(99, "Обрезка отрезка...")
+        try:
+            self.signals.progress.emit(99, "Обрезка отрезка...")
+        except Exception:
+            pass
+        base, ext = os.path.splitext(file_path)
+        tmp_cut = f"{base}_cut{ext}"
+
+        # 1. Сначала пробуем мгновенный stream copy (-c copy)
+        cmd_copy = [
+            self.ffmpeg_path, '-y',
+            '-ss', str(float(start_s)),
+            '-to', str(float(end_s)),
+            '-i', file_path,
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            tmp_cut
+        ]
+        success = False
+        try:
+            r = subprocess.run(cmd_copy, capture_output=True, text=True, timeout=60)
+            if r.returncode == 0 and os.path.exists(tmp_cut) and os.path.getsize(tmp_cut) > 1024:
+                success = True
+            else:
+                logger.warning(f"[VOD] Stream copy завершился с кодом {r.returncode}")
+        except Exception as e:
+            logger.warning(f"[VOD] Stream copy вызвал ошибку: {e}")
+
+        # 2. Если copy не подошёл, обрезаем с быстрой перекодировкой
+        if not success:
+            logger.info("[VOD] Обрезка с быстрой перекодировкой через FFmpeg...")
+            cmd_encode = [
+                self.ffmpeg_path, '-y',
+                '-ss', str(float(start_s)),
+                '-to', str(float(end_s)),
+                '-i', file_path,
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+                '-c:a', 'aac', '-b:a', '192k',
+                '-movflags', '+faststart',
+                tmp_cut
+            ]
+            try:
+                r = subprocess.run(cmd_encode, capture_output=True, text=True, timeout=180)
+                if r.returncode == 0 and os.path.exists(tmp_cut) and os.path.getsize(tmp_cut) > 1024:
+                    success = True
+                else:
+                    logger.error(f"[VOD] Перекодирование завершилось с кодом {r.returncode}")
+            except Exception as e:
+                logger.error(f"[VOD] Ошибка перекодирования отрезка: {e}")
+
+        if success and os.path.exists(tmp_cut) and os.path.getsize(tmp_cut) > 1024:
+            try:
+                os.replace(tmp_cut, file_path)
+                logger.info(f"[VOD] Успешно сохранён отрезок: {file_path}")
+                return file_path
+            except Exception:
+                try:
+                    os.remove(file_path)
+                    os.rename(tmp_cut, file_path)
+                    return file_path
+                except Exception:
+                    return tmp_cut
+        return file_path
+
     def _run_twitch_stream(self, save_path):
-        import re
         self.task.is_stream_mode = True
         self._start_time = time.time()
+
+        try:
+            free_space = shutil.disk_usage(save_path).free
+            if free_space < 100 * 1024 * 1024:
+                raise OSError(f"Недостаточно свободного места на диске ({free_space // (1024*1024)} МБ доступно)")
+        except OSError as e:
+            if "Недостаточно свободного места" in str(e):
+                raise
+            logger.warning(f"Не удалось проверить свободное место на диске: {e}")
 
         ydl_opts = {
             'quiet': True,
             'noprogress': True,
             'format': 'best',
+            'color': 'never',
         }
         use_cookies = self.settings.value('use_cookies', False, type=bool)
         if use_cookies:
@@ -730,23 +1365,29 @@ class DownloadWorker(QRunnable):
                 if cookie_file and os.path.exists(cookie_file):
                     ydl_opts['cookiefile'] = cookie_file
             else:
-                browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
-                if browser and browser != 'none':
-                    try:
-                        ydl_opts['cookiesfrombrowser'] = (browser,)
-                    except Exception as e:
-                        print(f"[ОТЛАДКА] Ошибка загрузки куки: {e}")
-
+                # ИЗОЛЯЦИЯ: Живые куки браузера запрашиваются строго для YouTube.
+                # Для AnimeGO, Kodik, Rutube, TikTok, Lampa и прямых m3u8/mp4 потоков куки браузера не трогаются.
+                is_yt = ('youtube.com' in self.task.url.lower() or 'youtu.be' in self.task.url.lower())
+                if is_yt:
+                    browser = self.settings.value('cookie_browser', self.settings.value('cookie_source', 'none'))
+                    if browser and browser != 'none':
+                        try:
+                            from .browser_cookies import get_best_browser_cookiefile
+                            live_file, count, b_name = get_best_browser_cookiefile(browser)
+                            if live_file and count > 0:
+                                ydl_opts['cookiefile'] = live_file
+                        except Exception as e:
+                            logger.warning(f"Ошибка загрузки куки: {e}")
 
         try:
-            print("[ОТЛАДКА] [TWITCH] Получаем прямую ссылку на поток (БЕЗ скачивания)...")
+            logger.info("[TWITCH] Получаем прямую ссылку на поток (БЕЗ скачивания)...")
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(self.task.url, download=False)
             except Exception as e:
                 err_str = str(e).lower()
                 if ('cookie' in err_str or 'dpapi' in err_str) and ('cookiesfrombrowser' in ydl_opts or 'cookiefile' in ydl_opts):
-                    print(f"[ОТЛАДКА] [TWITCH] Сбой из-за куки ({e}), повторяем без куки...")
+                    logger.warning(f"[TWITCH] Сбой из-за куки ({e}), повторяем без куки...")
                     ydl_opts.pop('cookiesfrombrowser', None)
                     ydl_opts.pop('cookiefile', None)
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -766,7 +1407,7 @@ class DownloadWorker(QRunnable):
             final_mp4 = os.path.join(save_path, f"{safe_title}.mp4")
             temp_ts = os.path.join(save_path, f"{safe_title}.ts")
 
-            print(f"[ОТЛАДКА] [TWITCH] Прямая запись через FFmpeg в: {temp_ts}")
+            logger.info(f"[TWITCH] Прямая запись через FFmpeg в: {temp_ts}")
 
             cmd = [
                 self.ffmpeg_path,
@@ -784,7 +1425,7 @@ class DownloadWorker(QRunnable):
 
             while process.poll() is None:
                 if self._cancel_requested or self.task.is_stop_requested():
-                    print("[ОТЛАДКА] [TWITCH] Команда СТОП! Жестко убиваем FFmpeg...")
+                    logger.info("[TWITCH] Команда СТОП! Завершаем процесс FFmpeg...")
                     process.kill()
                     process.wait()
                     break
@@ -793,14 +1434,18 @@ class DownloadWorker(QRunnable):
             self._monitor_running = False
 
             if getattr(self.task, 'is_removed', False):
-                print("[ОТЛАДКА] [TWITCH] Задача удалена из списка.")
-                if os.path.exists(temp_ts): os.remove(temp_ts)
+                logger.info("[TWITCH] Задача удалена из списка.")
+                if os.path.exists(temp_ts):
+                    try:
+                        os.remove(temp_ts)
+                    except OSError:
+                        pass
                 self.task.set_status(self.task.Status.STOPPED)
                 return
 
             if os.path.exists(temp_ts) and os.path.getsize(temp_ts) > 1024:
                 self.task.update_progress(98, "Формирование MP4 файла...")
-                print("[ОТЛАДКА] [TWITCH] Быстрая конвертация TS -> MP4...")
+                logger.info("[TWITCH] Быстрая конвертация TS -> MP4...")
 
                 remux_cmd = [
                     self.ffmpeg_path, '-y',
@@ -814,18 +1459,18 @@ class DownloadWorker(QRunnable):
                 if os.path.exists(final_mp4):
                     try:
                         os.remove(temp_ts)
-                    except:
+                    except OSError:
                         pass
-                    print("[ОТЛАДКА] [TWITCH] УСПЕХ! Стрим сохранен.")
+                    logger.info("[TWITCH] Успешно: Стрим сохранен.")
                     self.task.update_progress(100, "Скачано")
                     self.task.set_completed(final_mp4)
                 else:
                     self.task.set_status(self.task.Status.ERROR)
             else:
-                print("[ОТЛАДКА] [TWITCH] Временный файл пуст или не создан.")
+                logger.warning("[TWITCH] Временный файл пуст или не создан.")
                 self.task.set_status(self.task.Status.STOPPED)
 
         except Exception as e:
-            print(f"[ОТЛАДКА] [TWITCH] Ошибка: {e}")
+            logger.error(f"[TWITCH] Ошибка: {e}")
             self._monitor_running = False
             self.task.set_status(self.task.Status.ERROR)
