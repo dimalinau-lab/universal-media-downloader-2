@@ -10,6 +10,7 @@ from qfluentwidgets import (TransparentToolButton, FluentIcon, ProgressBar,
                             PushButton, PrimaryPushButton, LineEdit,
                             RoundMenu, Action)
 from .download_task import DownloadTask
+from .stream_helper import StreamResolverHelper
 
 
 logger = logging.getLogger(__name__)
@@ -516,13 +517,16 @@ class DownloadItemWidget(QWidget):
         clean_err = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', clean_err)
         clean_err = re.sub(r'^(?:Ошибка загрузчика:\s*)+(?:ERROR:\s*)+', '', clean_err, flags=re.IGNORECASE).strip()
 
+        err_prefix = self.translator.translate('status_error', 'Ошибка')
+        err_display = clean_err if clean_err.lower().startswith(err_prefix.lower()) else f"{err_prefix}: {clean_err}"
+
         status_text_map = {
             DownloadTask.Status.PENDING: self.translator.translate('status_pending', 'Ожидание...'),
             DownloadTask.Status.FETCHING_INFO: self.translator.translate('status_fetching_info', 'Получение данных...'),
             DownloadTask.Status.DOWNLOADING: self.translator.translate('status_downloading', 'Скачивание...'),
             DownloadTask.Status.PROCESSING: self.translator.translate('status_processing', 'Обработка...'),
             DownloadTask.Status.COMPLETED: self.translator.translate('status_completed', 'Скачано'),
-            DownloadTask.Status.ERROR: f"{self.translator.translate('status_error', 'Ошибка')}: {clean_err}",
+            DownloadTask.Status.ERROR: err_display,
             DownloadTask.Status.STOPPED: self.translator.translate('status_stopped', 'Стрим завершен и сохранен'),
         }
 
@@ -679,7 +683,6 @@ class DownloadItemWidget(QWidget):
                     'label': label,
                     'size_bytes': total_size,
                     'is_audio': False,
-                    'direct_url': vf.get('url') if (vf.get('url') and str(vf.get('url')).startswith('http')) else None
                 })
         elif info.get('available_qualities'):
             for q in info.get('available_qualities', []):
@@ -743,14 +746,16 @@ class DownloadItemWidget(QWidget):
         self.task.quality_override = it['key']
         self.task.quality_badge = it['badge']
         self.task.custom_quality = it['badge']
-        if it.get('direct_url'):
+        orig_u = (getattr(self.task, 'original_url', '') or self.task.url).lower()
+        is_web_media = any(d in orig_u for d in ('twitch.tv', 'youtube.com', 'youtu.be', 'kick.com', 'rutube.ru', 'vk.com', 'tiktok.com', 'instagram.com'))
+        if it.get('direct_url') and not is_web_media:
             self.task.url = it['direct_url']
         elif getattr(self.task, 'available_streams', None) and it['badge'] in self.task.available_streams:
             self.task.url = self.task.available_streams[it['badge']]
-        elif any(d in self.task.url for d in ('solodcdn', 'kodik')) and re.search(r'/\d{3,4}\.mp4', self.task.url):
-            m = re.search(r'(\d+)', it['badge'])
-            if m:
-                self.task.url = re.sub(r'/\d{3,4}\.mp4', f"/{m.group(1)}.mp4", self.task.url)
+        elif StreamResolverHelper.is_kodik_stream(self.task.url):
+            self.task.url = StreamResolverHelper.replace_quality(
+                self.task.url, it['badge'], is_audio=bool(it.get('is_audio'))
+            )
 
         if it.get('is_audio'):
             self.task.audio_only = True

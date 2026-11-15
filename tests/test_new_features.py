@@ -235,15 +235,22 @@ def test_query_direct_stream_size_m3u8_bandwidth(qapp):
     settings = MagicMock()
     dm = DownloadManager(settings, "ffmpeg", MagicMock(), MagicMock())
 
-    with patch("requests.Session.get") as mock_get:
+    with patch("threading.Thread") as mock_th, \
+         patch("requests.Session.get") as mock_get:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.text = mock_manifest
         mock_get.return_value = mock_resp
 
-        # Call size query and wait for thread
+        # Run fetch synchronously inside the test
+        def fake_thread_factory(target, daemon=True):
+            mock_inst = MagicMock()
+            mock_inst.start = target
+            return mock_inst
+        mock_th.side_effect = fake_thread_factory
+
+        # Call size query
         dm._query_direct_stream_size(task)
-        time.sleep(0.4)
         qapp.processEvents()
 
         # 814382 * 1440 / 8 = 146588760 bytes (~139.8 MB)
@@ -448,6 +455,149 @@ def test_kodik_quality_expansion_and_switch(qapp):
     widget.apply_quality_selection(target_1080)
     assert task.url == 'https://solodcdn.com/useruploads/xyz/1080.mp4'
     assert task.quality_badge == '1080p'
+
+    # Switch to MP3 - must NOT corrupt URL to /3.mp4!
+    target_mp3 = next(it for it in items if it['badge'] == 'MP3')
+    widget.apply_quality_selection(target_mp3)
+    assert task.url == 'https://solodcdn.com/useruploads/xyz/360.mp4'
+    assert task.audio_only is True
+    assert task.quality_badge == 'MP3'
+
+
+def test_animego_episodes_resolve_worker_and_dialog(qapp):
+    from app.animego_progress_dialog import AnimeGoEpisodesResolveDialog, AnimeGoEpisodesResolveWorker
+    from app.download_manager import DownloadManager
+    from unittest.mock import MagicMock
+
+    dialog = AnimeGoEpisodesResolveDialog(
+        anime_title="Test Anime",
+        total_episodes=2,
+        voiceover="AniLibria",
+        quality="1080p"
+    )
+    dialog.update_progress(1, 2, "Серия 1")
+    assert dialog.progress_bar.value() == 1
+    assert "Серия 1" in dialog.status_label.text()
+
+    mock_extractor = MagicMock()
+    mock_extractor.name = "AnimeGO"
+    mock_extractor.resolve_stream.side_effect = [
+        ("https://kodikplayer.com/stream1.m3u8", "1080p"),
+        ("https://kodikplayer.com/stream2.m3u8", "720p"),
+    ]
+
+    selected_targets = [
+        {'name': 'Серия 1', 'id': 'ep1'},
+        {'name': 'Серия 2', 'id': 'ep2'}
+    ]
+    meta = {'safe_anime_title': 'Test Anime', 'poster_url': 'http://poster.jpg'}
+
+    worker = AnimeGoEpisodesResolveWorker(
+        selected_targets=selected_targets,
+        extractor=mock_extractor,
+        meta=meta,
+        selected_v={'name': 'AniLibria'},
+        selected_q='1080p'
+    )
+
+    resolved = []
+    worker.signals.episode_resolved.connect(lambda item: resolved.append(item))
+    worker.run()
+
+    assert len(resolved) == 2
+    assert resolved[0]['direct_url'] == "https://kodikplayer.com/stream1.m3u8"
+    assert resolved[1]['direct_url'] == "https://kodikplayer.com/stream2.m3u8"
+
+    # Test DownloadManager._add_single_resolved_episode
+    settings = MagicMock()
+    dm = DownloadManager(settings, "ffmpeg", MagicMock(), MagicMock())
+    dm._add_single_resolved_episode(resolved[0], meta, {'name': 'AniLibria'}, '1080p', is_from_bot=False)
+
+    assert len(dm.tasks) == 1
+    task = dm.tasks[0]
+    assert task.url == "https://kodikplayer.com/stream1.m3u8"
+    assert task.quality_badge == "1080p"
+    assert "AniLibria" in task.title
+    assert "Test Anime" in task.title
+    dialog.close()
+
+
+def test_kodik_404_fallback_to_available_quality(tmp_path):
+    from app.threads import DownloadWorker
+    from app.download_task import DownloadTask
+    from unittest.mock import MagicMock, patch
+
+    task = DownloadTask("https://cloud2.solodcdn.com/useruploads/test/1080.mp4:hls:manifest.m3u8")
+    task.quality_badge = "1080p"
+    settings = MagicMock()
+    settings.value.return_value = ""
+
+    worker = DownloadWorker(task, settings, "ffmpeg", MagicMock())
+
+    def mock_get(url, *args, **kwargs):
+        resp = MagicMock()
+        if "1080.mp4" in url:
+            resp.status_code = 404
+        elif "720.mp4" in url:
+            resp.status_code = 200
+            resp.headers = {'Content-Length': '10240'}
+            resp.iter_content.return_value = [b"video_bytes" * 200]
+        return resp
+
+    with patch("requests.Session.get", side_effect=mock_get):
+        save_p = str(tmp_path)
+        out_tpl = str(tmp_path / "test.%(ext)s")
+        worker._download_direct_stream(save_p, out_tpl, "https://kodikplayer.com/")
+
+    assert "720.mp4" in task.url
+    assert task.quality_badge == "720p"
+
+
+def test_multipart_chunked_download(tmp_path):
+    from app.threads import DownloadWorker
+    from app.download_task import DownloadTask
+    from unittest.mock import MagicMock, patch
+
+    task = DownloadTask("https://cloud2.solodcdn.com/useruploads/test/720.mp4")
+    task.quality_badge = "720p"
+    settings = MagicMock()
+    settings.value.return_value = 0
+
+    worker = DownloadWorker(task, settings, "ffmpeg", MagicMock())
+    total_size = 4 * 1024 * 1024  # 4 MB (> 3 MB threshold)
+
+    def mock_get(url, headers=None, **kwargs):
+        resp = MagicMock()
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = None
+        resp.headers = {'Content-Length': str(total_size), 'Accept-Ranges': 'bytes'}
+        resp.status_code = 200
+
+        range_hdr = (headers or {}).get('Range', '')
+        if range_hdr and 'bytes=' in range_hdr:
+            resp.status_code = 206
+            parts = range_hdr.replace('bytes=', '').split('-')
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else total_size - 1
+            length = end - start + 1
+            resp.headers['Content-Length'] = str(length)
+            resp.iter_content.return_value = [b"A" * length]
+        else:
+            resp.iter_content.return_value = [b"A" * 1024]
+        return resp
+
+    with patch("requests.Session.get", side_effect=mock_get):
+        save_p = str(tmp_path)
+        out_tpl = str(tmp_path / "video.%(ext)s")
+        worker._download_direct_stream(save_p, out_tpl, "https://kodikplayer.com/")
+
+    final_file = tmp_path / "video.mp4"
+    assert final_file.exists()
+    assert final_file.stat().st_size == total_size
+    assert task.status == DownloadTask.Status.COMPLETED
+
+
+
 
 
 

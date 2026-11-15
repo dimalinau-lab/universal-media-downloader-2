@@ -16,6 +16,7 @@ import threading
 from .threads import InfoWorker, DownloadWorker, ThumbnailWorker
 from .download_task import DownloadTask
 from .extractors import find_extractor_for_url
+from .stream_helper import StreamResolverHelper
 
 logger = logging.getLogger(__name__)
 
@@ -321,17 +322,7 @@ def clean_stream_url(stream_url: str) -> str:
     """
     Очищает ссылку потока от HLS сегментов, параметров плеера PlayerJS и мусорных суффиксов.
     """
-    if not isinstance(stream_url, str):
-        return ""
-    u = stream_url.strip('; "\'')
-    if ":hls:seg-" in u:
-        u = re.sub(r':hls:seg-[^/]+\.ts.*', '', u)
-    elif ".ts" in u and "seg-" in u:
-        u = re.sub(r':?seg-[^/]+\.ts.*', '', u)
-    elif ".m4s" in u:
-        u = re.sub(r'/[^/]+(?:\.m4s).*$', '/master.m3u8', u)
-    u = u.replace(':hls:manifest.m3u8', '')
-    return u.strip('; "\'')
+    return StreamResolverHelper.clean_stream_url(stream_url)
 
 
 def score_stream_url(url: str, tag: str = "") -> tuple[float, str]:
@@ -1535,8 +1526,9 @@ class DownloadManager(QObject):
                 task.info_updated.emit()
 
     def on_info_error(self, task, error):
-        task.set_error(self.translator.translate('error_getting_info'))
         logger.error(f"Error fetching info for {task.url}: {error}")
+        friendly_err = StreamResolverHelper.format_user_friendly_error(str(error), self.translator)
+        task.set_error(friendly_err)
         self._update_summary()
 
     def start_all(self):
@@ -1593,7 +1585,8 @@ class DownloadManager(QObject):
     def on_task_error(self, task, error_msg):
         task_name = self._task_display_name(task)
         logger.error(f"[DownloadManager] Ошибка загрузки задачи '{task_name}': {error_msg}")
-        task.set_error(error_msg)
+        friendly_err = StreamResolverHelper.format_user_friendly_error(str(error_msg), self.translator)
+        task.set_error(friendly_err)
         self.on_task_finished(task)
 
     def stop_all(self):
@@ -1710,51 +1703,66 @@ class DownloadManager(QObject):
                 if not selected_targets and is_movie:
                     selected_targets = ep_list
 
-                added_count = 0
-                for ep in selected_targets:
-                    ep_meta = dict(meta)
-                    ep_meta.update(ep)
-                    ep_meta['selected_voiceover'] = selected_v
-                    try:
-                        direct_url, q_badge = extractor.resolve_stream(ep_meta, quality=selected_q)
-                    except Exception as e:
-                        logger.error(f"[{extractor.name}] Ошибка получения потока: {e}")
-                        direct_url = None
+                if not is_from_bot and getattr(extractor, 'platform_id', '') == 'animego' and len(selected_targets) > 0:
+                    from .animego_progress_dialog import AnimeGoEpisodesResolveDialog, AnimeGoEpisodesResolveWorker
+                    anime_name = meta.get('safe_anime_title') or meta.get('title', 'Anime')
+                    voice_name = selected_v.get('name') if selected_v else ''
 
-                    if not direct_url:
-                        logger.warning(f"[{extractor.name}] Не удалось получить прямую ссылку для серии {ep.get('name')}")
-                        continue
+                    resolve_dlg = AnimeGoEpisodesResolveDialog(
+                        anime_title=anime_name,
+                        total_episodes=len(selected_targets),
+                        voiceover=voice_name,
+                        quality=selected_q,
+                        parent=self.parent_window
+                    )
 
-                    title = f"{meta.get('safe_anime_title', 'Anime')} - {ep.get('name', 'Серия')}"
-                    if selected_v and selected_v.get('name') and selected_v.get('name') not in ('Default', 'Оригинал'):
-                        title += f" [{selected_v.get('name')}]"
+                    resolve_worker = AnimeGoEpisodesResolveWorker(
+                        selected_targets=selected_targets,
+                        extractor=extractor,
+                        meta=meta,
+                        selected_v=selected_v,
+                        selected_q=selected_q
+                    )
 
-                    task = DownloadTask(direct_url)
-                    task.title = title
-                    task.custom_title = title
-                    task.custom_quality = selected_q or q_badge
-                    task.quality_badge = selected_q or q_badge or ""
-                    task.thumbnail_url = meta.get('poster_url')
-                    if any(d in direct_url for d in ('solodcdn', 'kodik')):
-                        task.referer = 'https://kodikplayer.com/'
-                    elif any(d in direct_url for d in ('aniboom', 'ya-ligh', 'boom-img')):
-                        task.referer = 'https://aniboom.one/'
-                    elif meta.get('referer'):
-                        task.referer = meta.get('referer')
-                    task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
-                    task.set_status(DownloadTask.Status.PENDING)
-                    self.tasks.append(task)
-                    self.task_added.emit(task)
-                    if task.thumbnail_url:
-                        self.queue_thumbnail_load(task.thumbnail_url, task)
-                    self._query_direct_stream_size(task)
-                    if is_from_bot or self.settings.value('auto_start_downloads', False, type=bool):
-                        self.start_task(task)
-                    added_count += 1
+                    resolve_worker.signals.progress.connect(resolve_dlg.update_progress)
+                    resolve_worker.signals.episode_resolved.connect(
+                        lambda item: self.run_on_main(self._add_single_resolved_episode, item, meta, selected_v, selected_q, is_from_bot)
+                    )
 
-                if added_count == 0:
-                    self.status_updated.emit(f"Не удалось получить видеопоток для выбранных серий {extractor.name}")
-                self._update_summary()
+                    def on_resolve_finished(total_added):
+                        if resolve_dlg.isVisible():
+                            resolve_dlg.accept()
+                        self._update_summary()
+                        if total_added == 0:
+                            self.status_updated.emit(f"Не удалось получить видеопоток для выбранных серий {extractor.name}")
+
+                    resolve_worker.signals.finished.connect(lambda total: self.run_on_main(on_resolve_finished, total))
+                    resolve_dlg.cancelled.connect(resolve_worker.cancel)
+
+                    self.thread_pool.start(resolve_worker)
+                    resolve_dlg.exec()
+                else:
+                    added_count = 0
+                    for ep in selected_targets:
+                        ep_meta = dict(meta)
+                        ep_meta.update(ep)
+                        ep_meta['selected_voiceover'] = selected_v
+                        try:
+                            direct_url, q_badge = extractor.resolve_stream(ep_meta, quality=selected_q)
+                        except Exception as e:
+                            logger.error(f"[{extractor.name}] Ошибка получения потока: {e}")
+                            direct_url = None
+
+                        if not direct_url:
+                            logger.warning(f"[{extractor.name}] Не удалось получить прямую ссылку для серии {ep.get('name')}")
+                            continue
+
+                        self._add_single_resolved_episode({'direct_url': direct_url, 'q_badge': q_badge, 'ep': ep}, meta, selected_v, selected_q, is_from_bot)
+                        added_count += 1
+
+                    if added_count == 0:
+                        self.status_updated.emit(f"Не удалось получить видеопоток для выбранных серий {extractor.name}")
+                    self._update_summary()
         else:
             direct_url = meta.get('direct_url')
             if not direct_url:
@@ -1784,6 +1792,40 @@ class DownloadManager(QObject):
             if is_from_bot or self.settings.value('auto_start_downloads', False, type=bool):
                 self.start_task(task)
             self._update_summary()
+
+    def _add_single_resolved_episode(self, resolved_data: dict, meta: dict, selected_v, selected_q, is_from_bot: bool):
+        direct_url = resolved_data.get('direct_url')
+        if not direct_url:
+            return
+        ep = resolved_data.get('ep', {})
+        q_badge = resolved_data.get('q_badge', '')
+
+        title = f"{meta.get('safe_anime_title') or meta.get('title', 'Anime')} - {ep.get('name', 'Серия')}"
+        if selected_v and isinstance(selected_v, dict) and selected_v.get('name') and selected_v.get('name') not in ('Default', 'Оригинал'):
+            title += f" [{selected_v.get('name')}]"
+
+        task = DownloadTask(direct_url)
+        task.is_from_bot = is_from_bot
+        task.title = title
+        task.custom_title = title
+        task.custom_quality = selected_q or q_badge
+        task.quality_badge = selected_q or q_badge or ""
+        task.thumbnail_url = meta.get('poster_url')
+        if any(d in direct_url for d in ('solodcdn', 'kodik')):
+            task.referer = 'https://kodikplayer.com/'
+        elif any(d in direct_url for d in ('aniboom', 'ya-ligh', 'boom-img')):
+            task.referer = 'https://aniboom.one/'
+        elif meta.get('referer'):
+            task.referer = meta.get('referer')
+        task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
+        task.set_status(DownloadTask.Status.PENDING)
+        self.tasks.append(task)
+        self.task_added.emit(task)
+        if task.thumbnail_url:
+            self.queue_thumbnail_load(task.thumbnail_url, task)
+        self._query_direct_stream_size(task)
+        if is_from_bot or self.settings.value('auto_start_downloads', False, type=bool):
+            self.start_task(task)
 
     def _start_custom_extractor_from_bot(self, meta, extractor, selected_v, selected_q, selected_targets):
         class ResolveStreamsWorker(QRunnable):

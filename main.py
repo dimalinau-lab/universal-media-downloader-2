@@ -29,7 +29,63 @@ from app.path_manager import (
     get_bundle_dir,
     get_logs_dir,
     get_data_dir,
+    get_updates_dir,
 )
+
+# Подключение директории динамических обновлений пакетов (yt-dlp и др.) в приоритет sys.path
+updates_dir = get_updates_dir()
+if os.path.isdir(updates_dir) and updates_dir not in sys.path:
+    sys.path.insert(0, updates_dir)
+
+# Регистрация явного AppUserModelID в Windows для корректной группировки на панели задач
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('Magerko.UniversalMediaDownloader.3.3.1')
+    except Exception:
+        pass
+
+# Очистка резервных копий и устаревших файлов после обновления (atomic swap / portable / inno)
+if getattr(sys, 'frozen', False):
+    try:
+        current_exe = sys.executable
+        base_dir = os.path.dirname(os.path.abspath(current_exe))
+        current_name = os.path.basename(current_exe).lower()
+
+        # 1. Удаление .old от исполняемого файла
+        old_exe = current_exe + ".old"
+        if os.path.exists(old_exe):
+            try:
+                os.remove(old_exe)
+            except Exception:
+                pass
+
+        # 2. Удаление резервной директории зависимостей _internal.old
+        old_internal = os.path.join(base_dir, "_internal.old")
+        if os.path.exists(old_internal):
+            import shutil
+            shutil.rmtree(old_internal, ignore_errors=True)
+
+        # 3. Удаление устаревших версионированных исполняемых файлов (Windows3.*.exe)
+        for fname in os.listdir(base_dir):
+            fl = fname.lower()
+            if fl.endswith('.old') and fl != os.path.basename(old_exe).lower():
+                try:
+                    fp = os.path.join(base_dir, fname)
+                    if os.path.isfile(fp):
+                        os.remove(fp)
+                    elif os.path.isdir(fp):
+                        import shutil
+                        shutil.rmtree(fp, ignore_errors=True)
+                except Exception:
+                    pass
+            elif fl.startswith('windows3.') and fl.endswith('.exe') and fl != current_name:
+                try:
+                    os.remove(os.path.join(base_dir, fname))
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 # Обеспечиваем корректную работу UTF-8 в консоли Windows

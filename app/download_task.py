@@ -27,6 +27,7 @@ class DownloadTask(QObject):
     def __init__(self, url):
         super().__init__()
         self.url = url
+        self.original_url = url
         self.title = "..."
         self.thumbnail_url = None
         self.thumbnail = None
@@ -74,6 +75,9 @@ class DownloadTask(QObject):
 
     def update_info(self, info):
         self.info = info
+        wp_url = info.get('webpage_url')
+        if wp_url and ('twitch.tv' in wp_url or 'youtube.com' in wp_url or 'kick.com' in wp_url):
+            self.original_url = wp_url
         if getattr(self, 'available_streams', None) and not info.get('available_streams'):
             self.info['available_streams'] = self.available_streams
         elif info.get('available_streams'):

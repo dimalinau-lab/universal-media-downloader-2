@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import BaseExtractor
+from ..stream_helper import StreamResolverHelper
 
 logger = logging.getLogger(__name__)
 
@@ -277,15 +278,8 @@ class AnimeGoExtractor(BaseExtractor):
                     real_url = 'https:' + real_url
 
             # В Kodik за :hls:manifest.m3u8 всегда лежит прямой оригинальный MP4 файл (solodcdn.com/useruploads/.../720.mp4)
-            # Прямой MP4 скачивается намного быстрее и без сборки фрагментов
-            if ':hls:manifest.m3u8' in real_url:
-                direct_mp4 = real_url.replace(':hls:manifest.m3u8', '')
-                try:
-                    head_check = self.session.head(direct_mp4, headers={'Referer': 'https://kodikplayer.com/'}, timeout=3)
-                    if head_check.status_code == 200:
-                        real_url = direct_mp4
-                except Exception:
-                    pass
+            # Прямой MP4 скачивается намного быстрее и надежнее без фрагментации
+            real_url = StreamResolverHelper.clean_stream_url(real_url)
 
             logger.info(f"[Kodik] [+] Успешно получен поток Kodik ({chosen_key}p): {real_url}")
             return real_url, f"{chosen_key}p"

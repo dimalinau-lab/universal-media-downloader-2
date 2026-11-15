@@ -12,11 +12,23 @@ class _LazyYtDlp:
         if _LazyYtDlp._module is None:
             import yt_dlp as _real
             _LazyYtDlp._module = _real
-        return getattr(_LazyYtDlp._module, name)
+        try:
+            return getattr(_LazyYtDlp._module, name)
+        except AttributeError:
+            import importlib
+            try:
+                submodule = importlib.import_module(f"yt_dlp.{name}")
+                setattr(_LazyYtDlp._module, name, submodule)
+                return submodule
+            except ImportError:
+                raise AttributeError(f"module 'yt_dlp' has no attribute '{name}'")
 
 yt_dlp = _LazyYtDlp()
 import threading
+import concurrent.futures
 import re
+from .stream_helper import StreamResolverHelper
+from .path_manager import get_aria2c_path
 
 
 def clean_ansi(text: str) -> str:
@@ -199,12 +211,14 @@ class InfoWorker(QRunnable):
                 except Exception as e_head:
                     logger.debug(f"Direct stream fast HEAD probe failed ({e_head}), falling back to yt-dlp")
 
+            info_logger = _YtdlLogger(logger)
             ydl_opts = {
                 'quiet': True,
                 'skip_download': True,
                 'nocheckcertificate': True,
                 'ignoreerrors': True,
                 'enable_js': True,
+                'logger': info_logger,
                 'remote_components': {'ejs:github': True},
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -271,7 +285,8 @@ class InfoWorker(QRunnable):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(self.url, download=False)
                     if not info:
-                        raise Exception("yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)")
+                        real_err = info_logger.last_error or "yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)"
+                        raise Exception(real_err)
                     try:
                         self.signals.info_fetched.emit(info)
                     except RuntimeError:
@@ -285,7 +300,8 @@ class InfoWorker(QRunnable):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(self.url, download=False)
                         if not info:
-                            raise Exception("yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)")
+                            real_err = info_logger.last_error or "yt-dlp не смог извлечь информацию о видео (контент недоступен или неподдерживаемый URL)"
+                            raise Exception(real_err)
                         try:
                             self.signals.info_fetched.emit(info)
                         except RuntimeError:
@@ -549,13 +565,28 @@ class DownloadWorker(QRunnable):
                 save_path = self._default_save_path()
             self.task.save_path = save_path
 
-            is_twitch = 'twitch.tv' in self.task.url.lower()
+            # Автовосстановление оригинального веб-адреса, если в url попал временный CDN плейлист
+            orig_url = getattr(self.task, 'original_url', None) or (
+                getattr(self.task, 'info', {}).get('webpage_url') if isinstance(getattr(self.task, 'info', None), dict) else None
+            )
+            if orig_url and any(cdn in self.task.url.lower() for cdn in ('ttvnw.net', 'googlevideo.com', 'fbcdn.net')):
+                logger.info(f"Восстановление оригинального URL: {self.task.url} -> {orig_url}")
+                self.task.url = orig_url
 
-            if is_twitch:
-                logger.info("[TWITCH] Режим: СТРИМ TWITCH")
+            u_lower = self.task.url.lower()
+            is_twitch = ('twitch.tv' in u_lower) or ('ttvnw.net' in u_lower)
+            is_twitch_vod_or_clip = (
+                '/videos/' in u_lower or
+                '/clip/' in u_lower or
+                'clips.twitch.tv' in u_lower
+            )
+
+            # Прямая трансляция канала Twitch (НЕ архивные записи /videos/ и НЕ клипы)
+            if is_twitch and not is_twitch_vod_or_clip:
+                logger.info("[TWITCH] Режим: ЗАПИСЬ ПРЯМОГО СТРИМА TWITCH")
                 self._run_twitch_stream(save_path)
             else:
-                logger.info("[VOD] Режим: ОБЫЧНОЕ ВИДЕО (VOD)")
+                logger.info("[VOD] Режим: ОБЫЧНОЕ ВИДЕО (VOD / ЗАПИСЬ / КЛИП)")
                 self._run_standard_vod(save_path)
 
         except yt_dlp.utils.DownloadCancelled:
@@ -840,7 +871,10 @@ class DownloadWorker(QRunnable):
         if merge_fmt:
             ydl_opts['merge_output_format'] = merge_fmt
 
-        speed_limit = self.settings.value('speed_limit', 0, type=int)
+        try:
+            speed_limit = int(self.settings.value('speed_limit', 0, type=int) or 0)
+        except (ValueError, TypeError):
+            speed_limit = 0
         if speed_limit > 0:
             ydl_opts['ratelimit'] = speed_limit
 
@@ -923,20 +957,31 @@ class DownloadWorker(QRunnable):
             ydl_opts['writethumbnail'] = True
 
         # === ЗАПУСК СКАЧИВАНИЯ ===
+        if StreamResolverHelper.is_kodik_stream(self.task.url):
+            self.task.url = StreamResolverHelper.clean_stream_url(self.task.url)
+
         u_clean = self.task.url.lower().split('?')[0]
-        is_direct_stream = (any(d in u_clean for d in ('solodcdn', 'rooster.cloud2')) or
+        is_direct_stream = (StreamResolverHelper.is_kodik_stream(u_clean) or
                             u_clean.endswith(('.mp4', '.mkv', '.webm'))) and not time_range
         if is_direct_stream:
-            if any(d in self.task.url for d in ('solodcdn', 'kodik')) and q_tag and q_tag.endswith('p'):
-                h_digits = q_tag[:-1]
-                if re.search(r'/\d{3,4}\.mp4', self.task.url):
-                    self.task.url = re.sub(r'/\d{3,4}\.mp4', f'/{h_digits}.mp4', self.task.url)
+            if StreamResolverHelper.is_kodik_stream(self.task.url) and q_tag:
+                self.task.url = StreamResolverHelper.replace_quality(self.task.url, q_tag)
+            referer_url = StreamResolverHelper.get_stream_referer(self.task.url, default_referer=referer_url)
             logger.info(f"[VOD] Обнаружен прямой видеопоток: {self.task.url}. Запуск прямого быстрого скачивания...")
             try:
                 self._download_direct_stream(save_path, out_template, referer_url)
                 return
             except Exception as direct_err:
                 logger.warning(f"[VOD] Прямое скачивание потока вызвало ошибку ({direct_err}), пробуем через yt-dlp...")
+
+        # Подключение внешнего мультисегментного ускорителя aria2c (при наличии)
+        aria2c_exe = get_aria2c_path()
+        if aria2c_exe and self.settings.value('enable_aria2c', True, type=bool) and not time_range:
+            logger.info(f"[VOD] Обнаружен ускоритель aria2c: {aria2c_exe}. Подключение мультисегментного загрузчика...")
+            ydl_opts['external_downloader'] = aria2c_exe
+            ydl_opts['external_downloader_args'] = {
+                'aria2c': ['-x', '8', '-s', '8', '-k', '1M', '-j', '4']
+            }
 
         ytdl_logger = _YtdlLogger(logger)
         ydl_opts['logger'] = ytdl_logger
@@ -1169,62 +1214,234 @@ class DownloadWorker(QRunnable):
         session = requests.Session()
         session.trust_env = False
 
-        existing_bytes = os.path.getsize(part_path) if os.path.exists(part_path) else 0
-        if existing_bytes > 0:
-            headers['Range'] = f'bytes={existing_bytes}-'
-
+        # 1. Проверяем URL и при необходимости выполняем каскадный fallback при 404
         r = session.get(self.task.url, headers=headers, stream=True, verify=False, timeout=15)
-        if r.status_code not in (200, 206):
-            headers.pop('Range', None)
-            existing_bytes = 0
-            r = session.get(self.task.url, headers=headers, stream=True, verify=False, timeout=15)
+        if r.status_code == 404 and any(d in self.task.url for d in ('solodcdn', 'kodik')):
+            for fallback_h in ['720', '480', '360']:
+                if f'/{fallback_h}.mp4' not in self.task.url:
+                    fb_url = re.sub(r'/\d{1,4}\.mp4', f'/{fallback_h}.mp4', self.task.url)
+                    logger.info(f"[Kodik] Пробуем доступное качество {fallback_h}p вместо 404: {fb_url}")
+                    r_fb = session.get(fb_url, headers=headers, stream=True, verify=False, timeout=15)
+                    if r_fb.status_code in (200, 206):
+                        self.task.url = fb_url
+                        if not getattr(self.task, 'audio_only', False):
+                            self.task.quality_badge = f"{fallback_h}p"
+                        r = r_fb
+                        break
 
         r.raise_for_status()
 
         cl = r.headers.get('Content-Length')
-        total_bytes = int(cl) + existing_bytes if cl and cl.isdigit() else 0
+        total_bytes = int(cl) if cl and cl.isdigit() else 0
+        accepts_range = r.headers.get('Accept-Ranges', '').lower() == 'bytes' or r.status_code == 206
+        r.close()
+
         if total_bytes > 0:
             self.task.set_file_size(total_bytes)
 
-        mode = 'ab' if existing_bytes > 0 else 'wb'
-        downloaded = existing_bytes
-        start_t = time.time()
-        last_update_t = start_t
-        last_downloaded = downloaded
-        speed_smooth = 0.0
+        try:
+            speed_limit = int(self.settings.value('speed_limit', 0, type=int) or 0)
+        except (ValueError, TypeError):
+            speed_limit = 0
+        multipart_success = False
+        try:
+            max_cfg_threads = int(self.settings.value('max_chunk_threads', 4, type=int) or 4)
+        except (ValueError, TypeError):
+            max_cfg_threads = 4
+        num_chunks = StreamResolverHelper.calculate_chunk_count(total_bytes, max_configured_threads=max_cfg_threads)
 
-        with open(part_path, mode) as f:
-            for chunk in r.iter_content(chunk_size=512 * 1024):
-                if self._cancel_requested or self.task.is_stop_requested():
-                    r.close()
-                    self.task.set_status(self.task.Status.STOPPED)
-                    return
-                if not chunk:
-                    continue
-                f.write(chunk)
-                downloaded += len(chunk)
+        # 2. Многопоточная параллельная загрузка при поддержке Range и размере > 3 МБ
+        if total_bytes >= 3 * 1024 * 1024 and num_chunks > 1 and (accepts_range or any(d in self.task.url for d in ('solodcdn', 'kodik', 'orion'))):
+            logger.info(f"[DirectStream] Запуск многопоточного скачивания ({num_chunks} потоков) для {total_bytes} байт...")
+            thread_speed_limit = (speed_limit // num_chunks) if speed_limit > 0 else 0
+            chunk_size = total_bytes // num_chunks
+            chunk_ranges = []
+            for i in range(num_chunks):
+                start = i * chunk_size
+                end = (i + 1) * chunk_size - 1 if i < num_chunks - 1 else total_bytes - 1
+                chunk_ranges.append((start, end))
 
-                now = time.time()
-                if now - last_update_t >= 0.5:
-                    elapsed = now - last_update_t
-                    bytes_diff = downloaded - last_downloaded
-                    inst_speed = bytes_diff / elapsed if elapsed > 0 else 0
-                    speed_smooth = 0.8 * speed_smooth + 0.2 * inst_speed if speed_smooth > 0 else inst_speed
-                    last_update_t = now
-                    last_downloaded = downloaded
+            chunk_downloaded = [0] * num_chunks
+            for i, (s, e) in enumerate(chunk_ranges):
+                c_path = f"{part_path}.part{i}"
+                if os.path.exists(c_path):
+                    chunk_downloaded[i] = min(os.path.getsize(c_path), e - s + 1)
 
-                    pct = int((downloaded / total_bytes) * 100) if total_bytes > 0 else 50
-                    speed_str = ""
-                    if speed_smooth > 0:
-                        b = float(speed_smooth)
-                        for unit in ['B/s', 'KB/s', 'MB/s', 'GB/s']:
-                            if b < 1024.0:
-                                speed_str = f"{b:.1f} {unit}"
-                                break
-                            b /= 1024.0
-                    self.task.update_progress(pct, f"Скачивание... {speed_str}".strip())
+            def _download_single_chunk(idx, start_byte, end_byte):
+                chunk_file = f"{part_path}.part{idx}"
+                existing_len = os.path.getsize(chunk_file) if os.path.exists(chunk_file) else 0
+                target_len = end_byte - start_byte + 1
+                if existing_len >= target_len:
+                    chunk_downloaded[idx] = target_len
+                    return True
 
-        r.close()
+                for attempt in range(1, 4):
+                    if self._cancel_requested or self.task.is_stop_requested():
+                        return False
+                    try:
+                        req_start = start_byte + existing_len
+                        req_end = end_byte
+                        c_headers = dict(headers)
+                        c_headers['Range'] = f'bytes={req_start}-{req_end}'
+                        s = requests.Session()
+                        s.trust_env = False
+                        with s.get(self.task.url, headers=c_headers, stream=True, verify=False, timeout=15) as resp:
+                            if resp.status_code not in (200, 206):
+                                raise Exception(f"HTTP {resp.status_code}")
+                            mode = 'ab' if existing_len > 0 else 'wb'
+                            with open(chunk_file, mode) as cf:
+                                for chunk in resp.iter_content(chunk_size=128 * 1024):
+                                    if self._cancel_requested or self.task.is_stop_requested():
+                                        return False
+                                    if not chunk:
+                                        continue
+                                    chunk_t0 = time.time()
+                                    cf.write(chunk)
+                                    chunk_downloaded[idx] += len(chunk)
+                                    existing_len += len(chunk)
+
+                                    if thread_speed_limit > 0:
+                                        min_sec = len(chunk) / thread_speed_limit
+                                        el = time.time() - chunk_t0
+                                        if el < min_sec:
+                                            time.sleep(min_sec - el)
+
+                            if os.path.getsize(chunk_file) >= target_len:
+                                return True
+                    except Exception as c_err:
+                        logger.warning(f"[DirectStream] Поток {idx+1}/{num_chunks}: ошибка попытки {attempt}/3 ({c_err})")
+                        time.sleep(1.0)
+                        existing_len = os.path.getsize(chunk_file) if os.path.exists(chunk_file) else 0
+
+                return False
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=num_chunks) as executor:
+                    futures = [
+                        executor.submit(_download_single_chunk, i, s, e)
+                        for i, (s, e) in enumerate(chunk_ranges)
+                    ]
+
+                    start_t = time.time()
+                    last_update_t = start_t
+                    last_downloaded = sum(chunk_downloaded)
+                    speed_smooth = 0.0
+
+                    while not all(f.done() for f in futures):
+                        if self._cancel_requested or self.task.is_stop_requested():
+                            self.task.set_status(self.task.Status.STOPPED)
+                            return
+
+                        time.sleep(0.3)
+                        now = time.time()
+                        cur_downloaded = sum(chunk_downloaded)
+
+                        if now - last_update_t >= 0.5:
+                            elapsed = now - last_update_t
+                            bytes_diff = cur_downloaded - last_downloaded
+                            inst_speed = bytes_diff / elapsed if elapsed > 0 else 0
+                            speed_smooth = 0.8 * speed_smooth + 0.2 * inst_speed if speed_smooth > 0 else inst_speed
+                            last_update_t = now
+                            last_downloaded = cur_downloaded
+
+                            pct = int((cur_downloaded / total_bytes) * 100) if total_bytes > 0 else 50
+                            speed_str = ""
+                            if speed_smooth > 0:
+                                b = float(speed_smooth)
+                                for unit in ['B/s', 'KB/s', 'MB/s', 'GB/s']:
+                                    if b < 1024.0:
+                                        speed_str = f"{b:.1f} {unit}"
+                                        break
+                                    b /= 1024.0
+                            self.task.update_progress(pct, f"Скачивание (4 потока)... {speed_str}".strip())
+
+                    results = [f.result() for f in futures]
+                    if all(results):
+                        with open(part_path, 'wb') as fout:
+                            for i in range(num_chunks):
+                                c_p = f"{part_path}.part{i}"
+                                with open(c_p, 'rb') as fin:
+                                    shutil.copyfileobj(fin, fout, length=1024 * 1024)
+                                try:
+                                    os.remove(c_p)
+                                except OSError:
+                                    pass
+                        multipart_success = True
+            except Exception as mp_err:
+                logger.warning(f"[DirectStream] Ошибка многопоточной загрузки: {mp_err}")
+
+        # 3. Безопасный Fallback на однопоточный режим при сбое или отсутствии Range
+        if not multipart_success:
+            if self._cancel_requested or self.task.is_stop_requested():
+                self.task.set_status(self.task.Status.STOPPED)
+                return
+
+            logger.info("[DirectStream] Переключение на стандартный однопоточный режим загрузки...")
+            for i in range(num_chunks):
+                c_p = f"{part_path}.part{i}"
+                if os.path.exists(c_p):
+                    try:
+                        os.remove(c_p)
+                    except OSError:
+                        pass
+
+            existing_bytes = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+            headers_single = dict(headers)
+            if existing_bytes > 0:
+                headers_single['Range'] = f'bytes={existing_bytes}-'
+
+            r = session.get(self.task.url, headers=headers_single, stream=True, verify=False, timeout=15)
+            if r.status_code not in (200, 206):
+                headers_single.pop('Range', None)
+                existing_bytes = 0
+                r = session.get(self.task.url, headers=headers_single, stream=True, verify=False, timeout=15)
+            r.raise_for_status()
+
+            mode = 'ab' if existing_bytes > 0 else 'wb'
+            downloaded = existing_bytes
+            start_t = time.time()
+            last_update_t = start_t
+            last_downloaded = downloaded
+            speed_smooth = 0.0
+
+            with open(part_path, mode) as f:
+                for chunk in r.iter_content(chunk_size=512 * 1024):
+                    if self._cancel_requested or self.task.is_stop_requested():
+                        r.close()
+                        self.task.set_status(self.task.Status.STOPPED)
+                        return
+                    if not chunk:
+                        continue
+                    chunk_t0 = time.time()
+                    f.write(chunk)
+                    downloaded += len(chunk)
+
+                    if speed_limit > 0:
+                        min_sec = len(chunk) / speed_limit
+                        el = time.time() - chunk_t0
+                        if el < min_sec:
+                            time.sleep(min_sec - el)
+
+                    now = time.time()
+                    if now - last_update_t >= 0.5:
+                        elapsed = now - last_update_t
+                        bytes_diff = downloaded - last_downloaded
+                        inst_speed = bytes_diff / elapsed if elapsed > 0 else 0
+                        speed_smooth = 0.8 * speed_smooth + 0.2 * inst_speed if speed_smooth > 0 else inst_speed
+                        last_update_t = now
+                        last_downloaded = downloaded
+
+                        pct = int((downloaded / total_bytes) * 100) if total_bytes > 0 else 50
+                        speed_str = ""
+                        if speed_smooth > 0:
+                            b = float(speed_smooth)
+                            for unit in ['B/s', 'KB/s', 'MB/s', 'GB/s']:
+                                if b < 1024.0:
+                                    speed_str = f"{b:.1f} {unit}"
+                                    break
+                                b /= 1024.0
+                        self.task.update_progress(pct, f"Скачивание... {speed_str}".strip())
+            r.close()
 
         if os.path.exists(target_path):
             try:
@@ -1351,10 +1568,11 @@ class DownloadWorker(QRunnable):
                 raise
             logger.warning(f"Не удалось проверить свободное место на диске: {e}")
 
+        fmt, merge_fmt, extra_pps = self._resolve_format_and_pps()
         ydl_opts = {
             'quiet': True,
             'noprogress': True,
-            'format': 'best',
+            'format': fmt or 'best',
             'color': 'never',
         }
         use_cookies = self.settings.value('use_cookies', False, type=bool)
@@ -1473,4 +1691,5 @@ class DownloadWorker(QRunnable):
         except Exception as e:
             logger.error(f"[TWITCH] Ошибка: {e}")
             self._monitor_running = False
-            self.task.set_status(self.task.Status.ERROR)
+            friendly_err = StreamResolverHelper.format_user_friendly_error(str(e), self.translator)
+            self.task.set_error(friendly_err)

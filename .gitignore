@@ -39,6 +39,8 @@ env/
 logs/
 *.log
 app.log
+updates/
+.memory-bank/
 
 # Output / Build & Installer
 output/

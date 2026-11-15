@@ -324,5 +324,3 @@ class AboutTab(QWidget):
     def on_check_update_clicked(self):
         if hasattr(self.parent_window, 'update_checker') and self.parent_window.update_checker:
             self.parent_window.update_checker.check_for_updates(silent=False)
-        if hasattr(self.parent_window, 'update_checker') and self.parent_window.update_checker:
-            self.parent_window.update_checker.check_for_updates(silent=False)

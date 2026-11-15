@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
         else:
             self.resize(1080, 680)
 
-        self.setMinimumSize(880, 520)
+        self.setMinimumSize(940, 520)
 
         current_theme = self.settings.value('theme', 'dark')
         setTheme(Theme.DARK if current_theme == 'dark' else Theme.LIGHT)
@@ -533,30 +533,22 @@ class MainWindow(QMainWindow):
         bottom_bar = QWidget()
         bottom_bar.setObjectName('BottomBar')
         bottom_bar_layout = QHBoxLayout(bottom_bar)
-        bottom_bar_layout.setContentsMargins(15, 6, 15, 6)
-        bottom_bar_layout.setSpacing(8)
+        bottom_bar_layout.setContentsMargins(12, 6, 12, 6)
+        bottom_bar_layout.setSpacing(6)
 
-        self.download_button = QPushButton(self.translator.translate('download_all'))
-        self.download_button.setIcon(FluentIcon.DOWNLOAD.icon())
-        self.download_button.setIconSize(QSize(16, 16))
+        self.download_button = PrimaryPushButton(FluentIcon.DOWNLOAD, self.translator.translate('download_all'))
         self.download_button.setFixedHeight(32)
-        self.download_button.setObjectName('ActionButton')
 
         self.threads_label = QLabel("")
         self.threads_label.setObjectName('StatusLabel')
 
-        self.stop_button = QPushButton(self.translator.translate('stop'))
-        self.stop_button.setIcon(FluentIcon.PAUSE.icon())
-        self.stop_button.setIconSize(QSize(16, 16))
+        self.stop_button = PushButton(FluentIcon.CANCEL_MEDIUM, self.translator.translate('stop'))
         self.stop_button.setFixedHeight(32)
-        self.stop_button.setObjectName('SecondaryButton')
         self.stop_button.setEnabled(False)
 
-        self.clear_button = QPushButton(self.translator.translate('clear_completed'))
-        self.clear_button.setIcon(FluentIcon.DELETE.icon())
-        self.clear_button.setIconSize(QSize(16, 16))
+        self.clear_button = PushButton(FluentIcon.DELETE, self.translator.translate('clear_all', 'Очистить'))
         self.clear_button.setFixedHeight(32)
-        self.clear_button.setObjectName('SecondaryButton')
+        self.clear_button.setToolTip(self.translator.translate('clear_completed', 'Очистить завершенные'))
 
         self.btn_open_save = TransparentToolButton(FluentIcon.FOLDER)
         self.btn_open_save.setFixedSize(32, 32)
@@ -840,12 +832,11 @@ class MainWindow(QMainWindow):
 
         # Нижняя панель действий
         if hasattr(self, 'download_button'):
-            # Кнопка 'Скачать все' всегда на синем фоне #005fb8, поэтому иконка всегда светлая
-            self.download_button.setIcon(FluentIcon.DOWNLOAD.icon(Theme.DARK))
+            self.download_button.setIcon(FluentIcon.DOWNLOAD)
         if hasattr(self, 'stop_button'):
-            self.stop_button.setIcon(FluentIcon.PAUSE.icon(theme))
+            self.stop_button.setIcon(FluentIcon.CANCEL_MEDIUM)
         if hasattr(self, 'clear_button'):
-            self.clear_button.setIcon(FluentIcon.DELETE.icon(theme))
+            self.clear_button.setIcon(FluentIcon.DELETE)
 
         # Обновление иконок страницы настроек и о программе
         if hasattr(self, '_settings_page') and self._settings_page:
@@ -1233,6 +1224,9 @@ class MainWindow(QMainWindow):
                                 self.translator.translate('file_not_found', 'Файл еще не скачан или не найден.'))
 
     def _check_first_launch(self):
+        if os.environ.get('QT_QPA_PLATFORM') == 'offscreen' or getattr(self, '_is_quitting', False):
+            return
+
         from app.path_manager import get_data_dir
         data_dir = get_data_dir()
         try:
@@ -1584,6 +1578,9 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_buttons()
 
     def _startup_checks(self):
+        if os.environ.get('QT_QPA_PLATFORM') == 'offscreen' or getattr(self, '_is_quitting', False):
+            return
+
         if not self.update_checker.check_deno_installed():
             self.update_checker.show_deno_warning()
 
@@ -1946,9 +1943,9 @@ class MainWindow(QMainWindow):
             drive = os.path.splitdrive(os.path.abspath(save_path))[0]
             prefix = f"{drive} " if drive else ""
             free_word = self.translator.translate('free_space_suffix', 'свободно')
-            self.btn_disk_space.setText(f"{prefix}{free_gb:.1f} GB {free_word}")
+            self.btn_disk_space.setText(f"{prefix}{free_gb:.1f} GB")
             self.btn_disk_space.setIcon(FluentIcon.SAVE)
-            self.btn_disk_space.setToolTip(f"{self.translator.translate('open_save_folder', 'Открыть папку загрузок')}: {save_path}")
+            self.btn_disk_space.setToolTip(f"{self.translator.translate('open_save_folder', 'Открыть папку загрузок')}: {prefix}{free_gb:.1f} GB {free_word} ({save_path})")
         except Exception:
             self.btn_disk_space.setText("")
 

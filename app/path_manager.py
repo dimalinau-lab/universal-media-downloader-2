@@ -113,3 +113,29 @@ def get_browser_profile_dir() -> str:
     """Возвращает директорию для профиля браузера (Selenium/Cookies)."""
     return get_writable_dir('browser_profile')
 
+
+def get_updates_dir() -> str:
+    """Возвращает директорию для изолированных внешних обновлений модулей (yt-dlp и др.)."""
+    return get_writable_dir(os.path.join('updates', 'packages'))
+
+
+def get_aria2c_path() -> str:
+    """
+    Проверяет наличие aria2c в комплекте приложения (assets/ffmpeg/bin или assets/bin)
+    или в системном PATH. Возвращает путь или пустую строку, если не найден.
+    """
+    import shutil
+    base_dir = get_base_dir()
+    bundle_dir = get_bundle_dir()
+    for root in (bundle_dir, base_dir):
+        candidate1 = os.path.join(root, 'assets', 'ffmpeg', 'bin', 'aria2c.exe')
+        if os.path.isfile(candidate1):
+            return candidate1
+        candidate2 = os.path.join(root, 'assets', 'bin', 'aria2c.exe')
+        if os.path.isfile(candidate2):
+            return candidate2
+
+    system_path = shutil.which('aria2c')
+    return system_path or ""
+
+
