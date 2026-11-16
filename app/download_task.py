@@ -39,7 +39,6 @@ class DownloadTask(QObject):
         self.list_item = None
         self._stop_event = threading.Event()
         self.output_path = ""
-        self.temp_path = ""
         self.video_id = None
         self.current_filename = None
         self.final_filepath = None
@@ -48,10 +47,14 @@ class DownloadTask(QObject):
         self.quality_badge = ""
         self.custom_quality = None
         self.custom_title = None
+        self.series_name = ""
+        self.season_name = ""
+        self.episode_name = ""
         self.time_range = None  # tuple (start_sec, end_sec)
         self.time_range_str = ""  # string label e.g. "00:01:20 - 00:03:45"
         self.info = {}
         self.available_streams = {}
+        self.downloaded_files = {}
         self.is_removed = False
 
     def set_time_range(self, start_sec: float, end_sec: float, label: str = ""):
@@ -219,9 +222,17 @@ class DownloadTask(QObject):
 
     def set_completed(self, filepath):
         self.final_filepath = filepath
+        q_key = (getattr(self, 'quality_badge', '') or getattr(self, 'custom_quality', '') or '').replace(' ▾', '').strip().lower()
+        if filepath:
+            if not hasattr(self, 'downloaded_files'):
+                self.downloaded_files = {}
+            if q_key:
+                self.downloaded_files[q_key] = filepath
+            if getattr(self, 'quality_override', ''):
+                self.downloaded_files[str(self.quality_override).lower()] = filepath
         if filepath and os.path.exists(filepath):
             try:
-                self.set_file_size(os.path.getsize(filepath))
+                self.set_file_size(os.path.getsize(filepath), force=True)
             except Exception:
                 pass
         self.set_status(self.Status.COMPLETED)

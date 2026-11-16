@@ -24,7 +24,6 @@ from app.theme_manager import ThemeManager
 
 from logging.handlers import RotatingFileHandler
 from app.path_manager import (
-    elevate_privileges,
     get_base_dir,
     get_bundle_dir,
     get_logs_dir,
@@ -41,7 +40,7 @@ if os.path.isdir(updates_dir) and updates_dir not in sys.path:
 if sys.platform == 'win32':
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('Magerko.UniversalMediaDownloader.3.3.1')
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('UMD')
     except Exception:
         pass
 
@@ -150,7 +149,7 @@ def excepthook(exc_type, exc_value, exc_tb):
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 
-def get_app_settings(base_dir=None):
+def get_app_settings():
     data_dir = get_data_dir()
     ini_path = os.path.join(data_dir, 'settings.ini')
     portable_marker = os.path.join(data_dir, 'portable.dat')
@@ -173,7 +172,6 @@ def get_app_settings(base_dir=None):
 
 
 def main():
-    elevate_privileges()
     setup_logging()
     sys.excepthook = excepthook
     logger = logging.getLogger(__name__)
@@ -186,7 +184,7 @@ def main():
         bundle_dir = get_bundle_dir()
         app = QApplication(sys.argv)
 
-        settings = get_app_settings(base_dir)
+        settings = get_app_settings()
 
         translator = Translator(project_root=bundle_dir)
         saved_language = settings.value('language', 'ru')

@@ -306,5 +306,19 @@
   "about_feat_tools": "Конвертер и нарезка",
   "about_feat_tools_desc": "Извлечение MP3/FLAC, нарезка фрагментов и инспектор MediaInfo",
   "about_feat_bot": "Telegram-бот и таймер",
-  "about_feat_bot_desc": "Удаленное добавление ссылок со смартфона и отложенный запуск"
+  "about_feat_bot_desc": "Удаленное добавление ссылок со смартфона и отложенный запуск",
+  "filename_template_label": "Шаблон имени и папок",
+  "move_top_queue": "В начало очереди",
+  "move_up_queue": "Поднять выше в очереди",
+  "move_down_queue": "Опустить ниже в очереди",
+  "move_bottom_queue": "В конец очереди",
+  "bitrate": "Общий битрейт",
+  "convert_audio": "Извлечь / Конвертировать аудио...",
+  "duration": "Длительность",
+  "file_not_found": "Файл не найден! Возможно, он еще конвертируется или был удален.",
+  "file_size": "Размер",
+  "media_info": "Свойства медиа (MediaInfo)...",
+  "resolution": "Разрешение",
+  "status_recording": "Запись эфира...",
+  "success": "Успешно"
 }

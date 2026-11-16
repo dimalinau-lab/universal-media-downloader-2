@@ -5,47 +5,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def is_admin() -> bool:
-    """Проверяет, запущен ли текущий процесс с правами администратора на Windows."""
-    if os.name != 'nt':
-        return True
-    try:
-        import ctypes
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        return False
-
-
-def elevate_privileges() -> bool:
-    """
-    Если процесс запущен без прав администратора на Windows,
-    перезапускает приложение с запросом повышения прав UAC (runas).
-    """
-    if os.name != 'nt':
-        return True
-    if is_admin():
-        return True
-
-    # Запрашиваем повышение прав через ShellExecuteW 'runas'
-    try:
-        import ctypes
-        if getattr(sys, 'frozen', False):
-            executable = sys.executable
-            params = " ".join([f'"{arg}"' for arg in sys.argv[1:]])
-        else:
-            executable = sys.executable
-            params = " ".join([f'"{arg}"' for arg in sys.argv])
-
-        show_cmd = 0 if not getattr(sys, 'frozen', False) else 1
-        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, None, show_cmd)
-        if ret > 32:
-            # Успешно запущен повышенный процесс — завершаем текущий непривилегированный
-            sys.exit(0)
-    except Exception as e:
-        logger.warning(f"Не удалось запросить повышение прав UAC: {e}")
-    return False
-
-
 def get_base_dir() -> str:
     """Возвращает базовую директорию приложения (папку исполняемого файла или корня проекта)."""
     if getattr(sys, 'frozen', False):
@@ -107,6 +66,11 @@ def get_logs_dir() -> str:
 def get_data_dir() -> str:
     """Возвращает директорию для хранения данных (настроек, истории и т.д.)."""
     return get_writable_dir('data')
+
+
+def get_downloads_dir() -> str:
+    """Возвращает директорию по умолчанию для сохранения скачанных файлов."""
+    return get_writable_dir('downloads')
 
 
 def get_browser_profile_dir() -> str:

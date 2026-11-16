@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import base64
 import logging
@@ -21,13 +20,6 @@ from .stream_helper import StreamResolverHelper
 logger = logging.getLogger(__name__)
 
 BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-
-
-
-def get_base_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
 def purge_profile_proxies(profile_dir: str):
@@ -1097,7 +1089,11 @@ class KinoPubSeriesWorker(QRunnable):
                             'title': custom_title,
                             'quality': q_badge,
                             'referer': self.url,
-                            'available_streams': stream_dict
+                            'available_streams': stream_dict,
+                            'series_name': self.safe_anime_title,
+                            'season_name': self.safe_s_name,
+                            'episode_name': safe_e_name,
+                            'platform': 'KinoPub',
                         })
                         logger.info(f"[KinoPubSeries] [+] Ссылка получена: '{custom_title}' [{q_badge}] -> {best_link[:80]}...")
                     else:
@@ -1173,6 +1169,7 @@ class CustomExtractorFetchWorker(QRunnable):
 
 class DownloadManager(QObject):
     task_added = pyqtSignal(DownloadTask)
+    tasks_reordered = pyqtSignal()
     download_started = pyqtSignal()
     all_downloads_finished = pyqtSignal()
     status_updated = pyqtSignal(str)
@@ -1193,7 +1190,6 @@ class DownloadManager(QObject):
         self.is_downloading_active = False
         self._workers = {}
         self._active_series_workers = []
-        self._active_series_dialog = None
         self.max_thumbnail_workers = 5
         self.active_thumbnail_workers = 0
         self.thumbnail_queue = []
@@ -1381,7 +1377,8 @@ class DownloadManager(QObject):
                             if est_size > 5 * 1024 * 1024:
                                 self.run_on_main(task.set_file_size, est_size)
                                 self.run_on_main(task.info_updated.emit)
-                        self.run_on_main(task.set_status, DownloadTask.Status.PENDING)
+                        if task.status == DownloadTask.Status.FETCHING_INFO:
+                            self.run_on_main(task.set_status, DownloadTask.Status.PENDING)
                     return
 
                 r = session.head(task.url, headers=headers, timeout=5, allow_redirects=True, verify=False)
@@ -1464,7 +1461,8 @@ class DownloadManager(QObject):
                             info_dict['formats'] = dummy_formats
                             task.info = info_dict
                         self.run_on_main(task.info_updated.emit)
-                        self.run_on_main(task.set_status, DownloadTask.Status.PENDING)
+                        if task.status == DownloadTask.Status.FETCHING_INFO:
+                            self.run_on_main(task.set_status, DownloadTask.Status.PENDING)
             except Exception as e:
                 logger.debug(f"Direct stream size check failed for {task.url}: {e}")
 
@@ -1611,6 +1609,39 @@ class DownloadManager(QObject):
             except ValueError:
                 pass
             self._update_summary()
+
+    def reorder_task(self, from_idx: int, to_idx: int) -> bool:
+        """Перемещает задачу внутри очереди (для приоритетов и Drag & Drop)."""
+        n = len(self.tasks)
+        if not (0 <= from_idx < n) or not (0 <= to_idx < n) or from_idx == to_idx:
+            return False
+        task = self.tasks.pop(from_idx)
+        self.tasks.insert(to_idx, task)
+        self.tasks_reordered.emit()
+        self._update_summary()
+        return True
+
+    def move_task_to_top(self, task) -> bool:
+        if task not in self.tasks:
+            return False
+        return self.reorder_task(self.tasks.index(task), 0)
+
+    def move_task_to_bottom(self, task) -> bool:
+        if task not in self.tasks:
+            return False
+        return self.reorder_task(self.tasks.index(task), len(self.tasks) - 1)
+
+    def move_task_up(self, task) -> bool:
+        if task not in self.tasks:
+            return False
+        idx = self.tasks.index(task)
+        return self.reorder_task(idx, idx - 1)
+
+    def move_task_down(self, task) -> bool:
+        if task not in self.tasks:
+            return False
+        idx = self.tasks.index(task)
+        return self.reorder_task(idx, idx + 1)
 
     def start_or_retry_task(self, task):
         if task.status in (DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED, DownloadTask.Status.PENDING, DownloadTask.Status.COMPLETED):
@@ -1808,15 +1839,16 @@ class DownloadManager(QObject):
         task.is_from_bot = is_from_bot
         task.title = title
         task.custom_title = title
+        task.series_name = meta.get('safe_anime_title') or meta.get('title', '')
+        task.season_name = ep.get('season_name') or '1 Сезон'
+        task.episode_name = ep.get('name', '')
+        task.platform = 'AnimeGO'
         task.custom_quality = selected_q or q_badge
         task.quality_badge = selected_q or q_badge or ""
         task.thumbnail_url = meta.get('poster_url')
-        if any(d in direct_url for d in ('solodcdn', 'kodik')):
-            task.referer = 'https://kodikplayer.com/'
-        elif any(d in direct_url for d in ('aniboom', 'ya-ligh', 'boom-img')):
-            task.referer = 'https://aniboom.one/'
-        elif meta.get('referer'):
-            task.referer = meta.get('referer')
+        ref = StreamResolverHelper.get_stream_referer(direct_url, default_referer=meta.get('referer', ''))
+        if ref:
+            task.referer = ref
         task.thumbnail_load_requested.connect(self.queue_thumbnail_load)
         task.set_status(DownloadTask.Status.PENDING)
         self.tasks.append(task)
@@ -1865,12 +1897,9 @@ class DownloadManager(QObject):
                     task.custom_quality = self.selected_q or q_badge
                     task.quality_badge = self.selected_q or q_badge or ""
                     task.thumbnail_url = self.meta.get('poster_url')
-                    if any(d in direct_url for d in ('solodcdn', 'kodik')):
-                        task.referer = 'https://kodikplayer.com/'
-                    elif any(d in direct_url for d in ('aniboom', 'ya-ligh', 'boom-img')):
-                        task.referer = 'https://aniboom.one/'
-                    elif self.meta.get('referer'):
-                        task.referer = self.meta.get('referer')
+                    ref = StreamResolverHelper.get_stream_referer(direct_url, default_referer=self.meta.get('referer', ''))
+                    if ref:
+                        task.referer = ref
                     task.thumbnail_load_requested.connect(self.dm.queue_thumbnail_load)
                     task.set_status(DownloadTask.Status.PENDING)
                     self.dm.run_on_main(self.dm._add_and_start_task, task)
@@ -2045,7 +2074,6 @@ class DownloadManager(QObject):
                 self._active_series_workers.append(series_worker)
 
                 series_dialog = KinoPubSeriesProgressDialog(len(targets), parent=self.parent_window)
-                self._active_series_dialog = series_dialog
 
                 series_dialog.cancel_requested.connect(series_worker.cancel)
                 series_worker.signals.progress.connect(series_dialog.update_progress)
@@ -2174,6 +2202,14 @@ class DownloadManager(QObject):
                 task = DownloadTask(res['url'])
                 task.is_from_bot = is_from_bot
                 task.custom_title = res['title']
+                if res.get('series_name'):
+                    task.series_name = res['series_name']
+                if res.get('season_name'):
+                    task.season_name = res['season_name']
+                if res.get('episode_name'):
+                    task.episode_name = res['episode_name']
+                if res.get('platform'):
+                    task.platform = res['platform']
                 if res.get('quality'):
                     task.custom_quality = res['quality']
                     task.quality_badge = res['quality']

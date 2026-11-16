@@ -5,9 +5,7 @@ import sqlite3
 import shutil
 import tempfile
 import ctypes
-import subprocess
 import time
-import threading
 import logging
 from ctypes import wintypes
 from typing import List, Dict, Any, Tuple, Optional
@@ -202,31 +200,6 @@ def get_browser_cookie_db_path(browser_key: str) -> Tuple[Optional[str], Optiona
     return None, local_state
 
 
-def find_chrome_executable() -> str:
-    """Finds Google Chrome executable path on Windows."""
-    if os.name != 'nt' or not winreg:
-        return shutil.which('chrome') or 'chrome.exe'
-
-    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        try:
-            with winreg.OpenKey(root, r'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe') as key:
-                val, _ = winreg.QueryValueEx(key, '')
-                if val and os.path.exists(val):
-                    return val
-        except OSError:
-            pass
-
-    for path in (
-        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe')
-    ):
-        if os.path.exists(path):
-            return path
-
-    return shutil.which('chrome') or 'chrome.exe'
-
-
 def soft_restart_chrome_and_copy(db_path: str, tmp_db: str, tmp_wal: str) -> bool:
     """
     Safely copies Chrome cookies database without killing or restarting any processes.
@@ -248,8 +221,6 @@ def soft_restart_chrome_and_copy(db_path: str, tmp_db: str, tmp_wal: str) -> boo
 def extract_cookies_live(browser_key: str, domain_filter: str = "") -> List[Dict[str, Any]]:
     """
     Extracts fresh cookies from the specified browser.
-    If Chrome is running and locking the database, softly restarts Chrome
-    with --restore-last-session to safely release and copy the database.
     """
     defn = BROWSER_DEFINITIONS.get(browser_key)
     if not defn:
@@ -261,7 +232,6 @@ def extract_cookies_live(browser_key: str, domain_filter: str = "") -> List[Dict
 
     is_gecko = defn['type'] == 'gecko'
     master_key = get_chromium_master_key(local_state) if (local_state and not is_gecko) else None
-    proc_name = defn.get('process', '')
 
     with tempfile.TemporaryDirectory() as td:
         tmp_db = os.path.join(td, "cookies_temp.db")

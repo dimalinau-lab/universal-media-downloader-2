@@ -306,5 +306,19 @@
   "about_feat_tools": "Конвертер та нарізка",
   "about_feat_tools_desc": "Вилучення MP3/FLAC, нарізка фрагментів та інспектор MediaInfo",
   "about_feat_bot": "Telegram-бот та таймер",
-  "about_feat_bot_desc": "Віддалене додавання посилань зі смартфона та відкладений запуск"
+  "about_feat_bot_desc": "Віддалене додавання посилань зі смартфона та відкладений запуск",
+  "filename_template_label": "Шаблон імені та папок",
+  "move_top_queue": "На початок черги",
+  "move_up_queue": "Підняти вище в черзі",
+  "move_down_queue": "Опустити нижче в черзі",
+  "move_bottom_queue": "В кінець черги",
+  "bitrate": "Загальний бітрейт",
+  "convert_audio": "Витягти / Конвертувати аудіо...",
+  "duration": "Тривалість",
+  "file_not_found": "Файл не знайдено! Можливо, він ще конвертується або був видалений.",
+  "file_size": "Розмір",
+  "media_info": "Властивості медіа (MediaInfo)...",
+  "resolution": "Роздільна здатність",
+  "status_recording": "Запис ефіру...",
+  "success": "Успішно"
 }

@@ -14,7 +14,7 @@ from app.download_task import DownloadTask
 from app.download_item_widget import DownloadItemWidget
 from app.translation import Translator
 from app.animego_progress_dialog import AnimeGoScanDialog
-from app.browser_cookies import find_chrome_executable, soft_restart_chrome_and_copy
+from app.browser_cookies import detect_installed_browsers, soft_restart_chrome_and_copy
 from app.threads import InfoWorker
 
 
@@ -26,10 +26,30 @@ def qapp():
     yield app
 
 
-def test_find_chrome_executable():
-    path = find_chrome_executable()
-    assert path is not None
-    assert "chrome" in path.lower()
+def test_detect_installed_browsers():
+    browsers = detect_installed_browsers()
+    assert isinstance(browsers, list)
+    for key, label in browsers:
+        assert isinstance(key, str)
+        assert isinstance(label, str)
+
+
+def test_playlist_dialog_range_and_filter(qapp):
+    from app.playlist_dialog import PlaylistDialog
+    entries = [
+        {'id': 'v1', 'title': 'Intro Episode 1', 'url': 'https://youtube.com/watch?v=1'},
+        {'id': 'v2', 'title': 'Action Episode 2', 'url': 'https://youtube.com/watch?v=2'},
+        {'id': 'v3', 'title': 'Ending Episode 3', 'url': 'https://youtube.com/watch?v=3'},
+    ]
+    dlg = PlaylistDialog(entries)
+    assert dlg.list_widget.count() == 3
+
+    # Test range selection "1, 3"
+    dlg.range_input.setText("1, 3")
+    dlg.apply_range()
+    dlg.accept_selection()
+    assert dlg.selected_urls == ['https://youtube.com/watch?v=1', 'https://youtube.com/watch?v=3']
+    dlg.close()
 
 
 def test_soft_restart_chrome_safe_copy_no_taskkill():

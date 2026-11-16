@@ -28,7 +28,7 @@ import threading
 import concurrent.futures
 import re
 from .stream_helper import StreamResolverHelper
-from .path_manager import get_aria2c_path
+from .path_manager import get_aria2c_path, get_downloads_dir
 
 
 def clean_ansi(text: str) -> str:
@@ -131,13 +131,7 @@ class InfoWorker(QRunnable):
 
     def run(self):
         try:
-            info_referer = 'https://vi3000.top/'
-            if any(d in self.url for d in ('solodcdn', 'kodik')):
-                info_referer = 'https://kodikplayer.com/'
-            elif any(d in self.url for d in ('aniboom', 'ya-ligh', 'boom-img')):
-                info_referer = 'https://aniboom.one/'
-            elif any(d in self.url for d in ('kinopub', 'rezka', 'voidboost')):
-                info_referer = 'https://kinopub.me/'
+            info_referer = StreamResolverHelper.get_stream_referer(self.url, default_referer='https://vi3000.top/')
 
             u_clean = self.url.lower().split('?')[0]
             is_direct_stream = any(d in u_clean for d in ('solodcdn', 'rooster.cloud2')) or u_clean.endswith(('.mp4', '.mkv', '.webm', '.ts', '.mov', '.avi'))
@@ -549,13 +543,7 @@ class DownloadWorker(QRunnable):
             time.sleep(1)
 
     def _default_save_path(self):
-        if getattr(sys, 'frozen', False):
-            root = os.path.dirname(sys.executable)
-        else:
-            root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        dl_dir = os.path.join(root, 'downloads')
-        os.makedirs(dl_dir, exist_ok=True)
-        return dl_dir
+        return get_downloads_dir()
 
     def run(self):
         logger.info(f"--- СТАРТ ЗАДАЧИ: {self.task.url} ---")
@@ -816,25 +804,24 @@ class DownloadWorker(QRunnable):
                 safe_title = re.sub(r'\s*\[\s*(?:\d{3,4}p|MP3|AUDIO|4K|2K)\s*\]\s*$', '', safe_title, flags=re.IGNORECASE).strip()
             q_suffix = f" [{q_tag}]"
 
-        if safe_title:
-            out_filename = f"{safe_title}{q_suffix}{range_suffix}.%(ext)s"
-        else:
-            out_filename = f"%(title)s{q_suffix}{range_suffix}.%(ext)s"
-
-        out_template = os.path.join(save_path, out_filename)
+        filename_tpl = str(self.settings.value('filename_template', '{title} [{quality}]') or '{title} [{quality}]')
+        out_template = StreamResolverHelper.resolve_output_template(
+            save_path=save_path,
+            template=filename_tpl,
+            task=self.task,
+            quality_tag=q_tag,
+            range_suffix=range_suffix,
+            is_ytdlp=True,
+            create_dirs=True,
+        )
+        out_dir = os.path.dirname(out_template) or save_path
 
         referer_url = getattr(self.task, 'referer', None)
         if not referer_url:
             if 'nip.io' in self.task.url or 'alloha' in self.task.url:
                 referer_url = 'https://vi3000.top/'
-            elif 'voidboost' in self.task.url:
-                referer_url = 'https://kinopub.me/'
-            elif any(d in self.task.url for d in ('solodcdn', 'kodik')):
-                referer_url = 'https://kodikplayer.com/'
-            elif any(d in self.task.url for d in ('aniboom', 'ya-ligh', 'boom-img')):
-                referer_url = 'https://aniboom.one/'
             else:
-                referer_url = 'https://kinopub.me/'
+                referer_url = StreamResolverHelper.get_stream_referer(self.task.url, default_referer='https://kinopub.me/')
 
         ydl_opts = {
             'outtmpl': out_template,
@@ -928,15 +915,30 @@ class DownloadWorker(QRunnable):
             })
 
         if self.settings.value('subtitles_enabled', False, type=bool):
+            raw_langs = str(self.settings.value('subtitles_langs', 'ru, en') or 'ru, en')
+            sub_langs = StreamResolverHelper.parse_subtitle_langs(raw_langs)
+            sub_mode = str(self.settings.value('subtitles_mode', 'embed') or 'embed')
+            sub_fmt = str(self.settings.value('subtitles_format', 'srt') or 'srt').lower()
+            if sub_fmt not in ('srt', 'vtt', 'ass'):
+                sub_fmt = 'srt'
+
             ydl_opts['writesubtitles'] = True
             ydl_opts['writeautomaticsub'] = False
-            ydl_opts['subtitleslangs'] = ['ru', 'en']
+            ydl_opts['subtitleslangs'] = sub_langs
+            ydl_opts['subtitlesformat'] = f"{sub_fmt}/best"
             ydl_opts['ignoreerrors'] = 'only_download'  # Не обрывать загрузку видео при сбое дорожки субтитров
-            ydl_opts['postprocessors'].append({
-                'key': 'FFmpegEmbedSubtitle',
-                'when': 'post_process',
-                'already_have_subtitle': False,
-            })
+
+            if sub_mode in ('separate', 'both'):
+                ydl_opts['postprocessors'].append({
+                    'key': 'FFmpegSubtitlesConvertor',
+                    'format': sub_fmt,
+                })
+            if sub_mode in ('embed', 'both'):
+                ydl_opts['postprocessors'].append({
+                    'key': 'FFmpegEmbedSubtitle',
+                    'when': 'post_process',
+                    'already_have_subtitle': (sub_mode == 'both'),
+                })
 
         if not ydl_opts['postprocessors']:
             del ydl_opts['postprocessors']
@@ -1135,21 +1137,22 @@ class DownloadWorker(QRunnable):
                         break
 
         # 2. Поиск по целевому названию в папке сохранения
+        search_dir = out_dir if os.path.isdir(out_dir) else save_path
         target_name = f"{safe_title}{q_suffix}" if safe_title else ""
         if not final_file and target_name:
-            candidates = [os.path.join(save_path, f) for f in os.listdir(save_path)
+            candidates = [os.path.join(search_dir, f) for f in os.listdir(search_dir)
                           if f.startswith(target_name) and f.endswith(valid_exts) and not f.endswith('.part')]
             if candidates:
                 final_file = max(candidates, key=os.path.getmtime)
             elif safe_title:
-                candidates = [os.path.join(save_path, f) for f in os.listdir(save_path)
+                candidates = [os.path.join(search_dir, f) for f in os.listdir(search_dir)
                               if f.startswith(safe_title) and f.endswith(valid_exts) and not f.endswith('.part')]
                 if candidates:
                     final_file = max(candidates, key=os.path.getmtime)
 
         # 3. Запасной план: поиск самого свежего подходящего файла
         if not final_file:
-            list_of_files = [os.path.join(save_path, f) for f in os.listdir(save_path)
+            list_of_files = [os.path.join(search_dir, f) for f in os.listdir(search_dir)
                              if f.endswith(valid_exts) and not f.endswith('.part')]
             if list_of_files:
                 latest_file = max(list_of_files, key=os.path.getmtime)
@@ -1199,7 +1202,7 @@ class DownloadWorker(QRunnable):
         else:
             raise Exception("Сбой скачивания: Файл пуст или yt-dlp не смог обработать поток.")
 
-    def _download_direct_stream(self, save_path, out_template, referer_url):
+    def _download_direct_stream(self, _save_path, out_template, referer_url):
         self.task.is_stream_mode = False
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -1353,7 +1356,7 @@ class DownloadWorker(QRunnable):
                                         speed_str = f"{b:.1f} {unit}"
                                         break
                                     b /= 1024.0
-                            self.task.update_progress(pct, f"Скачивание (4 потока)... {speed_str}".strip())
+                            self.task.update_progress(pct, f"Скачивание ({num_chunks} потоков)... {speed_str}".strip())
 
                     results = [f.result() for f in futures]
                     if all(results):
@@ -1509,9 +1512,18 @@ class DownloadWorker(QRunnable):
             '-avoid_negative_ts', 'make_zero',
             tmp_cut
         ]
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         success = False
         try:
-            r = subprocess.run(cmd_copy, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(
+                cmd_copy,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                creationflags=creationflags,
+                encoding='utf-8',
+                errors='replace'
+            )
             if r.returncode == 0 and os.path.exists(tmp_cut) and os.path.getsize(tmp_cut) > 1024:
                 success = True
             else:
@@ -1533,7 +1545,15 @@ class DownloadWorker(QRunnable):
                 tmp_cut
             ]
             try:
-                r = subprocess.run(cmd_encode, capture_output=True, text=True, timeout=180)
+                r = subprocess.run(
+                    cmd_encode,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    creationflags=creationflags,
+                    encoding='utf-8',
+                    errors='replace'
+                )
                 if r.returncode == 0 and os.path.exists(tmp_cut) and os.path.getsize(tmp_cut) > 1024:
                     success = True
                 else:
@@ -1621,9 +1641,20 @@ class DownloadWorker(QRunnable):
             if not stream_url:
                 raise Exception("Не удалось получить ссылку на поток")
 
-            safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip()[:150]
-            final_mp4 = os.path.join(save_path, f"{safe_title}.mp4")
-            temp_ts = os.path.join(save_path, f"{safe_title}.ts")
+            if not getattr(self.task, 'custom_title', None):
+                self.task.title = title
+            filename_tpl = str(self.settings.value('filename_template', '{title} [{quality}]') or '{title} [{quality}]')
+            q_badge = getattr(self.task, 'quality_badge', '') or getattr(self.task, 'custom_quality', '') or ''
+            base_out = StreamResolverHelper.resolve_output_template(
+                save_path=save_path,
+                template=filename_tpl,
+                task=self.task,
+                quality_tag=q_badge.replace(' ▾', '').strip(),
+                is_ytdlp=False,
+                create_dirs=True,
+            )
+            final_mp4 = f"{base_out}.mp4"
+            temp_ts = f"{base_out}.ts"
 
             logger.info(f"[TWITCH] Прямая запись через FFmpeg в: {temp_ts}")
 

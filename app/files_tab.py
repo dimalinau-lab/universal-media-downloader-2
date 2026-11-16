@@ -1,4 +1,3 @@
-import sys
 import os
 import re
 import math
@@ -6,7 +5,7 @@ import subprocess
 import hashlib
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QListWidget, QListWidgetItem, QPushButton, QLabel, QMessageBox,
-                             QDialog, QMenu)
+                             QDialog, QMenu, QFrame)
 from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject, QThreadPool, QTimer
 from PyQt6.QtGui import QDesktopServices, QPixmap, QImage, QAction
 from qfluentwidgets import (TransparentToolButton, FluentIcon, Slider,
@@ -16,6 +15,7 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from .audio_convert_dialog import AudioConvertDialog
 from .media_info_dialog import MediaInfoDialog
+from .path_manager import get_data_dir, get_downloads_dir
 
 
 class CutSignals(QObject):
@@ -56,10 +56,10 @@ class LocalThumbWorker(QRunnable):
 
     def run(self):
         try:
-            cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'thumbs_cache')
+            cache_dir = os.path.join(get_data_dir(), 'thumbs_cache')
             os.makedirs(cache_dir, exist_ok=True)
             mtime = os.path.getmtime(self.filepath) if os.path.exists(self.filepath) else 0
-            cache_key = hashlib.md5(f"{self.filepath}_{mtime}".encode('utf-8')).hexdigest() + ".jpg"
+            cache_key = hashlib.md5(f"{self.filepath}_{mtime}".encode()).hexdigest() + ".jpg"
             cache_file = os.path.join(cache_dir, cache_key)
 
             if os.path.exists(cache_file):
@@ -269,7 +269,7 @@ class LocalFileItemWidget(QWidget):
         ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
         dialog = VideoCompressDialog(self.filepath, ffmpeg_path, self.translator, self)
         if dialog.exec():
-            self.parent_tab.load_files()
+            self.parent_tab.load_files(force=True)
 
     def extract_audio(self):
         if not os.path.exists(self.filepath):
@@ -279,7 +279,7 @@ class LocalFileItemWidget(QWidget):
             return
         dialog = AudioConvertDialog(self.filepath, ffmpeg_path, self.translator, self)
         if dialog.exec():
-            self.parent_tab.load_files()
+            self.parent_tab.load_files(force=True)
 
     def show_media_info(self):
         if not os.path.exists(self.filepath):
@@ -303,13 +303,14 @@ class LocalFileItemWidget(QWidget):
         ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
         dialog = VideoCutterDialog(self.filepath, ffmpeg_path, self)
         if dialog.exec():
-            self.parent_tab.load_files()
+            self.parent_tab.load_files(force=True)
 
     def load_thumbnail(self):
         ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
         worker = LocalThumbWorker(self.filepath, ffmpeg_path)
         worker.signals.loaded.connect(self.set_thumbnail)
-        self.parent_tab.parent_window.thread_pool.start(worker)
+        pool = getattr(self.parent_tab, '_thumb_pool', None) or self.parent_tab.parent_window.thread_pool
+        pool.start(worker)
 
     def detect_initial_quality(self):
         ext = os.path.splitext(self.filepath)[1].lower()
@@ -435,7 +436,7 @@ class LocalFileItemWidget(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             try:
                 os.remove(self.filepath)
-                self.parent_tab.load_files()
+                self.parent_tab.load_files(force=True)
             except Exception as e:
                 QMessageBox.warning(self, 'Ошибка', f'Не удалось удалить файл:\n{str(e)}')
 
@@ -471,11 +472,15 @@ class VideoPreviewDialog(QDialog):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
 
-        # 1. Экран видео
+        # 1. Экран видео (обернут в QFrame для исключения артефактов HWND в DirectShow/WMF)
+        self.video_frame = QFrame()
+        self.video_frame.setStyleSheet("QFrame { background-color: #0c0c0c; border-radius: 8px; }")
+        vf_layout = QVBoxLayout(self.video_frame)
+        vf_layout.setContentsMargins(0, 0, 0, 0)
         self.video_widget = QVideoWidget()
-        self.video_widget.setStyleSheet("background-color: #0c0c0c; border-radius: 8px;")
         self.video_widget.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout.addWidget(self.video_widget, stretch=1)
+        vf_layout.addWidget(self.video_widget)
+        layout.addWidget(self.video_frame, stretch=1)
 
         # 2. Ползунок позиции
         self.slider = Slider(Qt.Orientation.Horizontal)
@@ -826,9 +831,13 @@ class VideoCutterDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(15)
 
+        self.video_frame = QFrame()
+        self.video_frame.setStyleSheet("QFrame { background-color: black; border-radius: 8px; }")
+        vf_layout = QVBoxLayout(self.video_frame)
+        vf_layout.setContentsMargins(0, 0, 0, 0)
         self.video_widget = QVideoWidget()
-        self.video_widget.setStyleSheet("background-color: black; border-radius: 8px;")
-        layout.addWidget(self.video_widget, stretch=1)
+        vf_layout.addWidget(self.video_widget)
+        layout.addWidget(self.video_frame, stretch=1)
 
         self.slider = Slider(Qt.Orientation.Horizontal)
         self.slider.sliderMoved.connect(self.set_position)
@@ -1121,11 +1130,51 @@ class VideoCutterDialog(QDialog):
         super().closeEvent(event)
 
 
+class FileScanSignals(QObject):
+    finished = pyqtSignal(int, list)
+
+
+class FileScanWorker(QRunnable):
+    """Асинхронное сканирование папки загрузок без блокировки GUI потока."""
+    def __init__(self, folder: str, valid_extensions: tuple, generation: int):
+        super().__init__()
+        self.folder = folder
+        self.valid_extensions = valid_extensions
+        self.generation = generation
+        self.signals = FileScanSignals()
+
+    def run(self):
+        files = []
+        if os.path.isdir(self.folder):
+            for root_dir, dirnames, filenames in os.walk(self.folder):
+                dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+                for filename in filenames:
+                    if filename.lower().endswith(self.valid_extensions):
+                        filepath = os.path.join(root_dir, filename)
+                        try:
+                            files.append((filepath, os.path.getctime(filepath)))
+                        except OSError:
+                            pass
+            files.sort(key=lambda x: x[1], reverse=True)
+        try:
+            self.signals.finished.emit(self.generation, [fp for fp, _ in files])
+        except RuntimeError:
+            pass
+
+
 class FilesTab(QWidget):
     def __init__(self, translator, parent=None):
         super().__init__(parent)
         self.translator = translator
         self.parent_window = parent
+        self._thumb_pool = QThreadPool(self)
+        self._thumb_pool.setMaxThreadCount(2)
+        self._scan_generation = 0
+        self._last_scan_time = 0.0
+        self._pending_files = []
+        self._batch_timer = QTimer(self)
+        self._batch_timer.setInterval(10)
+        self._batch_timer.timeout.connect(self._append_next_batch)
         self.initUI()
 
     def initUI(self):
@@ -1139,7 +1188,7 @@ class FilesTab(QWidget):
 
         self.btn_refresh = QPushButton()
         self.btn_refresh.setObjectName('SecondaryButton')
-        self.btn_refresh.clicked.connect(self.load_files)
+        self.btn_refresh.clicked.connect(lambda: self.load_files(force=True))
 
         self.btn_open_folder = QPushButton()
         self.btn_open_folder.setObjectName('SecondaryButton')
@@ -1165,35 +1214,55 @@ class FilesTab(QWidget):
         if hasattr(widget, 'preview_file'):
             widget.preview_file()
 
-    def load_files(self):
+    def invalidate_cache(self):
+        self._last_scan_time = 0.0
+
+    def load_files(self, force: bool = False):
+        import time
+        now = time.monotonic()
+        if not force and self.files_list.count() > 0 and (now - self._last_scan_time) < 10.0:
+            return
+
+        self._batch_timer.stop()
+        self._pending_files = []
+        self._scan_generation += 1
+        gen = self._scan_generation
         self.files_list.clear()
+
         folder = self.parent_window.settings.value('save_path', '')
-
         if not folder or not os.path.isdir(folder):
-            if getattr(sys, 'frozen', False):
-                base_dir = os.path.dirname(sys.executable)
-            else:
-                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-            folder = os.path.join(base_dir, 'downloads')
+            folder = get_downloads_dir()
 
-        if os.path.isdir(folder):
-            valid_extensions = ('.mp4', '.mkv', '.avi', '.webm', '.mp3', '.m4a', '.mov')
+        valid_extensions = ('.mp4', '.mkv', '.avi', '.webm', '.mp3', '.m4a', '.mov')
+        worker = FileScanWorker(folder, valid_extensions, gen)
+        worker.signals.finished.connect(self._on_scan_finished)
+        QThreadPool.globalInstance().start(worker)
 
-            files = []
-            for filename in os.listdir(folder):
-                if filename.lower().endswith(valid_extensions):
-                    filepath = os.path.join(folder, filename)
-                    files.append((filepath, os.path.getctime(filepath)))
+    def _on_scan_finished(self, generation: int, filepaths: list):
+        import time
+        if generation != self._scan_generation:
+            return
+        self._last_scan_time = time.monotonic()
+        self._pending_files = list(filepaths)
+        if self._pending_files:
+            self._append_next_batch()
+            if self._pending_files:
+                self._batch_timer.start()
 
-            files.sort(key=lambda x: x[1], reverse=True)
-
-            for filepath, _ in files:
-                item_widget = LocalFileItemWidget(filepath, self)
-                list_item = QListWidgetItem(self.files_list)
-                list_item.setSizeHint(item_widget.sizeHint())
-
-                self.files_list.addItem(list_item)
-                self.files_list.setItemWidget(list_item, item_widget)
+    def _append_next_batch(self):
+        if not self._pending_files:
+            self._batch_timer.stop()
+            return
+        batch = self._pending_files[:12]
+        self._pending_files = self._pending_files[12:]
+        for filepath in batch:
+            item_widget = LocalFileItemWidget(filepath, self)
+            list_item = QListWidgetItem(self.files_list)
+            list_item.setSizeHint(item_widget.sizeHint())
+            self.files_list.addItem(list_item)
+            self.files_list.setItemWidget(list_item, item_widget)
+        if not self._pending_files:
+            self._batch_timer.stop()
 
     def open_folder(self):
         self.parent_window.open_save_folder()

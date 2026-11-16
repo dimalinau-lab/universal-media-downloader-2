@@ -173,18 +173,18 @@ class AboutTab(QWidget):
 
         # Строки компонентов
         ytdlp_ver = getattr(yt_dlp.version, '__version__', '2026.11.04')
-        self.row_ytdlp_lbl, self.row_ytdlp_val = self._add_stat_row(layout, "about_ytdlp_engine", f"v{ytdlp_ver}", status_ok=True)
+        self.row_ytdlp_lbl, _ = self._add_stat_row(layout, f"v{ytdlp_ver}", status_ok=True)
 
         ffmpeg_ok = bool(hasattr(self.parent_window, 'ffmpeg_path') and self.parent_window.ffmpeg_path and os.path.exists(self.parent_window.ffmpeg_path))
         ffmpeg_text = "Встроен в сборку (v7.1)" if ffmpeg_ok else "Не найден"
-        self.row_ffmpeg_lbl, self.row_ffmpeg_val = self._add_stat_row(layout, "about_ffmpeg_engine", ffmpeg_text, status_ok=ffmpeg_ok)
+        self.row_ffmpeg_lbl, _ = self._add_stat_row(layout, ffmpeg_text, status_ok=ffmpeg_ok)
 
         deno_ok = bool(shutil.which('deno') or os.path.exists(os.path.expanduser('~/.deno/bin/deno.exe')))
         deno_text = "Активен (n-sig обход)" if deno_ok else "Не обнаружен"
-        self.row_deno_lbl, self.row_deno_val = self._add_stat_row(layout, "about_deno_engine", deno_text, status_ok=deno_ok)
+        self.row_deno_lbl, _ = self._add_stat_row(layout, deno_text, status_ok=deno_ok)
 
         py_ver = sys.version.split()[0]
-        self.row_gui_lbl, self.row_gui_val = self._add_stat_row(layout, "about_gui_platform", f"Python {py_ver} • PyQt6 Fluent", status_ok=True)
+        self.row_gui_lbl, _ = self._add_stat_row(layout, f"Python {py_ver} • PyQt6 Fluent", status_ok=True)
 
         layout.addStretch(1)
         parent_layout.addWidget(card, 1)
@@ -261,7 +261,7 @@ class AboutTab(QWidget):
         layout.addStretch(1)
         parent_layout.addWidget(card, 1)
 
-    def _add_stat_row(self, layout, label_key, value_text, status_ok=True):
+    def _add_stat_row(self, layout, value_text, status_ok=True):
         row = QHBoxLayout()
         row.setSpacing(10)
 

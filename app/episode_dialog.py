@@ -16,7 +16,6 @@ class EpisodeSelectionDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(480)
         self.setMinimumHeight(450 if not is_movie else 240)
-        self.download_all = False
 
         self.voiceovers = voiceovers if isinstance(voiceovers, list) else []
         self.seasons = seasons if isinstance(seasons, list) else []
@@ -311,7 +310,7 @@ class EpisodeSelectionDialog(QDialog):
         s_name = s.get('name', '1 Сезон') if isinstance(s, dict) else str(s)
         s_id = s.get('id', '1') if isinstance(s, dict) else '1'
 
-        logger.info(f"[EpisodeDialog] Нажата кнопка подтверждения выбора.")
+        logger.info("[EpisodeDialog] Нажата кнопка подтверждения выбора.")
         logger.info(f"[EpisodeDialog] Озвучка: '{v_name}' (ID: '{v_id}') | Сезон: '{s_name}' (ID: '{s_id}') | Качество: '{q}'")
         logger.info(f"[EpisodeDialog] Выбрано серий для загрузки: {len(targets)}")
 

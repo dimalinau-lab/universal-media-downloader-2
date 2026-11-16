@@ -306,5 +306,19 @@
   "about_feat_tools": "Converter & Trimmer",
   "about_feat_tools_desc": "MP3/FLAC extraction, video cutter and MediaInfo inspector",
   "about_feat_bot": "Telegram Bot & Timer",
-  "about_feat_bot_desc": "Remote URL additions from smartphone and scheduled queue start"
+  "about_feat_bot_desc": "Remote URL additions from smartphone and scheduled queue start",
+  "filename_template_label": "Filename & Folder Template",
+  "move_top_queue": "Move to Top of Queue",
+  "move_up_queue": "Move Up in Queue",
+  "move_down_queue": "Move Down in Queue",
+  "move_bottom_queue": "Move to Bottom of Queue",
+  "bitrate": "Bitrate",
+  "convert_audio": "Extract / Convert Audio...",
+  "duration": "Duration",
+  "file_not_found": "File not found! It may still be processing or was removed.",
+  "file_size": "File Size",
+  "media_info": "Media Properties (MediaInfo)...",
+  "resolution": "Resolution",
+  "status_recording": "Recording stream...",
+  "success": "Success"
 }

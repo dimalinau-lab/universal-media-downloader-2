@@ -13,8 +13,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QTextEdit, QMessageBox, QApplication
 )
 from qfluentwidgets import (
-    PrimaryPushButton, PushButton, SubtitleLabel, BodyLabel,
-    CaptionLabel, FluentIcon, CardWidget
+    PrimaryPushButton, PushButton, FluentIcon, CardWidget
 )
 from .path_manager import get_base_dir, get_updates_dir, is_dir_writable
 from .__version__ import __version__ as APP_VERSION
@@ -158,13 +157,21 @@ def update_ytdlp_wheel(wheel_url: str, target_dir: str) -> tuple[bool, str]:
     import tarfile
     try:
         os.makedirs(target_dir, exist_ok=True)
-        # Если URL пустой или ведет на блокируемый хостинг PyPI, используем прямой GitHub Releases
-        if not wheel_url or 'pythonhosted' in wheel_url:
-            wheel_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.tar.gz"
+        fallback_tar_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.tar.gz"
+        if not wheel_url:
+            wheel_url = fallback_tar_url
 
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        resp = requests.get(wheel_url, stream=True, timeout=40, headers=headers)
-        resp.raise_for_status()
+        try:
+            resp = requests.get(wheel_url, stream=True, timeout=40, headers=headers)
+            resp.raise_for_status()
+        except Exception:
+            if wheel_url != fallback_tar_url:
+                wheel_url = fallback_tar_url
+                resp = requests.get(wheel_url, stream=True, timeout=40, headers=headers)
+                resp.raise_for_status()
+            else:
+                raise
 
         is_tar = wheel_url.endswith('.tar.gz') or 'tar.gz' in wheel_url
 
@@ -220,6 +227,7 @@ def update_ytdlp_wheel(wheel_url: str, target_dir: str) -> tuple[bool, str]:
 class CheckSignals(QObject):
     app_update_available = pyqtSignal(dict)
     ytdlp_update_available = pyqtSignal(dict)
+    updates_ready = pyqtSignal()
     no_updates = pyqtSignal()
     check_failed = pyqtSignal(str)
 
@@ -299,7 +307,7 @@ class CheckAllUpdatesWorker(QRunnable):
                     ytdlp_update = {
                         'current_version': current_ytdlp,
                         'latest_version': latest_ytdlp,
-                        'wheel_url': "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.tar.gz"
+                        'wheel_url': wheel_url or "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.tar.gz"
                     }
         except Exception as e:
             logger.warning(f"Ошибка проверки yt-dlp на PyPI: {e}")
@@ -312,7 +320,9 @@ class CheckAllUpdatesWorker(QRunnable):
             self.signals.app_update_available.emit(app_update)
         if ytdlp_update:
             self.signals.ytdlp_update_available.emit(ytdlp_update)
-        if not app_update and not ytdlp_update:
+        if app_update or ytdlp_update:
+            self.signals.updates_ready.emit()
+        else:
             if has_error:
                 self.signals.check_failed.emit(error_msg)
             else:
@@ -701,17 +711,16 @@ class UpdateChecker(QObject):
         worker = CheckAllUpdatesWorker()
         worker.signals.app_update_available.connect(self._on_app_update_available)
         worker.signals.ytdlp_update_available.connect(self._on_ytdlp_update_available)
+        worker.signals.updates_ready.connect(self._show_update_dialog_if_ready)
         worker.signals.no_updates.connect(self._on_no_updates)
         worker.signals.check_failed.connect(self._on_check_failed)
         self.thread_pool.start(worker)
 
     def _on_app_update_available(self, update_info: dict):
         self._pending_app_update = update_info
-        self._show_update_dialog_if_ready()
 
     def _on_ytdlp_update_available(self, update_info: dict):
         self._pending_ytdlp_update = update_info
-        self._show_update_dialog_if_ready()
 
     def _show_update_dialog_if_ready(self):
         self._is_checking = False
@@ -759,12 +768,20 @@ class UpdateChecker(QObject):
         """Проверяет, установлен ли Deno в системе."""
         try:
             deno_path = shutil.which('deno')
+            if not deno_path:
+                user_deno = os.path.expanduser('~/.deno/bin/deno.exe' if os.name == 'nt' else '~/.deno/bin/deno')
+                if os.path.exists(user_deno):
+                    deno_path = user_deno
             if deno_path:
+                flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 result = subprocess.run(
-                    ['deno', '--version'],
+                    [deno_path, '--version'],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    creationflags=flags,
+                    encoding='utf-8',
+                    errors='replace'
                 )
                 if result.returncode == 0:
                     for line in result.stdout.split('\n'):

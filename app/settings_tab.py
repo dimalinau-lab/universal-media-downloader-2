@@ -1,7 +1,6 @@
 import sys
 import os
 import logging
-import subprocess
 import shutil
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QGridLayout, QGroupBox, QLabel, QComboBox,
@@ -9,7 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QObject, QEvent
 from PyQt6.QtGui import QPixmap, QCursor, QColor
 from qfluentwidgets import (SwitchButton, ComboBox, SpinBox, DoubleSpinBox, RadioButton,
-                             PushButton, BodyLabel, FluentIcon, SingleDirectionScrollArea, IconWidget)
+                             PushButton, BodyLabel, FluentIcon, SingleDirectionScrollArea, IconWidget, LineEdit)
 from .translation import Translator
 from .theme_manager import ThemeManager
 
@@ -159,60 +158,6 @@ class SettingsTab(QWidget):
             self.available_browsers = [('none', 'Отключено')] + installed
         except Exception:
             self.available_browsers = [('none', 'Отключено')]
-
-    def _check_browser_windows(self, names):
-        import winreg
-        paths_to_check = [
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
-            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths",
-        ]
-
-        for path in paths_to_check:
-            for name in names:
-                try:
-                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{path}\\{name}.exe"):
-                        return True
-                except Exception:
-                    pass
-
-        common_paths = [
-            os.environ.get('PROGRAMFILES', ''),
-            os.environ.get('PROGRAMFILES(X86)', ''),
-            os.environ.get('LOCALAPPDATA', ''),
-        ]
-
-        for base_path in common_paths:
-            if not base_path:
-                continue
-            for name in names:
-                if os.path.exists(os.path.join(base_path, name)):
-                    return True
-                if os.path.exists(os.path.join(base_path, f"{name}.exe")):
-                    return True
-        return False
-
-    def _check_browser_macos(self, names):
-        for name in names:
-            if os.path.exists(f"/Applications/{name}.app"):
-                return True
-            try:
-                result = subprocess.run(['mdfind', f'kMDItemDisplayName == "{name}.app"'],
-                                        capture_output=True, text=True, timeout=2)
-                if result.returncode == 0 and result.stdout.strip():
-                    return True
-            except Exception:
-                pass
-        return False
-
-    def _check_browser_linux(self, names):
-        for name in names:
-            try:
-                result = subprocess.run(['which', name], capture_output=True, text=True, timeout=2)
-                if result.returncode == 0 and result.stdout.strip():
-                    return True
-            except Exception:
-                pass
-        return False
 
     def initUI(self):
         # Фильтр для задержки появления тултипов (~1.8-2 секунды)
@@ -387,6 +332,42 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.frag_label, tip_frags)
         self._apply_tooltip(self.frag_spin, tip_frags)
 
+        # Шаблон имени и структуры подпапок сохранения
+        tpl_layout = QHBoxLayout()
+        self.tpl_label = BodyLabel()
+        self.tpl_label.setProperty("text_key", "filename_template_label")
+        self.tpl_label.setText(self.translator.translate("filename_template_label", "Шаблон имени и папок"))
+        self.filename_template_combo = ComboBox()
+        self.filename_template_combo.setFixedWidth(290)
+        self.filename_template_combo.addItem("Стандартный ({title} [{quality}])", userData="{title} [{quality}]")
+        self.filename_template_combo.addItem("По платформам ({platform}/{title} [{quality}])", userData="{platform}/{title} [{quality}]")
+        self.filename_template_combo.addItem("Сериалы ({series}/{season}/{title} [{quality}])", userData="{series}/{season}/{title} [{quality}]")
+        self.filename_template_combo.addItem("По авторам ({uploader}/{title} [{quality}])", userData="{uploader}/{title} [{quality}]")
+        self.filename_template_combo.addItem("Свой шаблон...", userData="custom")
+        tpl_layout.addWidget(self.tpl_label)
+        tpl_layout.addStretch()
+        tpl_layout.addWidget(self.filename_template_combo)
+        v_layout.addLayout(tpl_layout)
+
+        tip_tpl = "Переменные: {title}, {quality}, {platform}, {series}, {season}, {episode}, {uploader}.\nСимвол '/' создает подпапки автоматически."
+        self._apply_tooltip(self.tpl_label, tip_tpl)
+        self._apply_tooltip(self.filename_template_combo, tip_tpl)
+
+        self.custom_tpl_widget = QWidget()
+        custom_tpl_layout = QHBoxLayout(self.custom_tpl_widget)
+        custom_tpl_layout.setContentsMargins(20, 0, 0, 0)
+        custom_tpl_layout.setSpacing(10)
+        custom_tpl_lbl = BodyLabel("Свой шаблон:")
+        self.custom_tpl_input = LineEdit()
+        self.custom_tpl_input.setPlaceholderText("{platform}/{series}/{title} [{quality}]")
+        self.custom_tpl_input.setFixedWidth(290)
+        custom_tpl_layout.addWidget(custom_tpl_lbl)
+        custom_tpl_layout.addStretch()
+        custom_tpl_layout.addWidget(self.custom_tpl_input)
+        v_layout.addWidget(self.custom_tpl_widget)
+        self.custom_tpl_widget.setVisible(False)
+        self._apply_tooltip(self.custom_tpl_input, tip_tpl)
+
         layout.addWidget(group_box)
 
     def create_formats_codecs_settings(self, layout):
@@ -503,9 +484,41 @@ class SettingsTab(QWidget):
         sub_layout.addWidget(self.subtitles_checkbox)
         v_layout.addLayout(sub_layout)
 
-        tip_sub = "Автоматически загружает текстовые дорожки субтитров (русские, английские, украинские) при их наличии."
+        tip_sub = "Автоматически загружает текстовые дорожки субтитров при их наличии."
         self._apply_tooltip(self.sub_lbl, tip_sub)
         self._apply_tooltip(self.subtitles_checkbox, tip_sub)
+
+        # Параметры субтитров (языки, режим, формат)
+        self.subtitles_options_widget = QWidget()
+        sub_opts_layout = QHBoxLayout(self.subtitles_options_widget)
+        sub_opts_layout.setContentsMargins(20, 0, 0, 0)
+        sub_opts_layout.setSpacing(10)
+
+        lbl_sub_langs = BodyLabel("Языки:")
+        self.subtitles_langs_input = LineEdit()
+        self.subtitles_langs_input.setPlaceholderText("ru, en")
+        self.subtitles_langs_input.setFixedWidth(110)
+        self._apply_tooltip(self.subtitles_langs_input, "Коды языков через запятую (например: ru, en, uk, ja или all)")
+
+        self.subtitles_mode_combo = ComboBox()
+        self.subtitles_mode_combo.setFixedWidth(210)
+        self.subtitles_mode_combo.addItem("Вшить в видео (MP4 / MKV)", userData="embed")
+        self.subtitles_mode_combo.addItem("Отдельный файл рядом", userData="separate")
+        self.subtitles_mode_combo.addItem("Вшить + отдельный файл", userData="both")
+
+        self.subtitles_format_combo = ComboBox()
+        self.subtitles_format_combo.setFixedWidth(100)
+        self.subtitles_format_combo.addItem("SRT (.srt)", userData="srt")
+        self.subtitles_format_combo.addItem("VTT (.vtt)", userData="vtt")
+        self.subtitles_format_combo.addItem("ASS (.ass)", userData="ass")
+
+        sub_opts_layout.addWidget(lbl_sub_langs)
+        sub_opts_layout.addWidget(self.subtitles_langs_input)
+        sub_opts_layout.addStretch()
+        sub_opts_layout.addWidget(self.subtitles_mode_combo)
+        sub_opts_layout.addWidget(self.subtitles_format_combo)
+        v_layout.addWidget(self.subtitles_options_widget)
+        self.subtitles_options_widget.setVisible(False)
 
         # Sponsorblock
         sb_layout = QHBoxLayout()
@@ -922,6 +935,11 @@ class SettingsTab(QWidget):
         self.custom_speed_spin.valueChanged.connect(self.on_setting_changed)
         self.custom_speed_unit.currentIndexChanged.connect(self.on_setting_changed)
         self.frag_spin.valueChanged.connect(self.on_setting_changed)
+        self.filename_template_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.custom_tpl_input.editingFinished.connect(self.on_setting_changed)
+        self.subtitles_langs_input.editingFinished.connect(self.on_setting_changed)
+        self.subtitles_mode_combo.currentIndexChanged.connect(self.on_setting_changed)
+        self.subtitles_format_combo.currentIndexChanged.connect(self.on_setting_changed)
         self.portable_checkbox.checkedChanged.connect(self.on_portable_toggled)
         self.btn_test_cookies.clicked.connect(self.on_test_cookies_clicked)
         for combo in self.quality_combos.values():
@@ -951,6 +969,11 @@ class SettingsTab(QWidget):
             self.custom_speed_spin.valueChanged,
             self.custom_speed_unit.currentIndexChanged,
             self.frag_spin.valueChanged,
+            self.filename_template_combo.currentIndexChanged,
+            self.custom_tpl_input.editingFinished,
+            self.subtitles_langs_input.editingFinished,
+            self.subtitles_mode_combo.currentIndexChanged,
+            self.subtitles_format_combo.currentIndexChanged,
             self.portable_checkbox.checkedChanged,
             self.btn_test_cookies.clicked,
         ]
@@ -1048,7 +1071,12 @@ class SettingsTab(QWidget):
             self.save_path_lbl.setText(self.translator.translate('folder_not_selected'))
 
         self.auto_start_checkbox.setChecked(self.settings.value('auto_start_downloads', False, type=bool))
-        self.subtitles_checkbox.setChecked(self.settings.value('subtitles_enabled', False, type=bool))
+        subs_on = self.settings.value('subtitles_enabled', False, type=bool)
+        self.subtitles_checkbox.setChecked(subs_on)
+        self.subtitles_options_widget.setVisible(subs_on)
+        self.subtitles_langs_input.setText(str(self.settings.value('subtitles_langs', 'ru, en') or 'ru, en'))
+        self.set_combo_by_data(self.subtitles_mode_combo, self.settings.value('subtitles_mode', 'embed'))
+        self.set_combo_by_data(self.subtitles_format_combo, self.settings.value('subtitles_format', 'srt'))
         self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
         self.tray_checkbox.setChecked(self.settings.value('close_to_tray', True, type=bool))
@@ -1109,6 +1137,23 @@ class SettingsTab(QWidget):
         concurrent_frags = self.settings.value('concurrent_fragments', 8, type=int)
         self.frag_spin.setValue(max(1, min(16, concurrent_frags)))
 
+        saved_tpl = str(self.settings.value('filename_template', '{title} [{quality}]') or '{title} [{quality}]')
+        matched_tpl = False
+        for idx in range(self.filename_template_combo.count()):
+            data = self.filename_template_combo.itemData(idx)
+            if data == saved_tpl and data != 'custom':
+                self.filename_template_combo.setCurrentIndex(idx)
+                self.custom_tpl_widget.setVisible(False)
+                matched_tpl = True
+                break
+        if not matched_tpl:
+            for idx in range(self.filename_template_combo.count()):
+                if self.filename_template_combo.itemData(idx) == 'custom':
+                    self.filename_template_combo.setCurrentIndex(idx)
+                    break
+            self.custom_tpl_input.setText(saved_tpl)
+            self.custom_tpl_widget.setVisible(True)
+
         for platform_name, combo in self.quality_combos.items():
             key = PLATFORM_QUALITY_KEYS.get(platform_name, f"quality_{platform_name.lower()}")
             default_quality = 'bestvideo+bestaudio/best' if platform_name in ['YouTube', 'AnimeGO', 'Lampa (vi3000)'] else 'best'
@@ -1123,7 +1168,12 @@ class SettingsTab(QWidget):
         self.settings.setValue('parallel_downloads', self.parallel_downloads_spin.value())
         self.parent_window.thread_pool.setMaxThreadCount(max(self.parallel_downloads_spin.value() + 8, 10))
 
-        self.settings.setValue('subtitles_enabled', self.subtitles_checkbox.isChecked())
+        subs_on = self.subtitles_checkbox.isChecked()
+        self.settings.setValue('subtitles_enabled', subs_on)
+        self.subtitles_options_widget.setVisible(subs_on)
+        self.settings.setValue('subtitles_langs', self.subtitles_langs_input.text().strip() or 'ru, en')
+        self.settings.setValue('subtitles_mode', self.subtitles_mode_combo.currentData() or 'embed')
+        self.settings.setValue('subtitles_format', self.subtitles_format_combo.currentData() or 'srt')
         self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
         self.settings.setValue('use_cookies', self.cookies_checkbox.isChecked())
         self.settings.setValue('close_to_tray', self.tray_checkbox.isChecked())
@@ -1149,6 +1199,16 @@ class SettingsTab(QWidget):
             self.settings.setValue('speed_limit', speed_in_bytes)
 
         self.settings.setValue('concurrent_fragments', self.frag_spin.value())
+
+        tpl_data = self.filename_template_combo.currentData()
+        if tpl_data == 'custom':
+            self.custom_tpl_widget.setVisible(True)
+            custom_tpl = self.custom_tpl_input.text().strip() or '{title} [{quality}]'
+            self.settings.setValue('filename_template', custom_tpl)
+        else:
+            self.custom_tpl_widget.setVisible(False)
+            self.settings.setValue('filename_template', tpl_data or '{title} [{quality}]')
+
         if hasattr(self.parent_window, 'update_quick_speed_display'):
             self.parent_window.update_quick_speed_display()
         if self.rb_cookie_file.isChecked():

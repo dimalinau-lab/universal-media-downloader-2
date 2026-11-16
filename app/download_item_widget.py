@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QMenu,
                              QMessageBox, QApplication, QToolTip, QDialog, QGridLayout,
@@ -172,6 +173,10 @@ class DownloadItemWidget(QWidget):
     start_or_retry_requested = pyqtSignal()
     media_info_requested = pyqtSignal()
     convert_audio_requested = pyqtSignal()
+    move_top_requested = pyqtSignal()
+    move_up_requested = pyqtSignal()
+    move_down_requested = pyqtSignal()
+    move_bottom_requested = pyqtSignal()
 
     def __init__(self, task: DownloadTask, translator):
         super().__init__()
@@ -352,6 +357,27 @@ class DownloadItemWidget(QWidget):
         buttons_layout.addWidget(self.folder_button)
         buttons_layout.addWidget(self.remove_button)
 
+        order_layout = QVBoxLayout()
+        order_layout.setSpacing(2)
+        order_layout.setContentsMargins(2, 0, 0, 0)
+        order_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self.move_up_button = TransparentToolButton(FluentIcon.UP)
+        self.move_up_button.setFixedSize(24, 18)
+        self.move_up_button.setIconSize(QSize(10, 10))
+        self.move_up_button.setToolTip(self.translator.translate('move_up_queue', 'Поднять выше в очереди'))
+        self.move_up_button.clicked.connect(self.move_up_requested.emit)
+
+        self.move_down_button = TransparentToolButton(FluentIcon.DOWN)
+        self.move_down_button.setFixedSize(24, 18)
+        self.move_down_button.setIconSize(QSize(10, 10))
+        self.move_down_button.setToolTip(self.translator.translate('move_down_queue', 'Опустить ниже в очереди'))
+        self.move_down_button.clicked.connect(self.move_down_requested.emit)
+
+        order_layout.addWidget(self.move_up_button)
+        order_layout.addWidget(self.move_down_button)
+        buttons_layout.addLayout(order_layout)
+
         main_layout.addLayout(buttons_layout)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -411,22 +437,41 @@ class DownloadItemWidget(QWidget):
         act_copy.triggered.connect(self.copy_full_url)
         act_remove.triggered.connect(self.remove_requested.emit)
 
+        is_incomplete = self.task.status in (DownloadTask.Status.STOPPED, DownloadTask.Status.ERROR)
+        is_completed = self.task.status == DownloadTask.Status.COMPLETED
         is_startable = self.task.status in (
-            DownloadTask.Status.PENDING, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED,
-            DownloadTask.Status.COMPLETED)
+            DownloadTask.Status.PENDING, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED)
         act_start.setEnabled(is_startable)
-        act_timerange.setEnabled(is_startable)
+        act_timerange.setEnabled(self.task.status in (DownloadTask.Status.PENDING, DownloadTask.Status.COMPLETED))
 
-        is_watchable = self.task.status in (DownloadTask.Status.COMPLETED, DownloadTask.Status.STOPPED)
-        act_open_file.setEnabled(is_watchable)
-        act_mediainfo.setEnabled(is_watchable)
-        act_convert_audio.setEnabled(is_watchable)
-        act_open.setEnabled(True)
+        act_open_file.setEnabled(is_completed)
+        act_mediainfo.setEnabled(is_completed)
+        act_convert_audio.setEnabled(is_completed)
+        act_open.setEnabled(is_completed)
+        act_copy.setEnabled(not is_incomplete)
 
         menu.addAction(act_open_file)
         menu.addAction(act_start)
         menu.addAction(act_timerange)
         menu.addSeparator()
+
+        act_move_top = QAction(self.translator.translate('move_top_queue', 'В начало очереди'), self)
+        act_move_up = QAction(self.translator.translate('move_up_queue', 'Поднять выше'), self)
+        act_move_down = QAction(self.translator.translate('move_down_queue', 'Опустить ниже'), self)
+        act_move_bottom = QAction(self.translator.translate('move_bottom_queue', 'В конец очереди'), self)
+        can_reorder = not is_incomplete
+        for act in (act_move_top, act_move_up, act_move_down, act_move_bottom):
+            act.setEnabled(can_reorder)
+        act_move_top.triggered.connect(self.move_top_requested.emit)
+        act_move_up.triggered.connect(self.move_up_requested.emit)
+        act_move_down.triggered.connect(self.move_down_requested.emit)
+        act_move_bottom.triggered.connect(self.move_bottom_requested.emit)
+        menu.addAction(act_move_top)
+        menu.addAction(act_move_up)
+        menu.addAction(act_move_down)
+        menu.addAction(act_move_bottom)
+        menu.addSeparator()
+
         menu.addAction(act_mediainfo)
         menu.addAction(act_convert_audio)
         menu.addSeparator()
@@ -443,6 +488,20 @@ class DownloadItemWidget(QWidget):
         self.task.thumbnail_loaded.connect(self.set_thumbnail)
         self.task.size_updated.connect(self.on_size_update)
         self.task.time_range_updated.connect(self.on_time_range_update)
+
+    def disconnect_signals(self):
+        for sig, slot in (
+            (self.task.info_updated, self.update_ui),
+            (self.task.status_changed, self.update_ui),
+            (self.task.progress_updated, self.on_progress_update),
+            (self.task.thumbnail_loaded, self.set_thumbnail),
+            (self.task.size_updated, self.on_size_update),
+            (self.task.time_range_updated, self.on_time_range_update),
+        ):
+            try:
+                sig.disconnect(slot)
+            except Exception:
+                pass
 
     def on_time_range_update(self, text):
         if text:
@@ -502,15 +561,19 @@ class DownloadItemWidget(QWidget):
 
         is_active = status in (DownloadTask.Status.FETCHING_INFO, DownloadTask.Status.DOWNLOADING,
                                DownloadTask.Status.PROCESSING)
-        is_stopped = status == DownloadTask.Status.STOPPED
         is_completed = status == DownloadTask.Status.COMPLETED
-        is_pending_or_err = status in (DownloadTask.Status.PENDING, DownloadTask.Status.ERROR)
+        is_incomplete = status in (DownloadTask.Status.STOPPED, DownloadTask.Status.ERROR)
+        is_pending = status == DownloadTask.Status.PENDING
 
         self.stop_button.setVisible(is_active)
-        self.play_button.setVisible(is_completed or is_stopped)
-        self.download_button.setVisible(is_pending_or_err or is_stopped or is_completed)
-        self.timerange_button.setVisible(is_pending_or_err or is_stopped or is_completed)
-        self.folder_button.setVisible(True)
+        self.play_button.setVisible(is_completed)
+        self.download_button.setVisible(is_pending or is_incomplete)
+        self.timerange_button.setVisible(is_pending or is_completed)
+        self.folder_button.setVisible(is_completed)
+        self.move_up_button.setVisible(not is_incomplete)
+        self.move_down_button.setVisible(not is_incomplete)
+        self.btn_copy_url.setVisible(not is_incomplete)
+        self.badge_quality.setEnabled(not is_incomplete and not is_active)
 
         raw_err = self.task.error_message or ""
         clean_err = re.sub(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)', '', raw_err)
@@ -743,6 +806,23 @@ class DownloadItemWidget(QWidget):
         menu.exec(self.badge_quality.mapToGlobal(self.badge_quality.rect().bottomLeft()))
 
     def apply_quality_selection(self, it: dict):
+        curr_badge = getattr(self.task, 'quality_badge', '').replace(' ▾', '').strip().lower()
+        curr_override = str(getattr(self.task, 'quality_override', '') or '').lower()
+        is_same = (curr_badge and curr_badge == it['badge'].lower()) or (curr_override and curr_override == str(it['key']).lower())
+        if self.task.status == DownloadTask.Status.COMPLETED and is_same:
+            return
+
+        downloaded_map = getattr(self.task, 'downloaded_files', None)
+        if downloaded_map is None:
+            downloaded_map = {}
+            self.task.downloaded_files = downloaded_map
+
+        if self.task.status == DownloadTask.Status.COMPLETED and self.task.final_filepath:
+            if curr_badge:
+                downloaded_map[curr_badge] = self.task.final_filepath
+            if curr_override:
+                downloaded_map[curr_override] = self.task.final_filepath
+
         self.task.quality_override = it['key']
         self.task.quality_badge = it['badge']
         self.task.custom_quality = it['badge']
@@ -761,6 +841,16 @@ class DownloadItemWidget(QWidget):
             self.task.audio_only = True
         else:
             self.task.audio_only = False
+
+        # Проверяем, не был ли этот вариант качества уже скачан ранее
+        target_badge_key = it['badge'].replace(' ▾', '').strip().lower()
+        target_ov_key = str(it['key']).lower()
+        saved_path = downloaded_map.get(target_badge_key) or downloaded_map.get(target_ov_key)
+        if saved_path and os.path.exists(saved_path):
+            self.task.error_message = ""
+            self.task.set_completed(saved_path)
+            self.update_ui()
+            return
 
         sz_bytes = it.get('size_bytes', 0)
         if sz_bytes > 0:

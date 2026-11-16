@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QMessageBox, QComboBox,
                              QListWidget, QListWidgetItem, QStackedWidget,
                              QFrame, QApplication, QDialog,
-                             QSystemTrayIcon, QMenu, QButtonGroup)
-from PyQt6.QtCore import Qt, QSettings, QThreadPool, QTimer, QSize
+                             QSystemTrayIcon, QMenu, QButtonGroup, QAbstractItemView)
+from PyQt6.QtCore import Qt, QSettings, QThreadPool, QTimer, QSize, pyqtSignal
 from PyQt6.QtGui import (QIcon, QDropEvent, QMovie, QAction,
                          QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent,
                          QShortcut, QKeySequence)
@@ -30,6 +30,31 @@ from .update_checker import UpdateChecker
 from .telegram_bot import TelegramBotManager
 from .__version__ import __version__ as APP_VERSION
 logger = logging.getLogger(__name__)
+
+
+class DraggableDownloadsList(QListWidget):
+    """Список загрузок с перетаскиванием карточек без уничтожения itemWidget в Qt."""
+    row_reordered = pyqtSignal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+    def dropEvent(self, event: QDropEvent):
+        if event.source() == self:
+            from_row = self.currentRow()
+            target_item = self.itemAt(event.position().toPoint())
+            to_row = self.row(target_item) if target_item else self.count() - 1
+            if from_row >= 0 and to_row >= 0 and from_row != to_row:
+                self.row_reordered.emit(from_row, to_row)
+            event.ignore()
+            return
+        super().dropEvent(event)
 
 
 class CountdownShutdownDialog(QDialog):
@@ -355,9 +380,11 @@ class MainWindow(QMainWindow):
         self.page_stack = QStackedWidget()
         self.downloads_page_stack = QStackedWidget()
 
-        self.downloads_list = QListWidget()
+        self.downloads_list = DraggableDownloadsList()
         self.downloads_list.setObjectName('DownloadsList')
         self.downloads_list.setSpacing(5)
+        self.downloads_list.row_reordered.connect(self.download_manager.reorder_task)
+        self.download_manager.tasks_reordered.connect(self._sync_downloads_list_order)
 
         self.empty_widget = QWidget()
         empty_layout = QVBoxLayout(self.empty_widget)
@@ -657,8 +684,8 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentIndex(1)
 
     def _show_files_tab(self):
-        self.files_page.load_files()
         self.page_stack.setCurrentIndex(2)
+        QTimer.singleShot(0, self.files_page.load_files)
 
     def _show_telegram_tab(self):
         _ = self.telegram_page
@@ -1090,15 +1117,11 @@ class MainWindow(QMainWindow):
         else:
             self.downloads_page_stack.setCurrentWidget(self.empty_widget)
 
-    def add_download_item_widget(self, task):
-        item_widget = DownloadItemWidget(task, self.translator)
-        if not getattr(task, 'is_from_bot', False):
-            task.is_from_bot = getattr(self, '_is_adding_from_bot', False)
-        list_item = QListWidgetItem(self.downloads_list)
-        list_item.setSizeHint(item_widget.sizeHint())
-        self.downloads_list.addItem(list_item)
-        self.downloads_list.setItemWidget(list_item, item_widget)
+    def _bind_item_widget(self, list_item, task):
         task.list_item = list_item
+        item_widget = DownloadItemWidget(task, self.translator)
+        list_item.setSizeHint(item_widget.sizeHint())
+        self.downloads_list.setItemWidget(list_item, item_widget)
         item_widget.remove_requested.connect(lambda: self.remove_download_item(task))
         item_widget.open_folder_requested.connect(self.open_save_folder)
 
@@ -1108,15 +1131,57 @@ class MainWindow(QMainWindow):
 
         item_widget.copy_link_requested.connect(lambda: QApplication.clipboard().setText(task.url))
         item_widget.start_or_retry_requested.connect(lambda: self.download_manager.start_or_retry_task(task))
+        item_widget.move_top_requested.connect(lambda: self.download_manager.move_task_to_top(task))
+        item_widget.move_up_requested.connect(lambda: self.download_manager.move_task_up(task))
+        item_widget.move_down_requested.connect(lambda: self.download_manager.move_task_down(task))
+        item_widget.move_bottom_requested.connect(lambda: self.download_manager.move_task_to_bottom(task))
+
+    def add_download_item_widget(self, task):
+        if not getattr(task, 'is_from_bot', False):
+            task.is_from_bot = getattr(self, '_is_adding_from_bot', False)
+        list_item = QListWidgetItem(self.downloads_list)
+        self.downloads_list.addItem(list_item)
+        self._bind_item_widget(list_item, task)
 
         task.status_changed.connect(lambda status, t=task: self._on_task_status_changed(t, status))
         self.update_placeholder_visibility()
         self.apply_downloads_filter()
         self.update_disk_space()
 
+    def _sync_downloads_list_order(self):
+        """Синхронизирует порядок карточек в QListWidget с очередью DownloadManager.tasks."""
+        selected_row_task = None
+        curr_item = self.downloads_list.currentItem()
+        if curr_item:
+            curr_w = self.downloads_list.itemWidget(curr_item)
+            if curr_w:
+                selected_row_task = curr_w.task
+
+        for i in range(self.downloads_list.count()):
+            item = self.downloads_list.item(i)
+            widget = self.downloads_list.itemWidget(item)
+            if widget and hasattr(widget, 'disconnect_signals'):
+                widget.disconnect_signals()
+        for t in self.download_manager.tasks:
+            t.list_item = None
+
+        self.downloads_list.clear()
+        for task in self.download_manager.tasks:
+            list_item = QListWidgetItem(self.downloads_list)
+            self.downloads_list.addItem(list_item)
+            self._bind_item_widget(list_item, task)
+            if task is selected_row_task:
+                self.downloads_list.setCurrentItem(list_item)
+
+        self.update_placeholder_visibility()
+        self.apply_downloads_filter()
+
     def remove_download_item(self, task):
         self.download_manager.remove_task(task)
         if task.list_item:
+            widget = self.downloads_list.itemWidget(task.list_item)
+            if widget and hasattr(widget, 'disconnect_signals'):
+                widget.disconnect_signals()
             row = self.downloads_list.row(task.list_item)
             self.downloads_list.takeItem(row)
         self.update_placeholder_visibility()
@@ -1166,10 +1231,8 @@ class MainWindow(QMainWindow):
     def open_save_folder(self):
         folder = self.settings.value('save_path', '')
         if not folder or not os.path.isdir(folder):
-            if getattr(sys, 'frozen', False):
-                folder = os.path.dirname(sys.executable)
-            else:
-                folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            from app.path_manager import get_downloads_dir
+            folder = get_downloads_dir()
         self._open_path(folder)
 
     def open_logs_folder(self):
@@ -1604,9 +1667,7 @@ class MainWindow(QMainWindow):
 
     def _on_bot_url_received(self, url):
         """Обработчик ссылок, присланных из Telegram бота"""
-        self._is_adding_from_bot = True  # Ставим железный флаг
         self.download_manager.add_urls([url], is_from_bot=True)
-        self._is_adding_from_bot = False  # Снимаем флаг
 
         self._add_recent(url)
         self._rebuild_recent_buttons()
@@ -1620,8 +1681,8 @@ class MainWindow(QMainWindow):
             )
 
     def _show_files_tab(self):
-        self.files_page.load_files()
         self.page_stack.setCurrentIndex(2)
+        QTimer.singleShot(0, self.files_page.load_files)
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -1756,6 +1817,8 @@ class MainWindow(QMainWindow):
 
         # 3. Скачивание завершено -> Радуем пользователя
         elif status == DownloadTask.Status.COMPLETED:
+            if getattr(self, '_files_page', None):
+                self._files_page.invalidate_cache()
             if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
                 self.bot_manager.send_message(f"✅ Успешно скачано на ПК:\n{task.title}")
                 actual_file = task.final_filepath or task.current_filename
@@ -1933,10 +1996,8 @@ class MainWindow(QMainWindow):
     def update_disk_space(self):
         save_path = self.settings.value('save_path', '')
         if not save_path or not os.path.exists(save_path):
-            if getattr(sys, 'frozen', False):
-                save_path = os.path.dirname(sys.executable)
-            else:
-                save_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            from app.path_manager import get_downloads_dir
+            save_path = get_downloads_dir()
         try:
             total, used, free = shutil.disk_usage(save_path)
             free_gb = free / (1024 ** 3)
@@ -1955,6 +2016,9 @@ class MainWindow(QMainWindow):
             self.drag_overlay.setGeometry(self.centralWidget().rect())
 
     def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.source() is not None:
+            event.ignore()
+            return
         if event.mimeData().hasUrls() or event.mimeData().hasText():
             event.acceptProposedAction()
             if hasattr(self, 'drag_overlay') and self.drag_overlay and self.centralWidget():
@@ -1965,6 +2029,9 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent):
+        if event.source() is not None:
+            event.ignore()
+            return
         if event.mimeData().hasUrls() or event.mimeData().hasText():
             event.acceptProposedAction()
         else:
@@ -1978,6 +2045,9 @@ class MainWindow(QMainWindow):
     def dropEvent(self, event: QDropEvent):
         if hasattr(self, 'drag_overlay') and self.drag_overlay:
             self.drag_overlay.hide()
+        if event.source() is not None:
+            event.ignore()
+            return
 
         urls_found = []
         # 1. Извлечение из файлов (например брошен .txt со ссылками)

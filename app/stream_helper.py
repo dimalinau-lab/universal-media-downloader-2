@@ -1,7 +1,6 @@
-import re
 import os
+import re
 import logging
-from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,8 @@ class StreamResolverHelper:
         'solodcdn', 'kodik', 'rooster.cloud2', 'cloud2.solodcdn.com',
         'orion.solodcdn.com', 'wolverine.solodcdn.com'
     )
-    ANIBOOM_DOMAINS = ('ya-ligh123.site', 'poppy', 'sophia', 'aniboom')
+    ANIBOOM_DOMAINS = ('ya-ligh123.site', 'ya-ligh', 'boom-img', 'poppy', 'sophia', 'aniboom')
+    KINOPUB_DOMAINS = ('kinopub', 'rezka', 'voidboost')
 
     @classmethod
     def clean_stream_url(cls, stream_url: str) -> str:
@@ -67,6 +67,14 @@ class StreamResolverHelper:
         return any(d in u_lower for d in cls.ANIBOOM_DOMAINS)
 
     @classmethod
+    def is_kinopub_stream(cls, url: str) -> bool:
+        """Проверяет, относится ли URL к серверам KinoPub / Rezka / Voidboost."""
+        if not url:
+            return False
+        u_lower = url.lower()
+        return any(d in u_lower for d in cls.KINOPUB_DOMAINS)
+
+    @classmethod
     def get_stream_referer(cls, url: str, default_referer: str = "") -> str:
         """
         Возвращает обязательный заголовок Referer для обхода проверки источника на CDN.
@@ -75,6 +83,8 @@ class StreamResolverHelper:
             return "https://kodikplayer.com/"
         if cls.is_aniboom_stream(url):
             return "https://animego.me/"
+        if cls.is_kinopub_stream(url):
+            return "https://kinopub.me/"
         return default_referer
 
     @classmethod
@@ -193,4 +203,149 @@ class StreamResolverHelper:
         if len(first_line) > 120:
             first_line = first_line[:117] + '...'
         return first_line or (translator.translate('error_getting_info', 'Ошибка получения информации') if translator else 'Ошибка получения информации')
+
+    @classmethod
+    def sanitize_filename_part(cls, value: str, max_len: int = 140) -> str:
+        """Удаляет запрещенные для ФС Windows символы из сегмента имени/папки."""
+        if not value:
+            return ""
+        cleaned = re.sub(r'[\\/*?:"<>|]', "", str(value))
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip().strip('.')
+        return cleaned[:max_len].strip()
+
+    @classmethod
+    def detect_platform_name(cls, url: str, platform_hint: str = "") -> str:
+        """Определяет читаемое имя платформы для группировки по папкам."""
+        u = (url or "").lower()
+        p = (platform_hint or "").lower()
+        mapping = [
+            (('youtube.com', 'youtu.be'), 'YouTube'),
+            (('twitch.tv', 'ttvnw.net'), 'Twitch'),
+            (('kick.com',), 'Kick'),
+            (('vk.com', 'vkvideo.ru'), 'VK'),
+            (('rutube.ru',), 'RuTube'),
+            (('tiktok.com',), 'TikTok'),
+            (('instagram.com',), 'Instagram'),
+            (('pinterest.', 'pin.it'), 'Pinterest'),
+            (('twitter.com', 'x.com'), 'Twitter'),
+            (('facebook.com', 'fb.watch'), 'Facebook'),
+            (('animego', 'aniboom', 'kodik', 'solodcdn', 'ya-ligh'), 'AnimeGO'),
+            (('kinopub', 'kino.pub', 'rezka', 'voidboost'), 'KinoPub'),
+            (('vi3000', 'lampa', 'cub'), 'Lampa'),
+        ]
+        for keys, label in mapping:
+            if any(k in u or k in p for k in keys):
+                return label
+        if platform_hint and platform_hint not in ('Unknown', 'generic', 'DirectStream'):
+            return cls.sanitize_filename_part(platform_hint, max_len=40) or 'Other'
+        return 'Other'
+
+    @classmethod
+    def resolve_output_template(
+        cls,
+        save_path: str,
+        template: str,
+        task,
+        quality_tag: str = "",
+        range_suffix: str = "",
+        is_ytdlp: bool = True,
+        create_dirs: bool = True,
+    ) -> str:
+        """
+        Формирует итоговый путь и шаблон файла на основе пользовательского шаблона.
+        Поддерживает переменные: {title}, {quality}, {platform}, {series}, {season}, {episode}, {uploader}.
+        Пустые сегменты подпапок (например {series} для одиночного ролика) аккуратно пропускаются.
+        """
+        raw_tpl = (template or "{title} [{quality}]").strip().replace('\\', '/')
+        if '{title}' not in raw_tpl:
+            raw_tpl = f"{raw_tpl}/{{title}}" if raw_tpl else "{title}"
+
+        custom_t = getattr(task, 'custom_title', None)
+        task_t = getattr(task, 'title', None)
+        base_title = (custom_t.strip() if custom_t else "") or (
+            task_t.strip() if task_t and task_t not in ("...", "") else ""
+        )
+        safe_title = cls.sanitize_filename_part(base_title, max_len=150)
+        if quality_tag and safe_title:
+            safe_title = re.sub(
+                r'\s*\[\s*(?:\d{3,4}p|MP3|AUDIO|4K|2K)\s*\]\s*$',
+                '',
+                safe_title,
+                flags=re.IGNORECASE,
+            ).strip()
+
+        info = getattr(task, 'info', None)
+        if not isinstance(info, dict):
+            info = {}
+
+        uploader = cls.sanitize_filename_part(info.get('uploader') or info.get('channel') or '', max_len=80)
+        series = cls.sanitize_filename_part(getattr(task, 'series_name', '') or info.get('series') or '', max_len=100)
+        season = cls.sanitize_filename_part(getattr(task, 'season_name', '') or '', max_len=60)
+        episode = cls.sanitize_filename_part(getattr(task, 'episode_name', '') or '', max_len=80)
+        platform = cls.detect_platform_name(
+            getattr(task, 'original_url', '') or getattr(task, 'url', ''),
+            getattr(task, 'platform', ''),
+        )
+
+        title_token = safe_title if safe_title else ("%(title)s" if is_ytdlp else "video")
+        uploader_token = uploader if uploader else ("%(uploader|Unknown)s" if is_ytdlp else "")
+
+        values = {
+            'title': title_token,
+            'quality': quality_tag or "",
+            'platform': platform,
+            'series': series,
+            'season': season,
+            'episode': episode,
+            'uploader': uploader_token,
+        }
+
+        segments = [seg.strip() for seg in raw_tpl.split('/') if seg.strip()]
+        resolved_dirs = []
+        resolved_filename = ""
+
+        for idx, seg in enumerate(segments):
+            is_last = (idx == len(segments) - 1)
+            rendered = seg
+            for key, val in values.items():
+                rendered = rendered.replace(f"{{{key}}}", val)
+            # Убираем пустые скобки при отсутствии quality/season
+            rendered = re.sub(r'\[\s*\]|\(\s*\)', '', rendered)
+            rendered = re.sub(r'\s+', ' ', rendered).strip(' .-_')
+            if is_last:
+                resolved_filename = rendered or title_token
+            else:
+                # Сохраняем только непустые подпапки (пустые например {series} пропускаем)
+                safe_dir = cls.sanitize_filename_part(rendered, max_len=100) if '%' not in rendered else rendered
+                if safe_dir:
+                    resolved_dirs.append(safe_dir)
+
+        target_dir = os.path.join(save_path, *resolved_dirs) if resolved_dirs else save_path
+        if create_dirs:
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except OSError as e:
+                logger.warning(f"Не удалось создать директорию '{target_dir}': {e}")
+                target_dir = save_path
+
+        ext_suffix = ".%(ext)s" if is_ytdlp else ""
+        full_name = f"{resolved_filename}{range_suffix}{ext_suffix}"
+        return os.path.join(target_dir, full_name)
+
+    @classmethod
+    def parse_subtitle_langs(cls, langs_raw: str) -> list[str]:
+        """Разбирает строку языков субтитров (например 'ru, en, uk') в список кодов."""
+        if not langs_raw or not isinstance(langs_raw, str):
+            return ['ru', 'en']
+        tokens = [t.strip().lower() for t in re.split(r'[,;\s]+', langs_raw) if t.strip()]
+        if not tokens:
+            return ['ru', 'en']
+        if 'all' in tokens:
+            return ['all']
+        seen = []
+        for t in tokens:
+            if t not in seen:
+                seen.append(t)
+        return seen
+
 

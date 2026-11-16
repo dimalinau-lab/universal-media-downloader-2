@@ -220,9 +220,11 @@ def test_check_all_updates_worker(qapp):
     worker = CheckAllUpdatesWorker()
     app_signals = []
     ytdlp_signals = []
+    ready_signals = []
 
     worker.signals.app_update_available.connect(lambda d: app_signals.append(d))
     worker.signals.ytdlp_update_available.connect(lambda d: ytdlp_signals.append(d))
+    worker.signals.updates_ready.connect(lambda: ready_signals.append(True))
 
     # Мокаем ответ GitHub и PyPI
     mock_github = MagicMock()
@@ -262,4 +264,5 @@ def test_check_all_updates_worker(qapp):
 
         assert len(ytdlp_signals) == 1
         assert ytdlp_signals[0]['latest_version'] == "2099.12.31"
-        assert "yt-dlp" in ytdlp_signals[0]['wheel_url']
+        assert ytdlp_signals[0]['wheel_url'] == "https://dummy/ytdlp.whl"
+        assert len(ready_signals) == 1
