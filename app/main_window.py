@@ -11,7 +11,7 @@ from qfluentwidgets import (LineEdit, TransparentToolButton, PrimaryPushButton,
                             StrongBodyLabel, FluentIcon, setTheme, Theme, SearchLineEdit,
                             TransparentPushButton, RoundMenu, Action, ComboBox, IconWidget)
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QLabel,
+                             QPushButton, QLabel, QSizePolicy,
                              QFileDialog, QMessageBox, QComboBox,
                              QListWidget, QListWidgetItem, QStackedWidget,
                              QFrame, QApplication, QDialog,
@@ -161,6 +161,8 @@ class MainWindow(QMainWindow):
         self.update_checker = UpdateChecker(self, self.translator, self.settings, self.thread_pool)
         self.bot_manager = TelegramBotManager(self.settings)
         self.download_manager.bot_manager = self.bot_manager
+        self.bot_manager.download_manager = self.download_manager
+        self.bot_manager.main_window = self
         self.bot_manager.signals.url_received.connect(self._on_bot_url_received)
 
         self.current_filter_mode = 'all'
@@ -399,19 +401,9 @@ class MainWindow(QMainWindow):
 
         title_row = QHBoxLayout()
         title_row.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.rocket_label = QLabel()
-        self.rocket_label.setObjectName('RocketEmoji')
-        rocket_gif = os.path.join(os.path.dirname(__file__), '..', 'assets', 'animations', 'rocket.gif')
-        if os.path.exists(rocket_gif):
-            self.rocket_movie = QMovie(rocket_gif)
-            self.rocket_label.setMovie(self.rocket_movie)
-            self.rocket_label.setFixedSize(32, 32)
-            self.rocket_movie.start()
-            title_row.addWidget(self.rocket_label)
-        else:
-            self.empty_icon = IconWidget(FluentIcon.DOWNLOAD)
-            self.empty_icon.setFixedSize(32, 32)
-            title_row.addWidget(self.empty_icon)
+        self.empty_icon = IconWidget(FluentIcon.DOWNLOAD)
+        self.empty_icon.setFixedSize(32, 32)
+        title_row.addWidget(self.empty_icon)
 
         self.empty_title = SubtitleLabel(
             self.translator.translate('no_downloads_placeholder', 'Add links to start downloading'))
@@ -421,15 +413,14 @@ class MainWindow(QMainWindow):
 
         bullets_layout = QVBoxLayout()
         bullets_layout.setContentsMargins(0, 5, 0, 5)
-        bullets_layout.setSpacing(8)
+        bullets_layout.setSpacing(6)
         bullets_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         self.empty_b1 = BodyLabel(
-            '• ' + self.translator.translate('empty_tip_dragdrop', 'Drag & drop links or .txt file here'))
-        self.empty_b2 = BodyLabel('• ' + self.translator.translate('empty_tip_paste', 'Paste from clipboard'))
+            self.translator.translate('empty_tip_dragdrop', 'Drag & drop links or .txt file here'))
         self.empty_b3 = BodyLabel(
-            '• ' + self.translator.translate('empty_tip_support', 'Supported: YouTube, TikTok, Instagram, VK, RuTube…'))
-        for l in (self.empty_b1, self.empty_b2, self.empty_b3):
+            self.translator.translate('empty_tip_support', 'Supported: YouTube, TikTok, Instagram, VK, RuTube…'))
+        for l in (self.empty_b1, self.empty_b3):
             l.setStyleSheet("color: #888888;")
             bullets_layout.addWidget(l)
 
@@ -608,9 +599,14 @@ class MainWindow(QMainWindow):
 
         self.summary_info = QLabel("")
         self.summary_info.setObjectName('StatusLabel')
+        self.summary_info.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Preferred)
+        self.summary_info.setMinimumWidth(170)
 
         self.status_label = QLabel(self.translator.translate('waiting'))
         self.status_label.setObjectName('StatusLabel')
+        self.status_label.setMinimumWidth(160)
+        self.status_label.setMaximumWidth(400)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         bottom_bar_layout.addWidget(self.download_button)
         bottom_bar_layout.addWidget(self.stop_button)
@@ -735,7 +731,7 @@ class MainWindow(QMainWindow):
         self.download_manager.task_added.connect(self.add_download_item_widget)
         self.download_manager.download_started.connect(self.on_download_started)
         self.download_manager.all_downloads_finished.connect(self.on_all_downloads_finished)
-        self.download_manager.status_updated.connect(lambda msg: self.status_label.setText(msg))
+        self.download_manager.status_updated.connect(self._update_status_display)
         self.download_manager.summary_updated.connect(self.on_summary_update)
         self.download_manager.active_threads_changed.connect(self.on_threads_update)
 
@@ -765,14 +761,13 @@ class MainWindow(QMainWindow):
         self.btn_file.setToolTip(self.translator.translate('load_from_file'))
         self.btn_notes.setToolTip(self.translator.translate('notes', 'Примечания'))
         if hasattr(self, 'btn_scheduler') and not self._schedule.get('active'):
-            self.btn_scheduler.setToolTip(self.translator.translate('scheduler_tooltip', 'Планировщик загрузок (Ночной таймер)'))
+            self.btn_scheduler.setToolTip(self.translator.translate('scheduler_tooltip', 'Планировщик загрузок'))
         self.empty_title.setText(
             self.translator.translate('no_downloads_placeholder', 'Add links to start downloading'))
         self.empty_b1.setText(
-            '• ' + self.translator.translate('empty_tip_dragdrop', 'Drag & drop links or .txt file here'))
-        self.empty_b2.setText('• ' + self.translator.translate('empty_tip_paste', 'Paste from clipboard'))
+            self.translator.translate('empty_tip_dragdrop', 'Drag & drop links or .txt file here'))
         self.empty_b3.setText(
-            '• ' + self.translator.translate('empty_tip_support', 'Supported: YouTube, TikTok, Instagram, VK, RuTube…'))
+            self.translator.translate('empty_tip_support', 'Supported: YouTube, TikTok, Instagram, VK, RuTube…'))
         self.btn_paste.setText(self.translator.translate('paste_from_clipboard', 'Paste'))
         self.btn_import.setText(self.translator.translate('load_from_file'))
         self.btn_quality.setText(self.translator.translate('open_quality_settings', 'Quality settings'))
@@ -1218,8 +1213,20 @@ class MainWindow(QMainWindow):
                 elif action == 'sleep':
                     subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
 
+    def _update_status_display(self, msg):
+        display_text = msg
+        if "Быстрый анализ разметки страницы" in display_text:
+            display_text = "Быстрый анализ (curl_cffi)..."
+        elif "Запуск интеллектуального сниффера Edge" in display_text:
+            display_text = "Сниффер Edge..."
+        fm = self.status_label.fontMetrics()
+        elided = fm.elidedText(display_text, Qt.TextElideMode.ElideRight, 380)
+        self.status_label.setText(elided)
+        self.status_label.setToolTip(msg)
+
     def on_summary_update(self, text):
         self.summary_info.setText(text)
+        self.summary_info.setToolTip(text)
 
     def on_threads_update(self, active, maxc):
         if maxc <= 0:
@@ -1665,20 +1672,39 @@ class MainWindow(QMainWindow):
             file_path=task.final_filepath
         )
 
-    def _on_bot_url_received(self, url):
+    def _on_bot_url_received(self, url_or_urls):
         """Обработчик ссылок, присланных из Telegram бота"""
-        self.download_manager.add_urls([url], is_from_bot=True)
-
-        self._add_recent(url)
+        urls = [url_or_urls] if isinstance(url_or_urls, str) else list(url_or_urls)
+        is_batch = len(urls) > 1
+        for url in urls:
+            tasks = self.download_manager.add_urls([url], is_from_bot=True)
+            if is_batch and tasks:
+                for t in tasks:
+                    t._quality_chosen = True
+            self._add_recent(url)
         self._rebuild_recent_buttons()
 
         if self.isHidden() and hasattr(self, 'tray_icon') and self.tray_icon:
+            first_u = urls[0] if urls else ""
+            desc = f"Получено ссылок: {len(urls)}" if len(urls) > 1 else f"Получена ссылка:\n{first_u}"
             self.tray_icon.showMessage(
                 "Ссылка от бота",
-                f"Получена ссылка, начинаю анализ:\n{url}",
+                desc,
                 QSystemTrayIcon.MessageIcon.Information,
                 3000
             )
+
+    def _on_bot_quality_chosen(self, task, quality, is_audio):
+        if is_audio:
+            task.audio_only = True
+            task.quality_badge = "MP3"
+            task.quality_override = "bestaudio/best"
+        elif quality:
+            clean_h = quality.rstrip('p')
+            task.quality_override = f"bestvideo[height<={clean_h}]+bestaudio/bestvideo[width<={clean_h}]+bestaudio/best"
+            task.quality_badge = quality
+        task.info_updated.emit()
+        self.download_manager.start_task(task)
 
     def _show_files_tab(self):
         self.page_stack.setCurrentIndex(2)
@@ -1803,27 +1829,41 @@ class MainWindow(QMainWindow):
                     self.remove_download_item(task)
                     return
             if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
-                self.bot_manager.send_message(f"🔄 Данные получены! Начинаю скачивание:\n{task.title}")
+                ask_q = self.settings.value('tg_interactive_quality', True, type=bool)
+                formats = getattr(task, 'info', {}).get('formats', [])
+                if ask_q and not getattr(task, '_quality_chosen', False) and len(formats) > 1:
+                    task._quality_chosen = True
+                    started = self.bot_manager.start_single_video_selection(
+                        task=task,
+                        info=getattr(task, 'info', {}),
+                        on_complete=lambda q, is_audio, t=task: self._on_bot_quality_chosen(t, q, is_audio)
+                    )
+                    if started:
+                        return
+
+                self.bot_manager.send_message(f"Данные получены. Начинаю скачивание:\n{task.title}")
                 self.download_manager.start_or_retry_task(task)
             elif self.settings.value('auto_start_downloads', False, type=bool):
                 self.download_manager.start_or_retry_task(task)
 
-        # 2. Произошла ошибка -> Пишем в Телеграм
+        # 2. Скачивание началось -> Запуск живого трекера
+        elif status == DownloadTask.Status.DOWNLOADING:
+            if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
+                self.bot_manager.on_task_download_started(task)
+                task.progress_updated.connect(lambda p, txt, t=task: self.bot_manager.on_task_progress(t, p, txt) if getattr(t, 'is_from_bot', False) else None)
+
+        # 3. Произошла ошибка -> Пишем в Телеграм
         elif status == DownloadTask.Status.ERROR:
             if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
-                self.bot_manager.send_message(
-                    f"❌ Ошибка скачивания:\n{task.title or task.url}\nПричина: {task.error_message}")
+                self.bot_manager.on_task_error(task)
             self._save_to_history(task)
 
-        # 3. Скачивание завершено -> Радуем пользователя
+        # 4. Скачивание завершено -> Радуем пользователя
         elif status == DownloadTask.Status.COMPLETED:
             if getattr(self, '_files_page', None):
                 self._files_page.invalidate_cache()
             if getattr(task, 'is_from_bot', False) and hasattr(self, 'bot_manager'):
-                self.bot_manager.send_message(f"✅ Успешно скачано на ПК:\n{task.title}")
-                actual_file = task.final_filepath or task.current_filename
-                if actual_file and os.path.exists(actual_file):
-                    self.bot_manager.send_file(actual_file, caption=f"📁 {task.title}")
+                self.bot_manager.on_task_completed(task)
             self._save_to_history(task)
             self.update_disk_space()
             if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():

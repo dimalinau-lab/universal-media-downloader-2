@@ -250,7 +250,7 @@ class SettingsTab(QWidget):
         autostart_layout.addWidget(self.auto_start_checkbox)
         v_layout.addLayout(autostart_layout)
 
-        tip_autostart = "Если включено, скачивание начинается сразу при добавлении ссылки. Если выключено — ссылки добавляются в очередь в ожидание ручного запуска."
+        tip_autostart = "Если включено, скачивание начинается сразу при добавлении ссылки. Если выключено, ссылки добавляются в очередь в ожидание ручного запуска."
         self._apply_tooltip(self.auto_start_label, tip_autostart)
         self._apply_tooltip(self.auto_start_checkbox, tip_autostart)
 
@@ -267,7 +267,7 @@ class SettingsTab(QWidget):
         speed_layout.addWidget(self.speed_combo)
         v_layout.addLayout(speed_layout)
 
-        tip_speed = "Ограничение скорости загрузки файлов, чтобы не перегружать домашний интернет-канал."
+        tip_speed = "Ограничение скорости загрузки файлов."
         self._apply_tooltip(self.speed_label, tip_speed)
         self._apply_tooltip(self.speed_combo, tip_speed)
 
@@ -394,7 +394,7 @@ class SettingsTab(QWidget):
         codec_layout.addWidget(self.codec_combo)
         v_layout.addLayout(codec_layout)
 
-        tip_codec = "Выбор приоритетного видеокодека:\n• Авто: наилучшее качество от источника.\n• H.264 / AVC: гарантированное воспроизведение на телевизорах и старых плеерах.\n• AV1 / VP9: современное эффективное сжатие (меньше вес при высоком качестве)."
+        tip_codec = "Выбор приоритетного видеокодека:\n- Авто: наилучшее качество от источника.\n- H.264 / AVC: совместимость с телевизорами и старыми плеерами.\n- AV1 / VP9: эффективное сжатие."
         self._apply_tooltip(self.codec_label, tip_codec)
         self._apply_tooltip(self.codec_combo, tip_codec)
 
@@ -1321,9 +1321,9 @@ class SettingsTab(QWidget):
         box.setText(
             "<b>Использование cookies браузера:</b><br><br>"
             "Программа безопасно считывает сохраненную сессию выбранного браузера для загрузки закрытых видео.<br><br>"
-            "• Если браузер запущен и блокирует свою базу данных, закройте браузер перед началом скачивания.<br><br>"
-            "• <b>Самый надежный способ (100% совместимость):</b> использовать бесплатное расширение "
-            "<b>Get cookies.txt LOCALLY</b> в вашем браузере, экспортировать файл и выбрать его в пункте <b>«Файл cookie»</b>."
+            "- Если браузер запущен и блокирует свою базу данных, закройте браузер перед началом скачивания.<br><br>"
+            "- <b>Надежный способ:</b> экспортировать файл cookie через расширение "
+            "<b>Get cookies.txt LOCALLY</b> и выбрать его в пункте <b>«Файл cookie»</b>."
         )
         btn_open = box.addButton("Открыть расширение в магазине Chrome", QMessageBox.ButtonRole.ActionRole)
         box.addButton("Понятно", QMessageBox.ButtonRole.AcceptRole)

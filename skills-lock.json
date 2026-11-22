@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "skills": {
+    "telegram-bot": {
+      "source": "claude-office-skills/skills",
+      "commit": "9c4c7d5cd2813a8936bf2c9fdb174ea883b85a11",
+      "sourceType": "github",
+      "skillPath": "telegram-bot/SKILL.md",
+      "computedHash": "7cb6a22cc8e44654ddab29ee33e577a5b8c82af51abb765f95ad6bf2902d9c3d"
+    },
+    "telegram-bot-builder": {
+      "source": "sickn33/agentic-awesome-skills",
+      "commit": "f6f686855a672e3868d648cef056312392e3a417",
+      "sourceType": "github",
+      "skillPath": "skills/telegram-bot-builder/SKILL.md",
+      "computedHash": "ad8fbaf5b5640846fe02e7adf3b60e816589a7a454962e4ef0230af49316bd32"
+    }
+  }
+}

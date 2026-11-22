@@ -122,16 +122,83 @@ class WorkerSignals(QObject):
     thumbnail_loaded = pyqtSignal(QImage)
 
 
+class UniversalSnifferSignals(QObject):
+    stream_found = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    status_updated = pyqtSignal(str)
+
+
+class UniversalSnifferWorker(QRunnable):
+    """
+    Фоновый рабочий поток универсального перехватчика (Level 3).
+    Выполняет двухэтапный поиск потока (curl_cffi -> Playwright Headless Edge)
+    и передает захваченный поток с заголовками и куками в основной поток.
+    Поддерживает мгновенную отмену по сигналу пользователя или остановке задачи.
+    """
+    def __init__(self, url: str, timeout: int = 18, task=None):
+        super().__init__()
+        self.url = url
+        self.timeout = timeout
+        self.task = task
+        self._is_cancelled = False
+        self.signals = UniversalSnifferSignals()
+
+    def cancel(self):
+        self._is_cancelled = True
+        if self.task:
+            self.task.request_stop()
+
+    def is_cancelled_check(self) -> bool:
+        if self._is_cancelled:
+            return True
+        if self.task and self.task.is_stop_requested():
+            return True
+        return False
+
+    def run(self):
+        try:
+            if self.is_cancelled_check():
+                return
+
+            from .universal_sniffer import sniff_media_stream
+
+            def on_status(msg):
+                if not self.is_cancelled_check():
+                    self.signals.status_updated.emit(msg)
+
+            res = sniff_media_stream(
+                self.url,
+                timeout=self.timeout,
+                status_callback=on_status,
+                is_cancelled=self.is_cancelled_check
+            )
+
+            if self.is_cancelled_check():
+                logger.info(f"[UniversalSnifferWorker] Задача {self.url} остановлена, результат отменен.")
+                return
+
+            if res:
+                self.signals.stream_found.emit(res)
+            else:
+                self.signals.error.emit(f"Не удалось обнаружить видеопоток на странице: {self.url}")
+        except Exception as e:
+            if not self.is_cancelled_check():
+                self.signals.error.emit(str(e))
+
+
 class InfoWorker(QRunnable):
-    def __init__(self, url, settings):
+    def __init__(self, url, settings, headers=None, referer=None, cookies=None):
         super().__init__()
         self.url = url
         self.settings = settings
+        self.headers = headers or {}
+        self.referer = referer
+        self.cookies = cookies or {}
         self.signals = WorkerSignals()
 
     def run(self):
         try:
-            info_referer = StreamResolverHelper.get_stream_referer(self.url, default_referer='https://vi3000.top/')
+            info_referer = self.referer or StreamResolverHelper.get_stream_referer(self.url, default_referer='https://vi3000.top/')
 
             u_clean = self.url.lower().split('?')[0]
             is_direct_stream = any(d in u_clean for d in ('solodcdn', 'rooster.cloud2')) or u_clean.endswith(('.mp4', '.mkv', '.webm', '.ts', '.mov', '.avi'))
@@ -220,6 +287,10 @@ class InfoWorker(QRunnable):
                     'Origin': info_referer.rstrip('/')
                 }
             }
+            if self.headers:
+                ydl_opts['http_headers'].update(self.headers)
+            if self.cookies and isinstance(self.cookies, dict):
+                ydl_opts['http_headers']['Cookie'] = '; '.join(f"{k}={v}" for k, v in self.cookies.items())
 
             # High-speed analysis optimizations across all platforms
             ydl_opts.update({
@@ -452,13 +523,13 @@ class DownloadWorker(QRunnable):
                     if total > 100 * 1024 or getattr(self.task, 'audio_only', False):
                         self.task.set_file_size(total)
                 percent = int((downloaded / total) * 90)
-                self.task.update_progress(percent, f"Скачивание: {percent}%{frag_info} • {speed}{eta_part}")
+                self.task.update_progress(percent, f"Скачивание: {percent}%{frag_info}, {speed}{eta_part}")
             elif frag_index and frag_count:
                 percent = int((frag_index / frag_count) * 90)
-                self.task.update_progress(percent, f"Скачивание: {percent}% (фрагмент {frag_index}/{frag_count}) • {speed}{eta_part}")
+                self.task.update_progress(percent, f"Скачивание: {percent}% (фрагмент {frag_index}/{frag_count}), {speed}{eta_part}")
             else:
                 mb = downloaded / (1024 * 1024)
-                self.task.update_progress(0, f"Скачивание: {mb:.1f} MB • {speed}{eta_part}")
+                self.task.update_progress(0, f"Скачивание: {mb:.1f} MB, {speed}{eta_part}")
 
         elif d.get('status') == 'finished':
             if is_subtitle:
@@ -855,6 +926,12 @@ class DownloadWorker(QRunnable):
                 'Referer': referer_url,
                 'Origin': referer_url.strip('/')
             }
+            task_headers = getattr(self.task, 'http_headers', None)
+            if task_headers and isinstance(task_headers, dict):
+                ydl_opts['http_headers'].update(task_headers)
+            task_cookies = getattr(self.task, 'cookies', None)
+            if task_cookies and isinstance(task_cookies, dict):
+                ydl_opts['http_headers']['Cookie'] = '; '.join(f"{k}={v}" for k, v in task_cookies.items())
         if merge_fmt:
             ydl_opts['merge_output_format'] = merge_fmt
 
@@ -1216,6 +1293,12 @@ class DownloadWorker(QRunnable):
 
         session = requests.Session()
         session.trust_env = False
+        task_cookies = getattr(self.task, 'cookies', None)
+        if task_cookies and isinstance(task_cookies, dict):
+            session.cookies.update(task_cookies)
+        task_headers = getattr(self.task, 'http_headers', None)
+        if task_headers and isinstance(task_headers, dict):
+            headers.update(task_headers)
 
         # 1. Проверяем URL и при необходимости выполняем каскадный fallback при 404
         r = session.get(self.task.url, headers=headers, stream=True, verify=False, timeout=15)

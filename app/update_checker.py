@@ -64,9 +64,9 @@ def apply_installer_update(installer_path: str) -> bool:
 def apply_portable_update(new_file_path: str) -> bool:
     """
     Выполняет обновление для портативной версии:
-    1. Если запущено из исходного кода Python (dev-режим) — защищает системный python.exe,
+    1. Если запущено из исходного кода Python (dev-режим): защищает системный python.exe,
        сохраняет файл в папку загрузок/темп и предлагает открыть её.
-    2. Если запущено в скомпилированном виде (frozen) — производит In-place Atomic Swap:
+    2. Если запущено в скомпилированном виде (frozen): производит In-place Atomic Swap:
        - Если ZIP: извлекает исполняемый .exe
        - Переименовывает running exe -> exe.old
        - Перемещает скачанный файл -> running exe
@@ -446,7 +446,7 @@ class ModernUpdateDialog(QDialog):
 
             title_row = QHBoxLayout()
             title_lbl = QLabel(f"UMD v{self.app_update['latest_version']}", app_card)
-            title_lbl.setStyleSheet(f"color: {self.text_primary}; font-weight: bold; font-size: 16px; font-family: 'Segoe UI', sans-serif;")
+            title_lbl.setStyleSheet(f"color: {self.text_primary}; font-weight: 600; font-size: 16px; font-family: 'Segoe UI', sans-serif;")
             cur_lbl = QLabel(f"(Текущая: v{self.app_update['current_version']})", app_card)
             cur_lbl.setStyleSheet(f"color: {self.text_secondary}; font-size: 13px; font-family: 'Segoe UI', sans-serif;")
             title_row.addWidget(title_lbl)
@@ -504,7 +504,7 @@ class ModernUpdateDialog(QDialog):
 
             y_title_row = QHBoxLayout()
             y_title = QLabel("Движок парсера YouTube (yt-dlp)", ytdlp_card)
-            y_title.setStyleSheet(f"color: {self.text_primary}; font-weight: bold; font-size: 16px; font-family: 'Segoe UI', sans-serif;")
+            y_title.setStyleSheet(f"color: {self.text_primary}; font-weight: 600; font-size: 16px; font-family: 'Segoe UI', sans-serif;")
             y_badge = QLabel(f"v{self.ytdlp_update['current_version']} → v{self.ytdlp_update['latest_version']}", ytdlp_card)
             y_badge.setStyleSheet("color: #0078d4; font-size: 13px; font-weight: 600; font-family: 'Segoe UI', sans-serif;")
             y_title_row.addWidget(y_title)
@@ -607,11 +607,11 @@ class ModernUpdateDialog(QDialog):
             mb_down = downloaded / (1024 * 1024)
             mb_tot = total / (1024 * 1024)
             self.progress_label.setText(
-                f"Загрузка: {mb_down:.1f} МБ из {mb_tot:.1f} МБ ({percent}%) • {speed_kbps:.0f} КБ/с"
+                f"Загрузка: {mb_down:.1f} МБ из {mb_tot:.1f} МБ ({percent}%), {speed_kbps:.0f} КБ/с"
             )
         else:
             mb_down = downloaded / (1024 * 1024)
-            self.progress_label.setText(f"Загрузка: {mb_down:.1f} МБ • {speed_kbps:.0f} КБ/с")
+            self.progress_label.setText(f"Загрузка: {mb_down:.1f} МБ, {speed_kbps:.0f} КБ/с")
 
     def _on_app_download_completed(self, success: bool, result_path_or_msg: str):
         self.progress_container.setVisible(False)

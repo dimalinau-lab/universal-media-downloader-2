@@ -180,11 +180,11 @@ class AboutTab(QWidget):
         self.row_ffmpeg_lbl, _ = self._add_stat_row(layout, ffmpeg_text, status_ok=ffmpeg_ok)
 
         deno_ok = bool(shutil.which('deno') or os.path.exists(os.path.expanduser('~/.deno/bin/deno.exe')))
-        deno_text = "Активен (n-sig обход)" if deno_ok else "Не обнаружен"
+        deno_text = "Активен" if deno_ok else "Не обнаружен"
         self.row_deno_lbl, _ = self._add_stat_row(layout, deno_text, status_ok=deno_ok)
 
         py_ver = sys.version.split()[0]
-        self.row_gui_lbl, _ = self._add_stat_row(layout, f"Python {py_ver} • PyQt6 Fluent", status_ok=True)
+        self.row_gui_lbl, _ = self._add_stat_row(layout, f"Python {py_ver}, PyQt6 Fluent", status_ok=True)
 
         layout.addStretch(1)
         parent_layout.addWidget(card, 1)
@@ -226,23 +226,15 @@ class AboutTab(QWidget):
             f_box.setSpacing(12)
             f_box.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-            badge = QFrame()
-            badge.setObjectName('FeatureIconBadge')
-            badge.setFixedSize(32, 32)
-            b_layout = QVBoxLayout(badge)
-            b_layout.setContentsMargins(0, 0, 0, 0)
-            b_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
             icon_widget = IconWidget(icon_enum.colored(QColor('#005fb8'), QColor('#60cdff')))
-            icon_widget.setFixedSize(16, 16)
-            b_layout.addWidget(icon_widget)
+            icon_widget.setFixedSize(20, 20)
             self.feature_icons.append((icon_widget, icon_enum))
 
             t_box = QVBoxLayout()
             t_box.setSpacing(2)
             lbl_t = BodyLabel()
             f = lbl_t.font()
-            f.setBold(True)
+            f.setWeight(600)
             lbl_t.setFont(f)
 
             lbl_d = CaptionLabel()
@@ -252,7 +244,7 @@ class AboutTab(QWidget):
             t_box.addWidget(lbl_t)
             t_box.addWidget(lbl_d)
 
-            f_box.addWidget(badge)
+            f_box.addWidget(icon_widget)
             f_box.addLayout(t_box, 1)
             layout.addLayout(f_box)
 

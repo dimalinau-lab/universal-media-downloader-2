@@ -12,7 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QRunnable
 from PyQt6.QtWidgets import QMessageBox
 
 import threading
-from .threads import InfoWorker, DownloadWorker, ThumbnailWorker
+from .threads import InfoWorker, DownloadWorker, ThumbnailWorker, UniversalSnifferWorker
 from .download_task import DownloadTask
 from .extractors import find_extractor_for_url
 from .stream_helper import StreamResolverHelper
@@ -1189,6 +1189,7 @@ class DownloadManager(QObject):
         self.active_downloads = 0
         self.is_downloading_active = False
         self._workers = {}
+        self._sniffer_workers = {}
         self._active_series_workers = []
         self.max_thumbnail_workers = 5
         self.active_thumbnail_workers = 0
@@ -1323,6 +1324,8 @@ class DownloadManager(QObject):
                 if getattr(task, 'referer', None):
                     headers['Referer'] = task.referer
                     headers['Origin'] = task.referer.rstrip('/')
+                if getattr(task, 'http_headers', None) and isinstance(task.http_headers, dict):
+                    headers.update(task.http_headers)
                 session = requests.Session()
                 session.trust_env = False
                 session.verify = False
@@ -1524,9 +1527,92 @@ class DownloadManager(QObject):
                 task.info_updated.emit()
 
     def on_info_error(self, task, error):
-        logger.error(f"Error fetching info for {task.url}: {error}")
+        logger.warning(f"[DownloadManager] yt-dlp не смог разрешить ссылку {task.url}: {error}")
+
+        # Уровень 3: Каскадный фоллбэк на Универсальный сетевой перехватчик (Sniffer)
+        if not getattr(task, '_sniffer_attempted', False):
+            task._sniffer_attempted = True
+            logger.info(f"[DownloadManager] Запуск каскадного Universal Sniffer для {task.url}...")
+            self._start_universal_sniffer(task)
+            return
+
         friendly_err = StreamResolverHelper.format_user_friendly_error(str(error), self.translator)
         task.set_error(friendly_err)
+        self._update_summary()
+
+    def _start_universal_sniffer(self, task):
+        task.set_status(DownloadTask.Status.FETCHING_INFO)
+        msg = "Поиск медиапотока (универсальный анализатор)..."
+        task.progress_text = msg
+        task.progress_updated.emit(0, msg)
+        self.status_updated.emit(f"Поиск скрытого видеопотока: {task.url[:45]}...")
+
+        worker = UniversalSnifferWorker(task.url, timeout=18, task=task)
+        self._sniffer_workers[task] = worker
+        worker.signals.status_updated.connect(lambda msg, t=task: self._on_sniffer_status(t, msg))
+        worker.signals.stream_found.connect(lambda info, t=task: self._on_sniffer_stream_found(t, info))
+        worker.signals.error.connect(lambda err, t=task: self._on_sniffer_error(t, err))
+        self.thread_pool.start(worker)
+
+    def _on_sniffer_status(self, task, msg):
+        if task.is_stop_requested() or getattr(task, 'status', None) == DownloadTask.Status.STOPPED:
+            return
+        task.progress_text = msg
+        task.progress_updated.emit(0, msg)
+        self.status_updated.emit(msg)
+
+    def _on_sniffer_stream_found(self, task, info):
+        self._sniffer_workers.pop(task, None)
+        if task.is_stop_requested() or getattr(task, 'status', None) in (DownloadTask.Status.STOPPED, DownloadTask.Status.COMPLETED):
+            logger.info(f"[DownloadManager] Задача {task.url} отменена/удалена, игнорируем найденный поток.")
+            return
+
+        stream_url = info['url']
+        logger.info(f"[DownloadManager] Universal Sniffer перехватил поток: {stream_url} (метод: {info.get('method')})")
+
+        task.original_url = task.url
+        task.url = stream_url
+        if info.get('title'):
+            task.custom_title = info['title']
+            task.title = info['title']
+
+        task.referer = info.get('headers', {}).get('Referer') or task.original_url
+        task.http_headers = info.get('headers', {})
+        task.cookies = info.get('cookies', {})
+        task.is_direct_stream = True
+
+        # Повторный анализ InfoWorker уже по прямому стриму (.m3u8 / .mpd / .mp4) с захваченными заголовками и куками
+        worker = InfoWorker(task.url, self.settings, headers=task.http_headers, referer=task.referer, cookies=task.cookies)
+        worker.signals.info_fetched.connect(lambda inf, t=task: self.on_info_fetched(t, inf))
+        worker.signals.error.connect(lambda _err, t=task: self._on_direct_stream_fallback(t, info))
+        self.thread_pool.start(worker)
+
+    def _on_direct_stream_fallback(self, task, info):
+        logger.info(f"[DownloadManager] Прямое оформление задачи из перехваченного потока {task.url}")
+        is_hls = info.get('is_hls', False) or '.m3u8' in task.url.lower()
+        is_dash = info.get('is_dash', False) or '.mpd' in task.url.lower()
+        badge = "HLS" if is_hls else ("DASH" if is_dash else "VOD")
+
+        task.quality_badge = badge
+        task.set_status(DownloadTask.Status.PENDING)
+        task.progress_text = "Готов к загрузке"
+        task.progress_updated.emit(0, "Готов к загрузке")
+        task.info_updated.emit()
+        self._update_summary()
+
+        if getattr(task, 'is_from_bot', False) or self.settings.value('auto_start_downloads', False, type=bool) or self.is_downloading_active:
+            self.start_task(task)
+
+    def _on_sniffer_error(self, task, err):
+        self._sniffer_workers.pop(task, None)
+        if task.is_stop_requested() or getattr(task, 'status', None) == DownloadTask.Status.STOPPED:
+            logger.info(f"[DownloadManager] Задача {task.url} была остановлена пользователем, отменяем ошибку сниффера.")
+            return
+
+        logger.error(f"[DownloadManager] Universal Sniffer не смог найти поток: {err}")
+        friendly_err = StreamResolverHelper.format_user_friendly_error(str(err), self.translator)
+        task.set_error(friendly_err)
+        self.status_updated.emit(self.translator.translate('waiting'))
         self._update_summary()
 
     def start_all(self):
@@ -1593,6 +1679,8 @@ class DownloadManager(QObject):
             if task.status in (DownloadTask.Status.FETCHING_INFO, DownloadTask.Status.DOWNLOADING,
                                DownloadTask.Status.PENDING, DownloadTask.Status.PROCESSING):
                 task.request_stop()
+                sniffer = self._sniffer_workers.pop(task, None)
+                if sniffer: sniffer.cancel()
                 worker = self._workers.get(task)
                 if worker: worker.cancel()
         self.status_updated.emit(self.translator.translate('stopping_downloads'))
@@ -1602,6 +1690,8 @@ class DownloadManager(QObject):
     def remove_task(self, task):
         if task in self.tasks:
             task.request_stop()
+            sniffer = self._sniffer_workers.pop(task, None)
+            if sniffer: sniffer.cancel()
             worker = self._workers.get(task)
             if worker: worker.cancel()
             try:
@@ -1658,6 +1748,12 @@ class DownloadManager(QObject):
         return [t for t in self.tasks if
                 t.status in (DownloadTask.Status.COMPLETED, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED)]
 
+    def clear_completed(self):
+        tasks = self.get_completed_tasks()
+        for t in tasks:
+            self.remove_task(t)
+        return len(tasks)
+
     def _start_custom_extractor_scan(self, url, extractor, is_from_bot=False):
         self.status_updated.emit(f"Анализ {extractor.name}...")
         worker = CustomExtractorFetchWorker(url, extractor)
@@ -1695,7 +1791,7 @@ class DownloadManager(QObject):
         logger.error(f"[{extractor.name}] Ошибка анализа: {err}")
         self.status_updated.emit(f"Ошибка {extractor.name}: {err}")
         if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
-            self.bot_manager.send_message(f"❌ Ошибка анализа {extractor.name}:\n{err}")
+            self.bot_manager.send_message(f"Ошибка анализа {extractor.name}:\n{err}")
 
     def _on_custom_extractor_ready(self, meta, extractor, is_from_bot=False):
         episodes = meta.get('episodes', [])
@@ -1804,7 +1900,7 @@ class DownloadManager(QObject):
             if not direct_url:
                 self.status_updated.emit(f"Не удалось получить видео с {extractor.name}")
                 if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
-                    self.bot_manager.send_message(f"❌ Не удалось получить видео с {extractor.name}")
+                    self.bot_manager.send_message(f"Не удалось получить видео с {extractor.name}")
                 return
             task = DownloadTask(direct_url)
             task.is_from_bot = is_from_bot
@@ -1909,7 +2005,7 @@ class DownloadManager(QObject):
                 if added_count == 0:
                     self.dm.status_updated.emit(f"Не удалось получить видеопоток для {self.extractor.name}")
                     if hasattr(self.dm, 'bot_manager') and self.dm.bot_manager:
-                        self.dm.bot_manager.send_message(f"❌ Не удалось получить видеопоток для {self.extractor.name}")
+                        self.dm.bot_manager.send_message(f"Не удалось получить видеопоток для {self.extractor.name}")
                 self.dm._update_summary()
 
         worker = ResolveStreamsWorker(self, meta, extractor, selected_v, selected_q, selected_targets)
@@ -1991,7 +2087,7 @@ class DownloadManager(QObject):
         self.status_updated.emit(f"KinoPub: {info['short_status']}")
         if is_from_bot:
             if hasattr(self, 'bot_manager') and self.bot_manager:
-                self.bot_manager.send_message(f"❌ Ошибка анализа видео (KinoPub / Rezka):\n{info['message']}")
+                self.bot_manager.send_message(f"Ошибка анализа видео:\n{info['message']}")
             return
         if dialog and not dialog.is_cancelled:
             dialog.show_error(str(err))
@@ -2238,10 +2334,10 @@ class DownloadManager(QObject):
             else:
                 self.status_updated.emit(f"Добавлено серий: {len(results)}. Готово к загрузке.")
         else:
-            logger.warning("[KinoPub] Список серий пуст — ни одна ссылка не была получена.")
+            logger.warning("[KinoPub] Список серий пуст, ни одна ссылка не была получена.")
             self.status_updated.emit("Не удалось получить ссылки на серии.")
             if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
-                self.bot_manager.send_message("❌ Не удалось получить ссылки на выбранные серии KinoPub.")
+                self.bot_manager.send_message("Не удалось получить ссылки на выбранные серии.")
             elif self.parent_window:
                 QMessageBox.warning(self.parent_window, "KinoPub", "Не удалось получить рабочие ссылки на выбранные серии.")
         self._update_summary()
@@ -2250,7 +2346,7 @@ class DownloadManager(QObject):
         logger.error(f"[KinoPub] Ошибка сбора ссылок на серии: {err}")
         self.status_updated.emit(f"Ошибка получения серий: {err}")
         if is_from_bot and hasattr(self, 'bot_manager') and self.bot_manager:
-            self.bot_manager.send_message(f"❌ Ошибка KinoPub / Rezka:\n{err}")
+            self.bot_manager.send_message(f"Ошибка KinoPub / Rezka:\n{err}")
         elif self.parent_window:
             QMessageBox.critical(self.parent_window, "Ошибка KinoPub / Rezka", f"Не удалось получить ссылки на серии:\n\n{err}")
         self._update_summary()

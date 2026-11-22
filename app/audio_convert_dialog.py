@@ -48,7 +48,7 @@ class AudioConvertDialog(QDialog):
         self.translator = translator
         self.out_path = ""
 
-        self.setWindowTitle(self.translator.translate('audio_tool_title', "Извлечение и конвертация аудио"))
+        self.setWindowTitle(self.translator.translate('audio_tool_title', "Извлечение аудио"))
         self.setFixedSize(480, 325)
         self.initUI()
 
@@ -64,12 +64,12 @@ class AudioConvertDialog(QDialog):
 
         title = StrongBodyLabel(filename)
         title.setWordWrap(True)
-        title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        title.setStyleSheet("font-size: 15px; font-weight: 600;")
         header_layout.addWidget(title)
 
         desc = CaptionLabel(self.translator.translate(
             'audio_tool_desc',
-            "Извлеките чистый звук в нужном формате с фильтрами улучшения звучания."
+            "Извлечение аудиодорожки в выбранном формате."
         ))
         desc.setWordWrap(True)
         desc.setStyleSheet("color: #888888;")

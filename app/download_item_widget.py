@@ -505,7 +505,7 @@ class DownloadItemWidget(QWidget):
 
     def on_time_range_update(self, text):
         if text:
-            self.badge_timerange.setText(f"⏱ {text}")
+            self.badge_timerange.setText(text)
             self.badge_timerange.show()
         else:
             self.badge_timerange.hide()
@@ -550,7 +550,7 @@ class DownloadItemWidget(QWidget):
 
         tr_text = getattr(self.task, 'time_range_str', '')
         if tr_text:
-            self.badge_timerange.setText(f"⏱ {tr_text}")
+            self.badge_timerange.setText(tr_text)
             self.badge_timerange.show()
         else:
             self.badge_timerange.hide()
@@ -661,7 +661,7 @@ class DownloadItemWidget(QWidget):
             results.append({
                 'key': 'audio_mp3',
                 'badge': 'MP3',
-                'label': '🎵 MP3 (320 kbps)',
+                'label': 'MP3 (320 kbps)',
                 'size_bytes': mp3_size,
                 'is_audio': True
             })
@@ -767,7 +767,7 @@ class DownloadItemWidget(QWidget):
         results.append({
             'key': 'audio_mp3',
             'badge': 'MP3',
-            'label': '🎵 MP3 (320 kbps)',
+            'label': 'MP3 (320 kbps)',
             'size_bytes': mp3_size,
             'is_audio': True
         })
@@ -793,7 +793,7 @@ class DownloadItemWidget(QWidget):
                         break
                     b /= 1024.0
 
-            label_text = f"{it['label']} — {sz_str}" if sz_str else it['label']
+            label_text = f"{it['label']} ({sz_str})" if sz_str else it['label']
             action = Action(label_text, self)
 
             is_active = (curr_badge and curr_badge == it['badge'].lower()) or (curr_override and curr_override == it['key'])

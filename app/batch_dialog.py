@@ -31,11 +31,11 @@ class BatchAddDialog(QDialog):
         # Заголовок и описание
         header_layout = QVBoxLayout()
         header_layout.setSpacing(4)
-        title = StrongBodyLabel(self.translator.translate('batch_dialog_header', "Добавление нескольких ссылок"))
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title = StrongBodyLabel(self.translator.translate('batch_dialog_header', "Пакетное добавление"))
+        title.setStyleSheet("font-size: 16px; font-weight: 600;")
         desc = CaptionLabel(self.translator.translate(
             'batch_dialog_desc',
-            "Вставьте список ссылок (каждая с новой строки или через пробел). Дубликаты будут проверены автоматически."
+            "Вставьте ссылки по одной на строку или через пробел."
         ))
         desc.setWordWrap(True)
         header_layout.addWidget(title)
@@ -67,7 +67,7 @@ class BatchAddDialog(QDialog):
         self.btn_clear.clicked.connect(self.text_edit.clear)
 
         self.lbl_stats = BodyLabel("Найдено ссылок: 0")
-        self.lbl_stats.setStyleSheet("color: #0078D7; font-weight: bold;")
+        self.lbl_stats.setStyleSheet("color: #0078D7; font-weight: 600;")
 
         actions_layout.addWidget(self.btn_paste)
         actions_layout.addWidget(self.btn_dedup)

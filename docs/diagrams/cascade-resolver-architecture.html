@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Каскадный 3-уровневый резолвер медиапотоков · Архитектура</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:       #1c1c1e;
+      --color-paper-2:     #2c2c2e;
+      --color-ink:         #f5f5f7;
+      --color-muted:       #a1a1a6;
+      --color-soft:        #8e8e93;
+      --color-accent:      #0078d4;
+      --color-accent-tint: rgba(0, 120, 212, 0.12);
+      --color-link:        #0a84ff;
+      --color-rule:        rgba(255, 255, 255, 0.10);
+      --font-sans:         'Geist', system-ui, sans-serif;
+      --font-serif:        'Instrument Serif', serif;
+      --font-mono:         'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2.5rem 1.5rem;
+    }
+
+    .frame {
+      max-width: 1200px;
+      width: 100%;
+    }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.6rem, 2.4vw + 0.8rem, 2.2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 8px;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Архитектура · Diagram Design</p>
+    <h1>Каскадный 3-уровневый резолвер медиапотоков</h1>
+
+    <svg viewBox="0 0 1140 650" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="cascade-title cascade-desc">
+      <title id="cascade-title">Каскадный 3-уровневый резолвер медиапотоков</title>
+      <desc id="cascade-desc">Архитектура трехуровневого резолвера: Уровень 1 yt-dlp Core, Уровень 2 Прямые экстракторы, Уровень 3 Универсальный сниффер с обходом защит в Headless Edge.</desc>
+
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(255,255,255,0.08)"/>
+        </pattern>
+
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#a1a1a6"/>
+        </marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#0078d4"/>
+        </marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#0a84ff"/>
+        </marker>
+      </defs>
+
+      <!-- Background Canvas -->
+      <rect width="100%" height="100%" fill="#1c1c1e"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.6"/>
+
+      <!-- ============================================================ -->
+      <!-- ZONES (drawn before connectors and nodes)                    -->
+      <!-- ============================================================ -->
+
+      <!-- Zone 1: INGESTION -->
+      <rect x="40" y="100" width="210" height="460" rx="8"
+            fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+      <rect x="68" y="104" width="154" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="145" y="113" fill="#8e8e93" font-size="7.5" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.14em">1. КЛИЕНТ И ВВОД ДАННЫХ</text>
+
+      <!-- Zone 2: RESOLVER TIERS -->
+      <rect x="270" y="100" width="560" height="460" rx="8"
+            fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+      <rect x="440" y="104" width="220" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="550" y="113" fill="#8e8e93" font-size="7.5" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.14em">2. КАСКАДНЫЕ УРОВНИ РЕЗОЛВЕРА</text>
+
+      <!-- Zone 3: PIPELINE -->
+      <rect x="850" y="100" width="250" height="460" rx="8"
+            fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.08)" stroke-width="0.8"/>
+      <rect x="895" y="104" width="160" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="975" y="113" fill="#8e8e93" font-size="7.5" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.14em">3. ПАЙПЛАЙН И ХРАНЕНИЕ</text>
+
+      <!-- ============================================================ -->
+      <!-- ARROWS (drawn before boxes so lines stay behind nodes)       -->
+      <!-- ============================================================ -->
+
+      <!-- UI -> DownloadManager -->
+      <line x1="145" y1="210" x2="145" y2="280" stroke="#0a84ff" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+      <!-- DownloadManager -> Level 1 (yt-dlp Core) -->
+      <path d="M 220,310 H 260 Q 268,310 268,302 V 183 Q 268,175 276,175 H 296"
+            fill="none" stroke="#0a84ff" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+      <!-- Level 1 -> Level 2 (Failover to extractors) -->
+      <line x1="405" y1="210" x2="405" y2="280" stroke="#a1a1a6" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+      <!-- Level 2 -> Level 3.1 (Fallback to FastMetaSniffer) -->
+      <line x1="405" y1="350" x2="405" y2="410" stroke="#a1a1a6" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+      <!-- Level 3.1 -> Level 3.2 (If fast meta fails, run Edge Stealth) -->
+      <line x1="510" y1="445" x2="560" y2="445" stroke="#0078d4" stroke-width="1.3" marker-end="url(#arrow-accent)"/>
+
+      <!-- Level 1 -> Stream Context -->
+      <path d="M 510,175 H 810 Q 818,175 818,183 V 242 Q 818,250 826,250 H 870"
+            fill="none" stroke="#a1a1a6" stroke-width="1" marker-end="url(#arrow)"/>
+
+      <!-- Level 2 -> Stream Context -->
+      <path d="M 510,315 H 790 Q 798,315 798,307 V 273 Q 798,265 806,265 H 870"
+            fill="none" stroke="#a1a1a6" stroke-width="1" marker-end="url(#arrow)"/>
+
+      <!-- Level 3.2 (Focal) -> Stream Context -->
+      <path d="M 780,445 H 820 Q 828,445 828,437 V 288 Q 828,280 836,280 H 870"
+            fill="none" stroke="#0078d4" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+
+      <!-- Stream Context -> DownloadWorker -->
+      <line x1="975" y1="310" x2="975" y2="380" stroke="#0a84ff" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+      <!-- DownloadWorker -> Output Storage -->
+      <line x1="975" y1="450" x2="975" y2="480" stroke="#a1a1a6" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- ============================================================ -->
+      <!-- ARROW LABELS (Mask plates + text with 6-10px gap)           -->
+      <!-- ============================================================ -->
+
+      <!-- UI -> DM -->
+      <rect x="95" y="238" width="100" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="145" y="247" fill="#0a84ff" font-size="7.5" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ПЕРЕДАЧА URL</text>
+
+      <!-- DM -> L1 -->
+      <rect x="233" y="220" width="70" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="268" y="229" fill="#0a84ff" font-size="7.5" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ЗАПУСК УР. 1</text>
+
+      <!-- L1 -> L2 failover -->
+      <rect x="345" y="238" width="120" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="405" y="247" fill="#a1a1a6" font-size="7.5" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">СБОЙ 403 / НЕТ ПОДДЕРЖКИ</text>
+
+      <!-- L2 -> L3 fallback -->
+      <rect x="361" y="372" width="88" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="405" y="381" fill="#a1a1a6" font-size="7.5" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">НЕТ ЭКСТРАКТОРА</text>
+
+      <!-- L3.1 -> L3.2 edge trigger -->
+      <rect x="512" y="428" width="46" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="535" y="437" fill="#0078d4" font-size="7.5" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ОБХОД БОТА</text>
+
+      <!-- L3.2 -> CTX stream label -->
+      <rect x="795" y="350" width="66" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="828" y="359" fill="#0078d4" font-size="7.5" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ПОТОК HLS .M3U8</text>
+
+      <!-- CTX -> DW start label -->
+      <rect x="935" y="338" width="80" height="12" rx="2" fill="#1c1c1e"/>
+      <text x="975" y="347" fill="#0a84ff" font-size="7.5" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">СТАРТ ЗАГРУЗКИ</text>
+
+      <!-- ============================================================ -->
+      <!-- NODES (Mask + Styled Box + Tag + Title + Sublabel)           -->
+      <!-- ============================================================ -->
+
+      <!-- Node 1: User Interfaces -->
+      <rect x="65" y="140" width="160" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="65" y="140" width="160" height="70" rx="6" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
+      <rect x="73" y="148" width="30" height="12" rx="2" fill="transparent" stroke="rgba(255,255,255,0.30)" stroke-width="0.8"/>
+      <text x="88" y="157" fill="#8e8e93" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ВВОД</text>
+      <text x="145" y="176" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Интерфейс пользователя</text>
+      <text x="145" y="193" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">PyQt6 GUI · Telegram-бот</text>
+
+      <!-- Node 2: DownloadManager -->
+      <rect x="65" y="280" width="160" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="65" y="280" width="160" height="70" rx="6" fill="rgba(255,255,255,0.04)" stroke="#0a84ff" stroke-width="1"/>
+      <rect x="73" y="288" width="30" height="12" rx="2" fill="transparent" stroke="rgba(10,132,255,0.50)" stroke-width="0.8"/>
+      <text x="88" y="297" fill="#0a84ff" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ДИСП</text>
+      <text x="145" y="316" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Менеджер загрузок</text>
+      <text x="145" y="333" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Оркестратор · Пул потоков</text>
+
+      <!-- Node 3: Level 1: yt-dlp Core -->
+      <rect x="300" y="140" width="210" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="300" y="140" width="210" height="70" rx="6" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+      <rect x="308" y="148" width="50" height="12" rx="2" fill="transparent" stroke="rgba(255,255,255,0.30)" stroke-width="0.8"/>
+      <text x="333" y="157" fill="#8e8e93" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">УРОВЕНЬ 1</text>
+      <text x="405" y="176" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Ядро yt-dlp</text>
+      <text x="405" y="193" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">YouTube · Rutube · VK · TikTok</text>
+
+      <!-- Node 4: Level 2: Direct Extractors -->
+      <rect x="300" y="280" width="210" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="300" y="280" width="210" height="70" rx="6" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+      <rect x="308" y="288" width="50" height="12" rx="2" fill="transparent" stroke="rgba(255,255,255,0.30)" stroke-width="0.8"/>
+      <text x="333" y="297" fill="#8e8e93" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">УРОВЕНЬ 2</text>
+      <text x="405" y="316" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Прямые экстракторы</text>
+      <text x="405" y="333" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Kodik · AniBoom · Выбор серий</text>
+
+      <!-- Node 5A: Level 3.1: FastMetaSniffer -->
+      <rect x="300" y="410" width="210" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="300" y="410" width="210" height="70" rx="6" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+      <rect x="308" y="418" width="54" height="12" rx="2" fill="transparent" stroke="rgba(255,255,255,0.30)" stroke-width="0.8"/>
+      <text x="335" y="427" fill="#8e8e93" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">УРОВЕНЬ 3.1</text>
+      <text x="405" y="446" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Быстрый сниффер (FastMeta)</text>
+      <text x="405" y="463" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">curl_cffi · TLS Chrome · DOM (&lt;1с)</text>
+
+      <!-- Node 5B: Level 3.2: HeadlessEdgeSniffer (Focal Accent Blue) -->
+      <rect x="560" y="410" width="220" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="560" y="410" width="220" height="70" rx="6" fill="rgba(0,120,212,0.12)" stroke="#0078d4" stroke-width="1.2"/>
+      <rect x="568" y="418" width="54" height="12" rx="2" fill="transparent" stroke="rgba(0,120,212,0.50)" stroke-width="0.8"/>
+      <text x="595" y="427" fill="#0078d4" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">УРОВЕНЬ 3.2</text>
+      <text x="765" y="470" fill="rgba(0,120,212,0.15)" font-size="28" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="end">ФОКУС</text>
+      <text x="670" y="446" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Скрытный сниффер Edge</text>
+      <text x="670" y="463" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Stealth · Куки браузера · Сниффинг API</text>
+
+      <!-- Node 6: Stream Context -->
+      <rect x="880" y="240" width="190" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="880" y="240" width="190" height="70" rx="6" fill="rgba(255,255,255,0.04)" stroke="#0a84ff" stroke-width="1"/>
+      <rect x="888" y="248" width="36" height="12" rx="2" fill="transparent" stroke="rgba(10,132,255,0.50)" stroke-width="0.8"/>
+      <text x="906" y="257" fill="#0a84ff" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ПОТОК</text>
+      <text x="975" y="276" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Контекст медиапотока</text>
+      <text x="975" y="293" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Манифест HLS · Referer · Куки</text>
+
+      <!-- Node 7: DownloadWorker -->
+      <rect x="880" y="380" width="190" height="70" rx="6" fill="#1c1c1e"/>
+      <rect x="880" y="380" width="190" height="70" rx="6" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+      <rect x="888" y="388" width="46" height="12" rx="2" fill="transparent" stroke="rgba(255,255,255,0.30)" stroke-width="0.8"/>
+      <text x="911" y="397" fill="#8e8e93" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ВОРКЕР</text>
+      <text x="975" y="416" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Воркер скачивания</text>
+      <text x="975" y="433" fill="#a1a1a6" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">yt-dlp + FFmpeg · 30 попыток</text>
+
+      <!-- Node 8: Output File -->
+      <rect x="880" y="480" width="190" height="60" rx="6" fill="#1c1c1e"/>
+      <rect x="880" y="480" width="190" height="60" rx="6" fill="rgba(48,209,88,0.06)" stroke="#30d158" stroke-width="1"/>
+      <rect x="888" y="488" width="34" height="12" rx="2" fill="transparent" stroke="rgba(48,209,88,0.50)" stroke-width="0.8"/>
+      <text x="905" y="497" fill="#30d158" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ДИСК</text>
+      <text x="975" y="513" fill="#f5f5f7" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Готовый медиафайл</text>
+      <text x="975" y="528" fill="#30d158" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">1080p MP4 / MKV / MP3</text>
+
+      <!-- ============================================================ -->
+      <!-- LEGEND STRIP                                                 -->
+      <!-- ============================================================ -->
+      <line x1="40" y1="580" x2="1100" y2="580" stroke="rgba(255,255,255,0.10)" stroke-width="0.8"/>
+      <text x="40" y="605" fill="#8e8e93" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.18em">ЛЕГЕНДА</text>
+
+      <!-- Item 1: Focal -->
+      <rect x="110" y="596" width="14" height="10" rx="2" fill="rgba(0,120,212,0.12)" stroke="#0078d4" stroke-width="1"/>
+      <text x="132" y="605" fill="#a1a1a6" font-size="8.5" font-family="'Geist', sans-serif">Фокальный узел (Универсальный сниффер)</text>
+
+      <!-- Item 2: Native node -->
+      <rect x="370" y="596" width="14" height="10" rx="2" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+      <text x="392" y="605" fill="#a1a1a6" font-size="8.5" font-family="'Geist', sans-serif">Базовый компонент системы</text>
+
+      <!-- Item 3: Direct Flow -->
+      <line x1="580" y1="601" x2="606" y2="601" stroke="#0a84ff" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <text x="615" y="605" fill="#a1a1a6" font-size="8.5" font-family="'Geist', sans-serif">Прямой поток управления</text>
+
+      <!-- Item 4: Failover / Fallback -->
+      <line x1="750" y1="601" x2="776" y2="601" stroke="#a1a1a6" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <text x="785" y="605" fill="#a1a1a6" font-size="8.5" font-family="'Geist', sans-serif">Каскадный переход / Фолбэк</text>
+
+      <!-- Item 5: Sniffed Stream -->
+      <line x1="960" y1="601" x2="986" y2="601" stroke="#0078d4" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <text x="995" y="605" fill="#a1a1a6" font-size="8.5" font-family="'Geist', sans-serif">Передача перехваченного потока</text>
+
+    </svg>
+  </div>
+</body>
+</html>

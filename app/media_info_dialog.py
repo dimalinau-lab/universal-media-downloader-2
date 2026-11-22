@@ -57,7 +57,7 @@ class MediaInfoDialog(QDialog):
         self.translator = translator
         self.raw_data = None
 
-        self.setWindowTitle(self.translator.translate('mediainfo_title', "Свойства медиафайла (FFprobe)"))
+        self.setWindowTitle(self.translator.translate('mediainfo_title', "Свойства медиафайла"))
         self.setMinimumSize(600, 560)
         self.initUI()
         self._load_probe_info()
@@ -70,7 +70,7 @@ class MediaInfoDialog(QDialog):
         # Шапка файла
         filename = os.path.basename(self.filepath)
         header_title = QLabel(filename)
-        header_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff; padding: 2px 0;")
+        header_title.setStyleSheet("font-size: 15px; font-weight: 600; color: #ffffff; padding: 2px 0;")
         header_title.setWordWrap(True)
         self.layout.addWidget(header_title)
 
@@ -155,7 +155,7 @@ class MediaInfoDialog(QDialog):
         def add_section(title: str):
             nonlocal row
             lbl = QLabel(title)
-            lbl.setStyleSheet("color: #409cff; font-size: 14px; font-weight: bold; padding-top: 16px; padding-bottom: 6px;")
+            lbl.setStyleSheet("color: #409cff; font-size: 14px; font-weight: 600; padding-top: 16px; padding-bottom: 6px;")
             self.grid_layout.addWidget(lbl, row, 0, 1, 2)
             row += 1
 

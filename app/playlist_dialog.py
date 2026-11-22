@@ -30,18 +30,18 @@ class PlaylistDialog(QDialog):
         top_header = QHBoxLayout()
         self.title_label = SubtitleLabel(f"{self.t('found_videos', 'Найдено видео')}: {len(self.entries)}")
         self.count_label = CaptionLabel()
-        self.count_label.setStyleSheet("color: #29b6f6; font-weight: bold; font-size: 13px;")
+        self.count_label.setStyleSheet("color: #29b6f6; font-weight: 600; font-size: 13px;")
         top_header.addWidget(self.title_label)
         top_header.addStretch()
         top_header.addWidget(self.count_label)
         layout.addLayout(top_header)
 
-        self.desc_label = BodyLabel(self.t('playlist_desc', "Выберите нужные видео, воспользуйтесь поиском или укажите диапазон номеров:"))
-        self.desc_label.setStyleSheet("color: gray;")
+        self.desc_label = CaptionLabel(self.t('playlist_desc', "Выберите видео для загрузки:"))
+        self.desc_label.setStyleSheet("color: #888888;")
         layout.addWidget(self.desc_label)
 
         self.search_input = SearchLineEdit()
-        self.search_input.setPlaceholderText(self.t('search_video_placeholder', "Поиск по названию видео..."))
+        self.search_input.setPlaceholderText(self.t('search_video_placeholder', "Поиск по названию..."))
         self.search_input.textChanged.connect(self.filter_list)
         layout.addWidget(self.search_input)
 
@@ -49,7 +49,7 @@ class PlaylistDialog(QDialog):
         range_layout = QHBoxLayout()
         range_layout.setSpacing(8)
         self.range_input = LineEdit()
-        self.range_input.setPlaceholderText(self.t('batch_range_placeholder', "Диапазон номеров (например: 1-10, 15, 20-30)"))
+        self.range_input.setPlaceholderText(self.t('batch_range_placeholder', "Диапазон: 1-10, 15, 20-30"))
         self.range_input.returnPressed.connect(self.apply_range)
 
         self.btn_apply_range = PushButton(self.t('apply_range', "Выбрать диапазон"))
@@ -86,7 +86,7 @@ class PlaylistDialog(QDialog):
                 url = f"https://www.youtube.com/watch?v={entry.get('id')}"
 
             if url:
-                item_text = f"#{idx:02d} • {title}"
+                item_text = f"{idx}. {title}"
                 item = QListWidgetItem(item_text)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(Qt.CheckState.Checked)

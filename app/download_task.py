@@ -214,10 +214,29 @@ class DownloadTask(QObject):
         self.progress_text = cleaned
         self.progress_updated.emit(percent, cleaned)
 
+    def _derive_fallback_title(self) -> str:
+        try:
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(self.original_url or self.url)
+            path = unquote(parsed.path).strip('/')
+            slug = path.split('/')[-1] if path else ""
+            slug = re.sub(r'\.(?:html?|php|mp4|m3u8|webm)$', '', slug, flags=re.I)
+            slug = re.sub(r'^page[,\d]+', '', slug, flags=re.I)
+            slug = re.sub(r'^[0-9_,-]+', '', slug)
+            slug = re.sub(r'[,_-]+', ' ', slug).strip()
+            if slug and len(slug) >= 3:
+                return slug.title()
+            return parsed.hostname or "Неизвестное видео"
+        except Exception:
+            return "Неизвестное видео"
+
     def set_error(self, message):
         from .threads import clean_ansi
         cleaned = clean_ansi(message)
         self.error_message = cleaned
+        if not self.title or self.title == "...":
+            self.title = self._derive_fallback_title()
+            self.info_updated.emit()
         self.set_status(self.Status.ERROR)
 
     def set_completed(self, filepath):

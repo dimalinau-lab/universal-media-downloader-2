@@ -127,13 +127,13 @@ class ThemeManager:
                 border-radius: 8px;
             }
             #AboutVersionBadge {
-                background-color: rgba(0, 95, 184, 0.25);
-                color: #60cdff;
-                border: 1px solid rgba(0, 95, 184, 0.5);
-                border-radius: 11px;
-                padding: 2px 10px;
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #e0e0e0;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 6px;
+                padding: 2px 8px;
                 font-size: 11px;
-                font-weight: bold;
+                font-weight: 600;
             }
 
             /* Сайдбар кнопки (Мягкое полупрозрачное наведение) */
@@ -177,7 +177,7 @@ class ThemeManager:
             #TimerangeButton {
                 background-color: transparent;
                 border: none;
-                border-radius: 5px;
+                border-radius: 6px;
             }
             #TimerangeButton:hover {
                 background-color: rgba(255, 255, 255, 0.08);
@@ -197,13 +197,13 @@ class ThemeManager:
             #ItemProgressBar, QProgressBar {
                 border: none;
                 background-color: rgba(255, 255, 255, 0.1);
-                border-radius: 3px;
+                border-radius: 4px;
                 text-align: center;
                 height: 6px;
             }
             #ItemProgressBar::chunk, QProgressBar::chunk {
                 background-color: #005fb8;
-                border-radius: 3px;
+                border-radius: 4px;
             }
 
             /* Защита базовых элементов от искажения */
@@ -306,13 +306,13 @@ class ThemeManager:
                 border-radius: 8px;
             }
             #AboutVersionBadge {
-                background-color: rgba(0, 95, 184, 0.12);
-                color: #005fb8;
-                border: 1px solid rgba(0, 95, 184, 0.3);
-                border-radius: 11px;
-                padding: 2px 10px;
+                background-color: rgba(0, 0, 0, 0.06);
+                color: #404040;
+                border: 1px solid rgba(0, 0, 0, 0.1);
+                border-radius: 6px;
+                padding: 2px 8px;
                 font-size: 11px;
-                font-weight: bold;
+                font-weight: 600;
             }
 
             /* Сайдбар кнопки */
@@ -356,7 +356,7 @@ class ThemeManager:
             #TimerangeButton {
                 background-color: transparent;
                 border: none;
-                border-radius: 5px;
+                border-radius: 6px;
             }
             #TimerangeButton:hover {
                 background-color: rgba(0, 0, 0, 0.06);
@@ -376,13 +376,13 @@ class ThemeManager:
             #ItemProgressBar, QProgressBar {
                 border: none;
                 background-color: rgba(0, 0, 0, 0.05);
-                border-radius: 3px;
+                border-radius: 4px;
                 text-align: center;
                 height: 6px;
             }
             #ItemProgressBar::chunk, QProgressBar::chunk {
                 background-color: #005fb8;
-                border-radius: 3px;
+                border-radius: 4px;
             }
 
             /* Защита базовых элементов */

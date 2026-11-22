@@ -87,9 +87,9 @@ class AnimeGoScanDialog(QDialog):
         steps_layout = QVBoxLayout(self.steps_card)
         steps_layout.setSpacing(8)
 
-        self.step_1 = QLabel("• 1. Подключение к сайту и загрузка страницы (15%)")
-        self.step_2 = QLabel("• 2. Получение списка плееров и озвучек (60%)")
-        self.step_3 = QLabel("• 3. Получение списка доступных серий (85%)")
+        self.step_1 = QLabel("1. Подключение к сайту и загрузка страницы")
+        self.step_2 = QLabel("2. Получение списка плееров и озвучек")
+        self.step_3 = QLabel("3. Получение списка серий")
 
         for lbl in (self.step_1, self.step_2, self.step_3):
             lbl.setStyleSheet("color: #a0a0a0; font-size: 13px;")
@@ -301,13 +301,13 @@ class AnimeGoEpisodesResolveDialog(QDialog):
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
         title_lbl = SubtitleLabel("Сбор ссылок для скачивания серий")
-        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;")
+        title_lbl.setStyleSheet("font-size: 16px; font-weight: 600; color: #ffffff;")
 
         details = self.anime_title
         if self.voiceover:
-            details += f" • {self.voiceover}"
+            details += f", {self.voiceover}"
         if self.quality:
-            details += f" • {self.quality}"
+            details += f", {self.quality}"
         sub_lbl = CaptionLabel(details)
         sub_lbl.setStyleSheet("color: #888888; font-size: 12px;")
 

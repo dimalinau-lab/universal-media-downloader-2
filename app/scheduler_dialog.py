@@ -23,7 +23,7 @@ class SchedulerDialog(QDialog):
         self.current_schedule = current_schedule or {}
         self.result_schedule = None
 
-        self.setWindowTitle(self.translator.translate('scheduler_title', "Планировщик загрузок (Ночной режим)"))
+        self.setWindowTitle(self.translator.translate('scheduler_title', "Планировщик загрузок"))
         self.setFixedSize(510, 420)
         self.initUI()
 
@@ -36,10 +36,10 @@ class SchedulerDialog(QDialog):
         header_layout = QVBoxLayout()
         header_layout.setSpacing(3)
         title = StrongBodyLabel(self.translator.translate('scheduler_header', "Автозапуск очереди по таймеру"))
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title.setStyleSheet("font-size: 16px; font-weight: 600;")
         desc = CaptionLabel(self.translator.translate(
             'scheduler_desc',
-            "Настройте старт скачивания в часы наименьшей нагрузки на сеть или ночью."
+            "Автоматический запуск очереди в заданное время."
         ))
         desc.setWordWrap(True)
         header_layout.addWidget(title)
