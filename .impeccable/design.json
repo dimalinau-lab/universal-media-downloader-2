@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-23T11:57:00Z",
+  "title": "Design System: Universal Media Downloader",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Fluent Blue",
+        "canonical": "#005fb8",
+        "tonalRamp": ["#005a9e", "#005fb8", "#106ebe", "#2b88d8"]
+      },
+      "dark-bg": {
+        "role": "neutral",
+        "displayName": "Canvas Dark",
+        "canonical": "#202020",
+        "tonalRamp": ["#181818", "#202020", "#272727", "#2f2f2f"]
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "Success Emerald",
+        "canonical": "#10b981",
+        "tonalRamp": ["#059669", "#10b981", "#34d399"]
+      }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Title", "purpose": "Task titles and dialog headings" },
+      "body": { "displayName": "Body", "purpose": "Standard UI labels and tables" },
+      "label": { "displayName": "Label", "purpose": "Metadata tags, badges and tooltips" },
+      "mono": { "displayName": "Mono", "purpose": "Technical bitrate, resolution and codecs" }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "fluent-fast",
+        "value": "150ms cubic-bezier(0, 0, 0, 1)",
+        "purpose": "Button and navigation hover states"
+      }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Primary Action Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary action button for downloading and starting queue.",
+      "html": "<button class=\"ds-btn-primary\">Скачать</button>",
+      "css": ".ds-btn-primary { background: #005fb8; color: #ffffff; padding: 0 12px; height: 32px; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-family: 'Segoe UI Variable', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: background-color 150ms ease; } .ds-btn-primary:hover { background: #106ebe; } .ds-btn-primary:active { background: #005a9e; }"
+    },
+    {
+      "name": "Secondary Action Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Subtle secondary control for options and cancellations.",
+      "html": "<button class=\"ds-btn-secondary\">Отмена</button>",
+      "css": ".ds-btn-secondary { background: rgba(255,255,255,0.06); color: #ffffff; padding: 0 12px; height: 32px; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-family: 'Segoe UI Variable', sans-serif; font-size: 13px; cursor: pointer; transition: background-color 150ms ease; } .ds-btn-secondary:hover { background: rgba(255,255,255,0.1); }"
+    },
+    {
+      "name": "Download Task Card",
+      "kind": "card",
+      "refersTo": "card-default",
+      "description": "Standard container for a download queue item.",
+      "html": "<div class=\"ds-task-card\"><div class=\"ds-task-title\">Video_Stream_1080p.mp4</div><div class=\"ds-task-meta\">1080p • 60 FPS • 24.5 MB/s</div></div>",
+      "css": ".ds-task-card { background: #272727; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; font-family: 'Segoe UI Variable', sans-serif; } .ds-task-card:hover { border-color: rgba(255,255,255,0.16); } .ds-task-title { font-size: 15px; font-weight: 600; color: #ffffff; } .ds-task-meta { font-size: 12px; color: #a0a0a0; margin-top: 4px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Fluent Precision Console",
+    "overview": "Universal Media Downloader спроектирован как высокоточная нативная десктопная консоль Windows 11. Интерфейс подчинен принципам строгости, бесшумности и максимальной функциональной информативности.",
+    "keyCharacteristics": [
+      "Нативный Windows 11 Fluent Design (Mica/Acrylic эстетика, скругления 6–8px)",
+      "Тональное наслоение поверхностей вместо рассеянных теней",
+      "Точечное применение акцентного цвета Fluent Blue (#005fb8)",
+      "Строгая 4/8px сетка и типографика Segoe UI Variable"
+    ],
+    "rules": [
+      {
+        "name": "The Focused Accent Rule",
+        "body": "Акцентный синий цвет #005fb8 зарезервирован строго для первичных действий и индикатора прогресса.",
+        "section": "colors"
+      },
+      {
+        "name": "The Zero-Drop-Shadow Rule",
+        "body": "Никаких искусственных размытых теней box-shadow в покое. Разделение слоев достигается градацией фона и 1px полупрозрачными рамками.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do использовать только нативную палитру Fluent Design (#005fb8, #202020, #272727)",
+      "Do выдерживать радиус карточек строго 8px, а кнопок и полей ввода — 6px",
+      "Do разделять блоки 1px микро-бордерами rgba(255, 255, 255, 0.08)"
+    ],
+    "donts": [
+      "Don't добавлять ядовитые градиенты, неоновые обводки или произвольные цвета кнопок",
+      "Don't использовать тяжелые тени с большим радиусом размытия",
+      "Don't применять декоративные медленные анимации (>250 мс)"
+    ]
+  }
+}

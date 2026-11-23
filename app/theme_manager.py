@@ -136,6 +136,45 @@ class ThemeManager:
                 font-weight: 600;
             }
 
+            /* Превью и бейджи карточки загрузки */
+            #Thumbnail {
+                background-color: #2b2b2b;
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+            QPushButton#BadgeQuality {
+                background-color: rgba(0, 95, 184, 0.25);
+                color: #60a5fa;
+                border: 1px solid rgba(0, 95, 184, 0.45);
+                border-radius: 6px;
+                padding: 1px 8px;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            QPushButton#BadgeQuality:hover {
+                background-color: #005fb8;
+                color: #ffffff;
+                border-color: #106ebe;
+            }
+            QPushButton#BadgeQuality:pressed {
+                background-color: #005a9e;
+            }
+            #BadgeTimeRange {
+                background-color: rgba(245, 158, 11, 0.15);
+                color: #f59e0b;
+                border: 1px solid rgba(245, 158, 11, 0.3);
+                border-radius: 6px;
+                padding: 1px 8px;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            #SizeLabelItem {
+                color: #60a5fa;
+                font-weight: 600;
+                font-size: 13px;
+                font-family: monospace, sans-serif;
+            }
+
             /* Сайдбар кнопки (Мягкое полупрозрачное наведение) */
             #NavButton {
                 background-color: transparent;
@@ -313,6 +352,45 @@ class ThemeManager:
                 padding: 2px 8px;
                 font-size: 11px;
                 font-weight: 600;
+            }
+
+            /* Превью и бейджи карточки загрузки */
+            #Thumbnail {
+                background-color: #e8e8e8;
+                border-radius: 8px;
+                border: 1px solid rgba(0, 0, 0, 0.06);
+            }
+            QPushButton#BadgeQuality {
+                background-color: rgba(0, 95, 184, 0.1);
+                color: #005fb8;
+                border: 1px solid rgba(0, 95, 184, 0.25);
+                border-radius: 6px;
+                padding: 1px 8px;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            QPushButton#BadgeQuality:hover {
+                background-color: #005fb8;
+                color: #ffffff;
+                border-color: #005fb8;
+            }
+            QPushButton#BadgeQuality:pressed {
+                background-color: #005a9e;
+            }
+            #BadgeTimeRange {
+                background-color: rgba(180, 83, 9, 0.1);
+                color: #b45309;
+                border: 1px solid rgba(180, 83, 9, 0.25);
+                border-radius: 6px;
+                padding: 1px 8px;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            #SizeLabelItem {
+                color: #005fb8;
+                font-weight: 600;
+                font-size: 13px;
+                font-family: monospace, sans-serif;
             }
 
             /* Сайдбар кнопки */

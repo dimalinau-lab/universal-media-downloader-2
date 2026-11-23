@@ -214,7 +214,6 @@ class DownloadItemWidget(QWidget):
         self.thumbnail_label.setFixedSize(144, 81)
         self.thumbnail_label.setObjectName('Thumbnail')
         self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumbnail_label.setStyleSheet("background-color: #2b2b2b; border-radius: 8px;")
         main_layout.addWidget(self.thumbnail_label)
 
         info_layout = QVBoxLayout()
@@ -232,7 +231,6 @@ class DownloadItemWidget(QWidget):
         self.url_label = CaptionLabel(display_url)
         self.url_label.setObjectName('UrlLabel')
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.url_label.setStyleSheet("color: #888888;")
         self.url_label.setToolTip(self.task.url)
         self.url_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.url_label.customContextMenuRequested.connect(
@@ -251,35 +249,15 @@ class DownloadItemWidget(QWidget):
         self.badge_quality.setObjectName('BadgeQuality')
         self.badge_quality.setCursor(Qt.CursorShape.PointingHandCursor)
         self.badge_quality.setFixedHeight(22)
-        self.badge_quality.setStyleSheet("""
-            QPushButton#BadgeQuality {
-                background-color: rgba(0, 122, 204, 0.22);
-                color: #29b6f6;
-                border: 1px solid rgba(41, 182, 246, 0.4);
-                border-radius: 4px;
-                padding: 1px 7px;
-                font-weight: bold;
-                font-size: 11px;
-            }
-            QPushButton#BadgeQuality:hover {
-                background-color: rgba(0, 122, 204, 0.45);
-                color: #ffffff;
-                border: 1px solid #29b6f6;
-            }
-            QPushButton#BadgeQuality:pressed {
-                background-color: rgba(0, 122, 204, 0.7);
-            }
-        """)
         self.badge_quality.setToolTip("Нажмите для выбора качества видео или MP3")
         self.badge_quality.clicked.connect(self.show_quality_selection_menu)
         self.badge_quality.hide()
 
         self.badge_timerange = CaptionLabel()
         self.badge_timerange.setObjectName('BadgeTimeRange')
-        self.badge_timerange.setStyleSheet(
-            "background-color: rgba(255, 152, 0, 0.2); color: #ffa726; "
-            "padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;"
-        )
+        self.badge_timerange.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.badge_timerange.setToolTip("Нажмите для изменения отрезка времени")
+        self.badge_timerange.mousePressEvent = lambda _e: self.open_time_range_dialog()
         self.badge_timerange.hide()
 
         url_row.addWidget(self.url_label)
@@ -299,7 +277,6 @@ class DownloadItemWidget(QWidget):
 
         self.size_label = StrongBodyLabel()
         self.size_label.setObjectName('SizeLabelItem')
-        self.size_label.setStyleSheet("color: #007acc;")
         self.size_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
         status_layout.addWidget(self.status_label)
@@ -334,6 +311,7 @@ class DownloadItemWidget(QWidget):
         self.timerange_button.setFixedSize(34, 34)
         self.timerange_button.setToolTip(self.translator.translate('time_range', 'Скачать отрезок / таймкоды'))
         self.timerange_button.clicked.connect(self.open_time_range_dialog)
+        self.timerange_button.hide()
 
         self.stop_button = TransparentToolButton(FluentIcon.PAUSE)
         self.stop_button.setFixedSize(34, 34)
@@ -345,6 +323,11 @@ class DownloadItemWidget(QWidget):
         self.folder_button.setToolTip(self.translator.translate('show_in_folder', 'Показать в папке'))
         self.folder_button.clicked.connect(self.open_folder_requested.emit)
 
+        self.more_button = TransparentToolButton(FluentIcon.MORE)
+        self.more_button.setFixedSize(34, 34)
+        self.more_button.setToolTip(self.translator.translate('more_actions', 'Другие действия'))
+        self.more_button.clicked.connect(self.show_more_menu)
+
         self.remove_button = TransparentToolButton(FluentIcon.DELETE)
         self.remove_button.setFixedSize(34, 34)
         self.remove_button.setToolTip(self.translator.translate('remove_from_list', 'Убрать из списка'))
@@ -352,9 +335,9 @@ class DownloadItemWidget(QWidget):
 
         buttons_layout.addWidget(self.play_button)
         buttons_layout.addWidget(self.download_button)
-        buttons_layout.addWidget(self.timerange_button)
         buttons_layout.addWidget(self.stop_button)
         buttons_layout.addWidget(self.folder_button)
+        buttons_layout.addWidget(self.more_button)
         buttons_layout.addWidget(self.remove_button)
 
         order_layout = QVBoxLayout()
@@ -417,7 +400,10 @@ class DownloadItemWidget(QWidget):
 
         self.start_or_retry_requested.emit()
 
-    def show_context_menu(self, pos):
+    def show_more_menu(self):
+        self.show_context_menu(self.more_button.rect().bottomLeft(), parent_widget=self.more_button)
+
+    def show_context_menu(self, pos, parent_widget=None):
         menu = QMenu(self)
         act_open_file = QAction(self.translator.translate('open_file', 'Смотреть видео'), self)
         act_start = QAction("Скачать / Возобновить", self)
@@ -479,7 +465,9 @@ class DownloadItemWidget(QWidget):
         menu.addAction(act_copy)
         menu.addSeparator()
         menu.addAction(act_remove)
-        menu.exec(self.mapToGlobal(pos))
+
+        target_pos = parent_widget.mapToGlobal(pos) if parent_widget is not None else self.mapToGlobal(pos)
+        menu.exec(target_pos)
 
     def connect_signals(self):
         self.task.info_updated.connect(self.update_ui)
@@ -568,10 +556,11 @@ class DownloadItemWidget(QWidget):
         self.stop_button.setVisible(is_active)
         self.play_button.setVisible(is_completed)
         self.download_button.setVisible(is_pending or is_incomplete)
-        self.timerange_button.setVisible(is_pending or is_completed)
+        self.timerange_button.setVisible(False)
         self.folder_button.setVisible(is_completed)
-        self.move_up_button.setVisible(not is_incomplete)
-        self.move_down_button.setVisible(not is_incomplete)
+        self.more_button.setVisible(True)
+        self.move_up_button.setVisible(is_pending)
+        self.move_down_button.setVisible(is_pending)
         self.btn_copy_url.setVisible(not is_incomplete)
         self.badge_quality.setEnabled(not is_incomplete and not is_active)
 
