@@ -1530,7 +1530,8 @@ class DownloadManager(QObject):
         logger.warning(f"[DownloadManager] yt-dlp не смог разрешить ссылку {task.url}: {error}")
 
         # Уровень 3: Каскадный фоллбэк на Универсальный сетевой перехватчик (Sniffer)
-        if not getattr(task, '_sniffer_attempted', False):
+        sniffer_enabled = self.settings.value('sniffer_enabled', True, type=bool)
+        if sniffer_enabled and not getattr(task, '_sniffer_attempted', False):
             task._sniffer_attempted = True
             logger.info(f"[DownloadManager] Запуск каскадного Universal Sniffer для {task.url}...")
             self._start_universal_sniffer(task)
@@ -1547,7 +1548,8 @@ class DownloadManager(QObject):
         task.progress_updated.emit(0, msg)
         self.status_updated.emit(f"Поиск скрытого видеопотока: {task.url[:45]}...")
 
-        worker = UniversalSnifferWorker(task.url, timeout=18, task=task)
+        timeout = int(self.settings.value('sniffer_timeout', 18, type=int) or 18)
+        worker = UniversalSnifferWorker(task.url, timeout=timeout, task=task)
         self._sniffer_workers[task] = worker
         worker.signals.status_updated.connect(lambda msg, t=task: self._on_sniffer_status(t, msg))
         worker.signals.stream_found.connect(lambda info, t=task: self._on_sniffer_stream_found(t, info))

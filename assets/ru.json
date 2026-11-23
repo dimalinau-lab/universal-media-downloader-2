@@ -327,5 +327,9 @@
   "tg_btn_unbind": "Сбросить",
   "tg_cb_quality": "Спрашивать качество видео (1080p, 720p, MP3) перед скачиванием в Telegram",
   "tg_cb_progress": "Живой прогресс-бар скачивания в чате Telegram (с троттлингом)",
-  "tg_cb_silent": "Тихий режим (отправка уведомлений бота без звука)"
+  "tg_cb_silent": "Тихий режим (отправка уведомлений бота без звука)",
+  "sniffer_settings": "Универсальный сниффер потоков (Sniffer)",
+  "sniffer_enable_title": "Использовать каскадный перехватчик (фоллбэк при сбое yt-dlp)",
+  "sniffer_timeout_title": "Таймаут поиска видеопотока:",
+  "playwright_status_title": "Движок Playwright / Chromium (сниффер):"
 }

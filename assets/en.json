@@ -327,5 +327,9 @@
   "tg_btn_unbind": "Unbind",
   "tg_cb_quality": "Ask video quality (1080p, 720p, MP3) in Telegram before downloading",
   "tg_cb_progress": "Live download progress bar in Telegram chat (throttled)",
-  "tg_cb_silent": "Silent mode (send bot notifications without sound)"
+  "tg_cb_silent": "Silent mode (send bot notifications without sound)",
+  "sniffer_settings": "Universal Stream Sniffer",
+  "sniffer_enable_title": "Use cascade stream sniffer (fallback on yt-dlp failure)",
+  "sniffer_timeout_title": "Stream detection timeout:",
+  "playwright_status_title": "Playwright / Chromium Engine (Sniffer):"
 }

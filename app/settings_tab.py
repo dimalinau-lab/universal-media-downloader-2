@@ -183,10 +183,11 @@ class SettingsTab(QWidget):
         main_layout.setSpacing(18)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # 6 структурированных карточек настроек
+        # 7 структурированных карточек настроек
         self.create_download_storage_settings(main_layout)
         self.create_formats_codecs_settings(main_layout)
         self.create_quality_settings(main_layout)
+        self.create_sniffer_settings(main_layout)
         self.create_cookies_settings(main_layout)
         self.create_diagnostics_settings(main_layout)
         self.create_general_settings(main_layout)
@@ -589,6 +590,71 @@ class SettingsTab(QWidget):
 
         layout.addWidget(group_box)
 
+    def create_sniffer_settings(self, layout):
+        group_box = QGroupBox()
+        group_box.setProperty("title_key", "sniffer_settings")
+        group_box.setTitle(self.translator.translate("sniffer_settings", "Универсальный сниффер потоков (Sniffer)"))
+        group_box.setObjectName('SettingsGroup')
+        v_layout = QVBoxLayout(group_box)
+        v_layout.setSpacing(14)
+        v_layout.setContentsMargins(16, 22, 16, 16)
+
+        tip_sniffer = "Автономный сетевой анализатор на базе Chromium: активируется при сбое прямого экстрактора yt-dlp для перехвата m3u8, mpd и прямых видеопотоков."
+        self._apply_tooltip(group_box, tip_sniffer)
+
+        # Тумблер включения каскадного сниффера
+        sniffer_enable_layout = QHBoxLayout()
+        self.sniffer_enable_label = BodyLabel()
+        self.sniffer_enable_label.setProperty("text_key", "sniffer_enable_title")
+        self.sniffer_enable_label.setText(self.translator.translate("sniffer_enable_title", "Использовать каскадный перехватчик (фоллбэк при сбое yt-dlp)"))
+        self.sniffer_enabled_checkbox = SwitchButton()
+        self.sniffer_enabled_checkbox.setOnText("Вкл")
+        self.sniffer_enabled_checkbox.setOffText("Выкл")
+        sniffer_enable_layout.addWidget(self.sniffer_enable_label)
+        sniffer_enable_layout.addStretch()
+        sniffer_enable_layout.addWidget(self.sniffer_enabled_checkbox)
+        v_layout.addLayout(sniffer_enable_layout)
+
+        tip_switch = "Если включено, программа автоматически запустит защищенный headless-браузер для захвата потока, если yt-dlp не поддерживает данный сайт."
+        self._apply_tooltip(self.sniffer_enable_label, tip_switch)
+        self._apply_tooltip(self.sniffer_enabled_checkbox, tip_switch)
+
+        # Контейнер дополнительных опций сниффера
+        self.sniffer_options_widget = QWidget()
+        opts_layout = QVBoxLayout(self.sniffer_options_widget)
+        opts_layout.setContentsMargins(0, 0, 0, 0)
+        opts_layout.setSpacing(12)
+
+        # Таймаут поиска
+        timeout_layout = QHBoxLayout()
+        self.sniffer_timeout_label = BodyLabel()
+        self.sniffer_timeout_label.setProperty("text_key", "sniffer_timeout_title")
+        self.sniffer_timeout_label.setText(self.translator.translate("sniffer_timeout_title", "Таймаут поиска видеопотока:"))
+
+        self.sniffer_timeout_spin = SpinBox()
+        self.sniffer_timeout_spin.setRange(5, 60)
+        self.sniffer_timeout_spin.setValue(18)
+        self.sniffer_timeout_spin.setSingleStep(1)
+        self.sniffer_timeout_spin.setMinimumWidth(110)
+        self.sniffer_timeout_spin.setSuffix(" с")
+
+        timeout_layout.addWidget(self.sniffer_timeout_label)
+        timeout_layout.addSpacing(10)
+        timeout_layout.addWidget(self.sniffer_timeout_spin)
+        timeout_layout.addStretch()
+        opts_layout.addLayout(timeout_layout)
+
+        tip_timeout = "Время в секундах (5-60 с), в течение которого сниффер ожидает инициализацию медиаплеера и сетевой запрос m3u8/mpd."
+        self._apply_tooltip(self.sniffer_timeout_label, tip_timeout)
+        self._apply_tooltip(self.sniffer_timeout_spin, tip_timeout)
+
+        v_layout.addWidget(self.sniffer_options_widget)
+        layout.addWidget(group_box)
+
+    def update_sniffer_widgets_state(self):
+        if hasattr(self, 'sniffer_options_widget') and hasattr(self, 'sniffer_enabled_checkbox'):
+            self.sniffer_options_widget.setEnabled(self.sniffer_enabled_checkbox.isChecked())
+
     def create_cookies_settings(self, layout):
         group_box = QGroupBox()
         group_box.setProperty("title_key", "cookies_settings")
@@ -737,6 +803,36 @@ class SettingsTab(QWidget):
         tip_ff = "Встроенный мультимедиа-комбайн FFmpeg/FFprobe: склейка потоков аудио и видео, нарезка, конвертация и инспектор MediaInfo."
         self._apply_tooltip(self.lbl_ffmpeg_title, tip_ff)
         self._apply_tooltip(self.lbl_ff_status, tip_ff)
+
+        # Playwright & Chromium статус
+        playwright_layout = QHBoxLayout()
+        self.lbl_playwright_title = BodyLabel()
+        self.lbl_playwright_title.setProperty("text_key", "playwright_status_title")
+        self.lbl_playwright_title.setText(self.translator.translate("playwright_status_title", "Движок Playwright / Chromium (сниффер):"))
+
+        self.lbl_playwright_icon = IconWidget()
+        self.lbl_playwright_icon.setFixedSize(16, 16)
+        self.lbl_playwright_status = BodyLabel()
+
+        self.btn_copy_playwright_cmd = PushButton("Копировать команду установки")
+        self.btn_copy_playwright_cmd.setIcon(FluentIcon.COPY)
+        self.btn_copy_playwright_cmd.clicked.connect(
+            lambda: QApplication.clipboard().setText("pip install playwright && playwright install chromium")
+        )
+
+        playwright_layout.addWidget(self.lbl_playwright_title)
+        playwright_layout.addSpacing(10)
+        playwright_layout.addWidget(self.lbl_playwright_icon)
+        playwright_layout.addSpacing(4)
+        playwright_layout.addWidget(self.lbl_playwright_status)
+        playwright_layout.addStretch()
+        playwright_layout.addWidget(self.btn_copy_playwright_cmd)
+        v_layout.addLayout(playwright_layout)
+
+        tip_pw = "Движок автоматизации Playwright и системный Edge/Chromium: обеспечивают перехват потоков на сайтах со сложными JS-плеерами."
+        self._apply_tooltip(self.lbl_playwright_title, tip_pw)
+        self._apply_tooltip(self.lbl_playwright_status, tip_pw)
+        self._apply_tooltip(self.btn_copy_playwright_cmd, "Копирует команду PowerShell/CMD для установки Playwright и браузера: pip install playwright && playwright install chromium")
 
         self.update_status_indicators()
 
@@ -917,6 +1013,8 @@ class SettingsTab(QWidget):
         self.auto_start_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.parallel_downloads_spin.valueChanged.connect(self.on_setting_changed)
         self.save_path_btn.clicked.connect(self.on_select_save_path)
+        self.sniffer_enabled_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.sniffer_timeout_spin.valueChanged.connect(self.on_setting_changed)
         self.subtitles_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.sponsorblock_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.cookies_checkbox.checkedChanged.connect(self.on_setting_changed)
@@ -947,6 +1045,8 @@ class SettingsTab(QWidget):
 
     def disconnect_signals(self):
         signals_to_disconnect = [
+            self.sniffer_enabled_checkbox.checkedChanged,
+            self.sniffer_timeout_spin.valueChanged,
             self.theme_combo.currentIndexChanged,
             self.auto_start_checkbox.checkedChanged,
             self.parallel_downloads_spin.valueChanged,
@@ -1071,6 +1171,9 @@ class SettingsTab(QWidget):
             self.save_path_lbl.setText(self.translator.translate('folder_not_selected'))
 
         self.auto_start_checkbox.setChecked(self.settings.value('auto_start_downloads', False, type=bool))
+        self.sniffer_enabled_checkbox.setChecked(self.settings.value('sniffer_enabled', True, type=bool))
+        self.sniffer_timeout_spin.setValue(int(self.settings.value('sniffer_timeout', 18, type=int)))
+        self.update_sniffer_widgets_state()
         subs_on = self.settings.value('subtitles_enabled', False, type=bool)
         self.subtitles_checkbox.setChecked(subs_on)
         self.subtitles_options_widget.setVisible(subs_on)
@@ -1165,6 +1268,9 @@ class SettingsTab(QWidget):
     def on_setting_changed(self):
         self.settings.setValue('theme', self.theme_combo.currentData())
         self.settings.setValue('auto_start_downloads', self.auto_start_checkbox.isChecked())
+        self.settings.setValue('sniffer_enabled', self.sniffer_enabled_checkbox.isChecked())
+        self.settings.setValue('sniffer_timeout', self.sniffer_timeout_spin.value())
+        self.update_sniffer_widgets_state()
         self.settings.setValue('parallel_downloads', self.parallel_downloads_spin.value())
         self.parent_window.thread_pool.setMaxThreadCount(max(self.parallel_downloads_spin.value() + 8, 10))
 
@@ -1423,3 +1529,46 @@ class SettingsTab(QWidget):
             f.setBold(True)
             self.lbl_ff_status.setFont(f)
             self.lbl_ff_status.style().polish(self.lbl_ff_status)
+
+        # Playwright & Edge/Chromium статус (сниффер)
+        has_playwright = False
+        try:
+            import playwright  # noqa: F401
+            has_playwright = True
+        except ImportError:
+            pass
+
+        has_edge_or_chrome = any(os.path.exists(p) for p in [
+            os.path.join(os.environ.get('ProgramFiles(x86)', 'C:\\Program Files (x86)'), 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+            os.path.join(os.environ.get('ProgramFiles', 'C:\\Program Files'), 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+            os.path.join(os.environ.get('ProgramFiles', 'C:\\Program Files'), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            os.path.join(os.environ.get('ProgramFiles(x86)', 'C:\\Program Files (x86)'), 'Google', 'Chrome', 'Application', 'chrome.exe')
+        ]) or bool(shutil.which('msedge') or shutil.which('chrome'))
+
+        if hasattr(self, 'lbl_playwright_icon') and hasattr(self, 'lbl_playwright_status'):
+            if has_playwright and has_edge_or_chrome:
+                self.lbl_playwright_icon.setIcon(FluentIcon.ACCEPT.colored(QColor('#107c41'), QColor('#10b981')))
+                self.lbl_playwright_status.setText("Активен (Playwright + Edge/Chrome)")
+                self.lbl_playwright_status.setTextColor(QColor('#107c41'), QColor('#10b981'))
+                self.lbl_playwright_status.setStyleSheet(f"color: {success_color} !important; font-weight: 600;")
+                self.lbl_playwright_status.setObjectName("StatusLabelSuccess")
+            elif has_playwright:
+                self.lbl_playwright_icon.setIcon(FluentIcon.INFO.colored(QColor('#b45309'), QColor('#f59e0b')))
+                self.lbl_playwright_status.setText("Playwright установлен (браузер не найден)")
+                self.lbl_playwright_status.setTextColor(QColor('#b45309'), QColor('#f59e0b'))
+                self.lbl_playwright_status.setStyleSheet(f"color: {warning_color} !important; font-weight: 600;")
+                self.lbl_playwright_status.setObjectName("StatusLabelWarning")
+            else:
+                self.lbl_playwright_icon.setIcon(FluentIcon.INFO.colored(QColor('#b45309'), QColor('#f59e0b')))
+                self.lbl_playwright_status.setText("Не обнаружен (сниффер отключен)")
+                self.lbl_playwright_status.setTextColor(QColor('#b45309'), QColor('#f59e0b'))
+                self.lbl_playwright_status.setStyleSheet(f"color: {warning_color} !important; font-weight: 600;")
+                self.lbl_playwright_status.setObjectName("StatusLabelWarning")
+
+            f_pw = self.lbl_playwright_status.font()
+            f_pw.setBold(True)
+            self.lbl_playwright_status.setFont(f_pw)
+            self.lbl_playwright_status.style().polish(self.lbl_playwright_status)
+
+        if hasattr(self, 'btn_copy_playwright_cmd'):
+            self.btn_copy_playwright_cmd.setVisible(not (has_playwright and has_edge_or_chrome))
