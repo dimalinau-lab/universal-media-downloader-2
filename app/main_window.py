@@ -9,7 +9,7 @@ import shutil
 from qfluentwidgets import (LineEdit, TransparentToolButton, PrimaryPushButton,
                             PushButton, TransparentToggleToolButton, SubtitleLabel, BodyLabel, CaptionLabel,
                             StrongBodyLabel, FluentIcon, setTheme, Theme, SearchLineEdit,
-                            TransparentPushButton, RoundMenu, Action, ComboBox, IconWidget)
+                            TransparentPushButton, RoundMenu, Action, ComboBox, IconWidget, isDarkTheme)
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QSizePolicy,
                              QFileDialog, QMessageBox, QComboBox,
@@ -26,7 +26,6 @@ from .download_manager import DownloadManager
 from .translation import Translator
 from .theme_manager import ThemeManager
 from .flow_layout import FlowLayout
-from .update_checker import UpdateChecker
 from .telegram_bot import TelegramBotManager
 from .__version__ import __version__ as APP_VERSION
 logger = logging.getLogger(__name__)
@@ -64,9 +63,9 @@ class CountdownShutdownDialog(QDialog):
         self.translator = translator
         self.remaining_seconds = 30
         self.cancelled = False
-        self.setWindowTitle(
-            "Автовыключение ПК" if action == "shutdown" else ("Переход в спящий режим" if action == "sleep" else "Завершение работы")
-        )
+        title_key = "shutdown_title" if action == "shutdown" else "sleep_title"
+        default_title = "Автовыключение ПК" if action == "shutdown" else "Переход в спящий режим"
+        self.setWindowTitle(self._t(title_key, default_title))
         self.setFixedSize(420, 190)
         self.initUI()
 
@@ -74,24 +73,41 @@ class CountdownShutdownDialog(QDialog):
         self.timer.timeout.connect(self._on_tick)
         self.timer.start(1000)
 
+    def _t(self, key: str, default: str) -> str:
+        if self.translator and hasattr(self.translator, 'translate'):
+            return self.translator.translate(key, default)
+        return default
+
+    def _format_countdown(self) -> str:
+        if self.action == "shutdown":
+            tpl = self._t("shutdown_countdown_msg", "Компьютер выключится через {seconds} сек.")
+        else:
+            tpl = self._t("sleep_countdown_msg", "Компьютер перейдёт в спящий режим через {seconds} сек.")
+        return tpl.format(seconds=self.remaining_seconds)
+
     def initUI(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
 
-        action_name = "выключится" if self.action == "shutdown" else "перейдет в спящий режим"
-        self.lbl_title = StrongBodyLabel("Все загрузки в очереди завершены!")
-        self.lbl_msg = BodyLabel(f"Компьютер {action_name} через {self.remaining_seconds} сек.")
-        self.lbl_msg.setStyleSheet("color: #ffa726; font-size: 14px; font-weight: bold;")
+        is_dark = isDarkTheme()
+        parent = self.parent()
+        if parent is not None and hasattr(parent, 'settings') and parent.settings is not None:
+            is_dark = parent.settings.value('theme', 'dark') == 'dark'
+        warn_color = "#ffa726" if is_dark else "#d83b01"
+
+        self.lbl_title = StrongBodyLabel(self._t("shutdown_done_header", "Все загрузки в очереди завершены!"))
+        self.lbl_msg = BodyLabel(self._format_countdown())
+        self.lbl_msg.setStyleSheet(f"color: {warn_color}; font-size: 14px; font-weight: bold;")
 
         layout.addWidget(self.lbl_title)
         layout.addWidget(self.lbl_msg)
         layout.addStretch()
 
         btn_box = QHBoxLayout()
-        self.btn_cancel = PrimaryPushButton("Отменить действие")
+        self.btn_cancel = PrimaryPushButton(self._t("cancel_action_btn", "Отменить действие"))
         self.btn_cancel.clicked.connect(self.on_cancel)
-        self.btn_now = PushButton("Выполнить сейчас")
+        self.btn_now = PushButton(self._t("execute_now_btn", "Выполнить сейчас"))
         self.btn_now.clicked.connect(self.accept)
 
         btn_box.addWidget(self.btn_cancel)
@@ -100,8 +116,7 @@ class CountdownShutdownDialog(QDialog):
 
     def _on_tick(self):
         self.remaining_seconds -= 1
-        action_name = "выключится" if self.action == "shutdown" else "перейдет в спящий режим"
-        self.lbl_msg.setText(f"Компьютер {action_name} через {self.remaining_seconds} сек.")
+        self.lbl_msg.setText(self._format_countdown())
         if self.remaining_seconds <= 0:
             self.timer.stop()
             self.accept()
@@ -113,16 +128,10 @@ class CountdownShutdownDialog(QDialog):
 
 
 class DragOverlayWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, translator=None, is_dark: bool = True):
         super().__init__(parent)
+        self.translator = translator
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setStyleSheet("""
-            QWidget#DragOverlay {
-                background-color: rgba(18, 24, 38, 0.92);
-                border: 3px dashed #0078d4;
-                border-radius: 14px;
-            }
-        """)
         self.setObjectName("DragOverlay")
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -131,16 +140,44 @@ class DragOverlayWidget(QWidget):
         icon = IconWidget(FluentIcon.FOLDER_ADD)
         icon.setFixedSize(54, 54)
 
-        lbl_title = SubtitleLabel("Отпустите ссылки или .txt файлы здесь")
-        lbl_title.setStyleSheet("font-size: 19px; font-weight: bold; color: #ffffff;")
-
-        lbl_sub = CaptionLabel("Ссылки будут проверены и добавлены в очередь загрузки")
-        lbl_sub.setStyleSheet("font-size: 13px; color: #60cdff;")
+        self.lbl_title = SubtitleLabel()
+        self.lbl_sub = CaptionLabel()
 
         layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl_title, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl_sub, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.lbl_title, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.lbl_sub, 0, Qt.AlignmentFlag.AlignCenter)
+        self.apply_appearance(translator, is_dark)
         self.hide()
+
+    def apply_appearance(self, translator=None, is_dark: bool = True):
+        if translator is not None:
+            self.translator = translator
+        t = self.translator
+        title_txt = t.translate("drag_drop_title", "Отпустите ссылки или .txt файлы здесь") if t else "Отпустите ссылки или .txt файлы здесь"
+        sub_txt = t.translate("drag_drop_subtitle", "Ссылки будут проверены и добавлены в очередь загрузки") if t else "Ссылки будут проверены и добавлены в очередь загрузки"
+        self.lbl_title.setText(title_txt)
+        self.lbl_sub.setText(sub_txt)
+
+        if is_dark:
+            bg = "rgba(18, 24, 38, 0.92)"
+            border = "#0078d4"
+            title_c = "#ffffff"
+            sub_c = "#60cdff"
+        else:
+            bg = "rgba(245, 248, 255, 0.94)"
+            border = "#0067c0"
+            title_c = "#1a1a1a"
+            sub_c = "#005fb8"
+
+        self.setStyleSheet(f"""
+            QWidget#DragOverlay {{
+                background-color: {bg};
+                border: 3px dashed {border};
+                border-radius: 14px;
+            }}
+        """)
+        self.lbl_title.setStyleSheet(f"font-size: 19px; font-weight: bold; color: {title_c};")
+        self.lbl_sub.setStyleSheet(f"font-size: 13px; color: {sub_c};")
 
 
 class MainWindow(QMainWindow):
@@ -158,7 +195,12 @@ class MainWindow(QMainWindow):
         parallel_downloads = int(self.settings.value('parallel_downloads', 2))
         self.thread_pool.setMaxThreadCount(max(parallel_downloads + 6, 8))
         self.download_manager = DownloadManager(self.settings, self.ffmpeg_path, self.thread_pool, self.translator, parent=self)
-        self.update_checker = UpdateChecker(self, self.translator, self.settings, self.thread_pool)
+        self._update_checker = None
+        self._filter_debounce_timer = QTimer(self)
+        self._filter_debounce_timer.setSingleShot(True)
+        self._filter_debounce_timer.setInterval(30)
+        self._filter_debounce_timer.timeout.connect(self.apply_downloads_filter)
+
         self.bot_manager = TelegramBotManager(self.settings)
         self.download_manager.bot_manager = self.bot_manager
         self.bot_manager.download_manager = self.download_manager
@@ -166,16 +208,8 @@ class MainWindow(QMainWindow):
         self.bot_manager.signals.url_received.connect(self._on_bot_url_received)
 
         self.current_filter_mode = 'all'
+        self._pending_bot_token = str(self.settings.value('tg_bot_token', '') or '').strip()
 
-        # --- ЗАЩИТА ОТ КРИВОГО ТОКЕНА ---
-        saved_token = self.settings.value('tg_bot_token', '')
-        if saved_token:
-            try:
-                self.bot_manager.start_bot(saved_token)
-            except Exception as e:
-                logger.error(f"Ошибка запуска бота (кривой токен): {e}")
-                self.settings.remove('tg_bot_token')  # Удаляем сломанный токен из памяти
-        # --------------------------------
         self.initUI()
         self.connect_signals()
         self.update_theme_icons()
@@ -188,6 +222,13 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(500, self._check_first_launch)
         QTimer.singleShot(1000, self._startup_checks)
+
+    @property
+    def update_checker(self):
+        if self._update_checker is None:
+            from .update_checker import UpdateChecker
+            self._update_checker = UpdateChecker(self, self.translator, self.settings, self.thread_pool)
+        return self._update_checker
 
     def check_ffprobe(self):
         if hasattr(self, 'ffmpeg_path') and self.ffmpeg_path:
@@ -267,7 +308,11 @@ class MainWindow(QMainWindow):
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        self.drag_overlay = DragOverlayWidget(central_widget)
+        self.drag_overlay = DragOverlayWidget(
+            central_widget,
+            translator=self.translator,
+            is_dark=(current_theme == 'dark'),
+        )
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -561,16 +606,19 @@ class MainWindow(QMainWindow):
 
         self.download_button = PrimaryPushButton(FluentIcon.DOWNLOAD, self.translator.translate('download_all'))
         self.download_button.setFixedHeight(32)
+        self.download_button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
 
         self.threads_label = QLabel("")
         self.threads_label.setObjectName('StatusLabel')
 
         self.stop_button = PushButton(FluentIcon.CANCEL_MEDIUM, self.translator.translate('stop'))
         self.stop_button.setFixedHeight(32)
+        self.stop_button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.stop_button.setEnabled(False)
 
         self.clear_button = PushButton(FluentIcon.DELETE, self.translator.translate('clear_all', 'Очистить'))
         self.clear_button.setFixedHeight(32)
+        self.clear_button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.clear_button.setToolTip(self.translator.translate('clear_completed', 'Очистить завершенные'))
 
         self.btn_open_save = TransparentToolButton(FluentIcon.FOLDER)
@@ -604,13 +652,13 @@ class MainWindow(QMainWindow):
 
         self.summary_info = QLabel("")
         self.summary_info.setObjectName('StatusLabel')
-        self.summary_info.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Preferred)
-        self.summary_info.setMinimumWidth(170)
+        self.summary_info.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.summary_info.setMinimumWidth(110)
 
         self.status_label = QLabel(self.translator.translate('waiting'))
         self.status_label.setObjectName('StatusLabel')
-        self.status_label.setMinimumWidth(160)
-        self.status_label.setMaximumWidth(400)
+        self.status_label.setMinimumWidth(110)
+        self.status_label.setMaximumWidth(360)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         bottom_bar_layout.addWidget(self.download_button)
@@ -685,8 +733,9 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentIndex(1)
 
     def _show_files_tab(self):
-        self.page_stack.setCurrentIndex(2)
-        QTimer.singleShot(0, self.files_page.load_files)
+        page = self.files_page
+        self.page_stack.setCurrentWidget(page)
+        QTimer.singleShot(0, page.load_files)
 
     def _show_telegram_tab(self):
         _ = self.telegram_page
@@ -752,7 +801,8 @@ class MainWindow(QMainWindow):
         self.url_input.setPlaceholderText(self.translator.translate('enter_link_and_press_add'))
         self.download_button.setText(self.translator.translate('download_all'))
         self.stop_button.setText(self.translator.translate('stop'))
-        self.clear_button.setText(self.translator.translate('clear_completed'))
+        self.clear_button.setText(self.translator.translate('clear_all', 'Очистить'))
+        self.clear_button.setToolTip(self.translator.translate('clear_completed', 'Очистить завершенные'))
         self.status_label.setText(self.translator.translate('waiting'))
         self.btn_downloads.setText(self.translator.translate('loader_tab_title'))
         self.btn_settings.setText(self.translator.translate('settings'))
@@ -804,6 +854,9 @@ class MainWindow(QMainWindow):
         self.language_combo.setItemText(1, 'Русский')
         self.language_combo.setItemText(2, 'Українська')
         self.language_combo.blockSignals(False)
+        if hasattr(self, 'drag_overlay') and self.drag_overlay:
+            is_dark = self.settings.value('theme', 'dark') == 'dark'
+            self.drag_overlay.apply_appearance(self.translator, is_dark)
         if self._settings_page:
             self._settings_page.update_translations()
         if self._history_page:
@@ -836,6 +889,9 @@ class MainWindow(QMainWindow):
     def update_theme_icons(self):
         theme_str = self.settings.value('theme', 'dark')
         theme = Theme.DARK if theme_str == 'dark' else Theme.LIGHT
+
+        if hasattr(self, 'drag_overlay') and self.drag_overlay:
+            self.drag_overlay.apply_appearance(self.translator, theme_str == 'dark')
 
         # Сайдбар кнопки навигации
         if hasattr(self, 'btn_downloads'):
@@ -926,8 +982,50 @@ class MainWindow(QMainWindow):
                 pass
             return
 
+        from .threads import is_youtube_mix_url, strip_youtube_playlist_params
+        if is_youtube_mix_url(url):
+            single_url = strip_youtube_playlist_params(url)
+            if single_url != url:
+                msg = QMessageBox(self)
+                msg.setWindowTitle(self.translator.translate('yt_mix_title', "Обнаружен YouTube Mix"))
+                msg.setText(self.translator.translate(
+                    'yt_mix_prompt',
+                    "Ссылка ведёт на автогенерируемый плейлист (YouTube Mix / Радио).\nЧто вы хотите загрузить?"
+                ))
+                msg.setIcon(QMessageBox.Icon.Question)
+                btn_single = msg.addButton(
+                    self.translator.translate('yt_mix_single_btn', "Только это видео"),
+                    QMessageBox.ButtonRole.AcceptRole
+                )
+                btn_list = msg.addButton(
+                    self.translator.translate('yt_mix_list_btn', "Открыть список треков микса"),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+                msg.addButton(self.translator.translate('cancel_action', "Отмена"), QMessageBox.ButtonRole.RejectRole)
+                msg.setDefaultButton(btn_single)
+                msg.exec()
+
+                clicked = msg.clickedButton()
+                if clicked == btn_single:
+                    self.status_label.setText(self.translator.translate('waiting'))
+                    prompt_tr = self.btn_timerange_mode.isChecked() if hasattr(self, 'btn_timerange_mode') else False
+                    self.download_manager.add_urls([single_url], prompt_time_range=prompt_tr)
+                    self._add_recent(single_url)
+                    self._rebuild_recent_buttons()
+                    return
+                elif clicked == btn_list:
+                    self.status_label.setText(self.translator.translate('analyzing_playlist', "Анализ плейлиста..."))
+                    from .threads import PlaylistCheckWorker
+                    worker = PlaylistCheckWorker(url)
+                    worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
+                    worker.signals.error.connect(lambda err: self._handle_link_error(err, url))
+                    self.thread_pool.start(worker)
+                    return
+                else:
+                    return
+
         if 'list=' in url or '/playlist' in url:
-            self.status_label.setText("Анализ плейлиста...")
+            self.status_label.setText(self.translator.translate('analyzing_playlist', "Анализ плейлиста..."))
             from .threads import PlaylistCheckWorker
             worker = PlaylistCheckWorker(url)
             worker.signals.info_fetched.connect(lambda info: self._handle_link_info(info, url))
@@ -1141,6 +1239,7 @@ class MainWindow(QMainWindow):
         item_widget.move_up_requested.connect(lambda: self.download_manager.move_task_up(task))
         item_widget.move_down_requested.connect(lambda: self.download_manager.move_task_down(task))
         item_widget.move_bottom_requested.connect(lambda: self.download_manager.move_task_to_bottom(task))
+        item_widget.interactive_sniff_requested.connect(lambda: self.download_manager.start_interactive_sniffer(task))
 
     def add_download_item_widget(self, task):
         if not getattr(task, 'is_from_bot', False):
@@ -1569,7 +1668,7 @@ class MainWindow(QMainWindow):
             self.hide()
             self.tray_icon.showMessage(
                 self.translator.translate('app_title', 'Universal Media Downloader'),
-                "Программа свернута в трей и продолжает работу",
+                self.translator.translate('tray_minimized_msg', "Программа свернута в трей и продолжает работу"),
                 QSystemTrayIcon.MessageIcon.Information,
             )
         else:
@@ -1662,6 +1761,15 @@ class MainWindow(QMainWindow):
         if os.environ.get('QT_QPA_PLATFORM') == 'offscreen' or getattr(self, '_is_quitting', False):
             return
 
+        saved_token = getattr(self, '_pending_bot_token', '')
+        self._pending_bot_token = ''
+        if saved_token and not getattr(self.bot_manager, 'is_running', False):
+            try:
+                self.bot_manager.start_bot(saved_token)
+            except Exception as e:
+                logger.error(f"Ошибка запуска бота (кривой токен): {e}")
+                self.settings.remove('tg_bot_token')
+
         if not self.update_checker.check_deno_installed():
             self.update_checker.show_deno_warning()
 
@@ -1716,10 +1824,6 @@ class MainWindow(QMainWindow):
             task.quality_badge = quality
         task.info_updated.emit()
         self.download_manager.start_task(task)
-
-    def _show_files_tab(self):
-        self.page_stack.setCurrentIndex(2)
-        QTimer.singleShot(0, self.files_page.load_files)
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -1890,7 +1994,7 @@ class MainWindow(QMainWindow):
         elif status == DownloadTask.Status.STOPPED:
             self._save_to_history(task)
 
-        self.apply_downloads_filter()
+        self._filter_debounce_timer.start()
 
     def on_filter_changed(self, button_id):
         filter_modes = {0: 'all', 1: 'downloading', 2: 'completed', 3: 'error'}

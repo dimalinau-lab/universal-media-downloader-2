@@ -5,17 +5,48 @@ import subprocess
 import hashlib
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QListWidget, QListWidgetItem, QPushButton, QLabel, QMessageBox,
-                             QDialog, QMenu, QFrame)
+                             QDialog, QMenu, QFrame, QInputDialog)
 from PyQt6.QtCore import Qt, QUrl, QRunnable, pyqtSignal, QObject, QThreadPool, QTimer
 from PyQt6.QtGui import QDesktopServices, QPixmap, QImage, QAction
 from qfluentwidgets import (TransparentToolButton, FluentIcon, Slider,
                             PushButton, PrimaryPushButton, LineEdit, BodyLabel,
-                            ComboBox, StrongBodyLabel, CaptionLabel, SwitchButton)
+                            ComboBox, StrongBodyLabel, CaptionLabel, SwitchButton, SearchLineEdit)
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from .audio_convert_dialog import AudioConvertDialog
 from .media_info_dialog import MediaInfoDialog
 from .path_manager import get_data_dir, get_downloads_dir
+
+AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.wav', '.flac', '.aac', '.opus', '.ogg')
+VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.webm', '.mov')
+
+
+def filter_and_sort_file_entries(
+    entries: list[tuple[str, float, int]],
+    query: str = "",
+    media_type: str = "all",
+    sort_mode: str = "date_desc",
+) -> list[tuple[str, float, int]]:
+    """Фильтрует и сортирует список записей (filepath, ctime, size_bytes) для вкладки Файлы."""
+    q = (query or "").strip().lower()
+    filtered = []
+    for fp, ctime, size_bytes in entries:
+        ext = os.path.splitext(fp)[1].lower()
+        if media_type == "video" and ext not in VIDEO_EXTENSIONS:
+            continue
+        if media_type == "audio" and ext not in AUDIO_EXTENSIONS:
+            continue
+        if q and q not in os.path.basename(fp).lower():
+            continue
+        filtered.append((fp, ctime, size_bytes))
+
+    if sort_mode == "size_desc":
+        filtered.sort(key=lambda x: x[2], reverse=True)
+    elif sort_mode == "name_asc":
+        filtered.sort(key=lambda x: os.path.basename(x[0]).lower())
+    else:
+        filtered.sort(key=lambda x: x[1], reverse=True)
+    return filtered
 
 
 class CutSignals(QObject):
@@ -96,9 +127,10 @@ class LocalThumbWorker(QRunnable):
 
 
 class LocalFileItemWidget(QWidget):
-    def __init__(self, filepath, parent_tab):
+    def __init__(self, filepath, parent_tab, size_bytes: int | None = None):
         super().__init__()
         self.filepath = filepath
+        self._initial_size_bytes = size_bytes
         self.parent_tab = parent_tab
         self.translator = parent_tab.translator
         self.setObjectName('DownloadItem')
@@ -110,11 +142,17 @@ class LocalFileItemWidget(QWidget):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(15)
 
+        is_dark = True
+        pw = getattr(self.parent_tab, 'parent_window', None)
+        if pw is not None and hasattr(pw, 'settings') and pw.settings is not None:
+            is_dark = pw.settings.value('theme', 'dark') == 'dark'
+        thumb_bg = "#2b2b2b" if is_dark else "#e9ecf1"
+
         self.thumbnail_label = QLabel()
         self.thumbnail_label.setFixedSize(128, 72)
         self.thumbnail_label.setObjectName('Thumbnail')
         self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumbnail_label.setStyleSheet("background-color: #2b2b2b; border-radius: 8px;")
+        self.thumbnail_label.setStyleSheet(f"background-color: {thumb_bg}; border-radius: 8px;")
         self.thumbnail_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.thumbnail_label.mousePressEvent = lambda _e: self.preview_file()
         main_layout.addWidget(self.thumbnail_label)
@@ -154,7 +192,10 @@ class LocalFileItemWidget(QWidget):
         """)
         self.badge_quality.hide()
 
-        size_bytes = os.path.getsize(self.filepath) if os.path.exists(self.filepath) else 0
+        if self._initial_size_bytes is not None:
+            size_bytes = self._initial_size_bytes
+        else:
+            size_bytes = os.path.getsize(self.filepath) if os.path.exists(self.filepath) else 0
         self.size_label = QLabel(self.format_size(size_bytes))
         self.size_label.setObjectName('SizeLabelItem')
         self.size_label.setStyleSheet("color: #007acc; font-weight: bold; font-size: 13px;")
@@ -237,6 +278,8 @@ class LocalFileItemWidget(QWidget):
         act_extract.triggered.connect(self.extract_audio)
         act_folder = QAction("Показать в папке", self)
         act_folder.triggered.connect(self.open_folder)
+        act_rename = QAction(self.translator.translate('rename_file_menu', 'Переименовать...'), self)
+        act_rename.triggered.connect(self.rename_file)
         act_del = QAction("Удалить файл", self)
         act_del.triggered.connect(self.delete_file)
 
@@ -248,6 +291,7 @@ class LocalFileItemWidget(QWidget):
         menu.addAction(act_compress)
         menu.addAction(act_extract)
         menu.addSeparator()
+        menu.addAction(act_rename)
         menu.addAction(act_folder)
         menu.addAction(act_del)
         menu.exec(self.mapToGlobal(pos))
@@ -306,6 +350,13 @@ class LocalFileItemWidget(QWidget):
             self.parent_tab.load_files(force=True)
 
     def load_thumbnail(self):
+        ext = os.path.splitext(self.filepath)[1].lower()
+        if ext in AUDIO_EXTENSIONS:
+            self.thumbnail_label.setText("♫")
+            self.thumbnail_label.setStyleSheet(
+                self.thumbnail_label.styleSheet() + " font-size: 26px; color: #007acc; font-weight: bold;"
+            )
+            return
         ffmpeg_path = self.parent_tab.parent_window.ffmpeg_path
         worker = LocalThumbWorker(self.filepath, ffmpeg_path)
         worker.signals.loaded.connect(self.set_thumbnail)
@@ -428,6 +479,44 @@ class LocalFileItemWidget(QWidget):
         if os.path.exists(self.filepath):
             folder = os.path.dirname(self.filepath)
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def rename_file(self):
+        if not os.path.exists(self.filepath):
+            return
+        folder = os.path.dirname(self.filepath)
+        old_name = os.path.basename(self.filepath)
+        old_stem, old_ext = os.path.splitext(old_name)
+        new_name, ok = QInputDialog.getText(
+            self,
+            self.translator.translate('rename_file_title', 'Переименовать файл'),
+            self.translator.translate('rename_file_prompt', 'Новое имя файла:'),
+            text=old_stem,
+        )
+        if not ok:
+            return
+        clean = re.sub(r'[\\/*?:"<>|]', '', (new_name or '').strip()).strip('. ')
+        if not clean:
+            return
+        if not os.path.splitext(clean)[1] and old_ext:
+            clean = clean + old_ext
+        new_path = os.path.join(folder, clean)
+        if os.path.normcase(new_path) == os.path.normcase(self.filepath):
+            return
+        if os.path.exists(new_path):
+            QMessageBox.warning(
+                self,
+                self.translator.translate('error', 'Ошибка'),
+                self.translator.translate('rename_file_exists', 'Файл с таким именем уже существует.')
+            )
+            return
+        try:
+            os.rename(self.filepath, new_path)
+            self.filepath = new_path
+            self.title_label.setText(os.path.basename(new_path))
+            self.url_label.setText(new_path)
+            self.parent_tab.load_files(force=True)
+        except Exception as e:
+            QMessageBox.warning(self, self.translator.translate('error', 'Ошибка'), str(e))
 
     def delete_file(self):
         filename = os.path.basename(self.filepath)
@@ -1146,18 +1235,28 @@ class FileScanWorker(QRunnable):
     def run(self):
         files = []
         if os.path.isdir(self.folder):
-            for root_dir, dirnames, filenames in os.walk(self.folder):
-                dirnames[:] = [d for d in dirnames if not d.startswith('.')]
-                for filename in filenames:
-                    if filename.lower().endswith(self.valid_extensions):
-                        filepath = os.path.join(root_dir, filename)
-                        try:
-                            files.append((filepath, os.path.getctime(filepath)))
-                        except OSError:
-                            pass
+            stack = [self.folder]
+            while stack:
+                cur = stack.pop()
+                try:
+                    with os.scandir(cur) as it:
+                        for entry in it:
+                            name = entry.name
+                            if name.startswith('.'):
+                                continue
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    stack.append(entry.path)
+                                elif entry.is_file(follow_symlinks=False) and name.lower().endswith(self.valid_extensions):
+                                    st = entry.stat()
+                                    files.append((entry.path, st.st_ctime, st.st_size))
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
             files.sort(key=lambda x: x[1], reverse=True)
         try:
-            self.signals.finished.emit(self.generation, [fp for fp, _ in files])
+            self.signals.finished.emit(self.generation, files)
         except RuntimeError:
             pass
 
@@ -1171,6 +1270,7 @@ class FilesTab(QWidget):
         self._thumb_pool.setMaxThreadCount(2)
         self._scan_generation = 0
         self._last_scan_time = 0.0
+        self._all_files = []
         self._pending_files = []
         self._batch_timer = QTimer(self)
         self._batch_timer.setInterval(10)
@@ -1180,7 +1280,7 @@ class FilesTab(QWidget):
     def initUI(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout.setSpacing(12)
 
         header_layout = QHBoxLayout()
         self.header_label = QLabel()
@@ -1200,6 +1300,25 @@ class FilesTab(QWidget):
         header_layout.addWidget(self.btn_open_folder)
 
         layout.addLayout(header_layout)
+
+        filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(8)
+        self.search_input = SearchLineEdit()
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self._apply_filters)
+
+        self.type_filter_combo = ComboBox()
+        self.type_filter_combo.setFixedWidth(135)
+        self.type_filter_combo.currentIndexChanged.connect(self._apply_filters)
+
+        self.sort_combo = ComboBox()
+        self.sort_combo.setFixedWidth(175)
+        self.sort_combo.currentIndexChanged.connect(self._apply_filters)
+
+        filter_layout.addWidget(self.search_input, 1)
+        filter_layout.addWidget(self.type_filter_combo)
+        filter_layout.addWidget(self.sort_combo)
+        layout.addLayout(filter_layout)
 
         self.files_list = QListWidget()
         self.files_list.setObjectName('DownloadsList')
@@ -1233,7 +1352,7 @@ class FilesTab(QWidget):
         if not folder or not os.path.isdir(folder):
             folder = get_downloads_dir()
 
-        valid_extensions = ('.mp4', '.mkv', '.avi', '.webm', '.mp3', '.m4a', '.mov')
+        valid_extensions = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
         worker = FileScanWorker(folder, valid_extensions, gen)
         worker.signals.finished.connect(self._on_scan_finished)
         QThreadPool.globalInstance().start(worker)
@@ -1243,7 +1362,25 @@ class FilesTab(QWidget):
         if generation != self._scan_generation:
             return
         self._last_scan_time = time.monotonic()
-        self._pending_files = list(filepaths)
+        normalized = []
+        for entry in filepaths:
+            if isinstance(entry, (tuple, list)) and len(entry) >= 3:
+                normalized.append((entry[0], entry[1], entry[2]))
+            elif isinstance(entry, (tuple, list)) and len(entry) == 2:
+                normalized.append((entry[0], 0.0, entry[1]))
+            else:
+                normalized.append((entry, 0.0, 0))
+        self._all_files = normalized
+        self._apply_filters()
+
+    def _apply_filters(self):
+        self._batch_timer.stop()
+        self.files_list.clear()
+        query = self.search_input.text() if hasattr(self, 'search_input') else ""
+        media_type = self.type_filter_combo.currentData() if hasattr(self, 'type_filter_combo') and self.type_filter_combo.count() > 0 else "all"
+        sort_mode = self.sort_combo.currentData() if hasattr(self, 'sort_combo') and self.sort_combo.count() > 0 else "date_desc"
+        filtered = filter_and_sort_file_entries(self._all_files, query=query, media_type=media_type or "all", sort_mode=sort_mode or "date_desc")
+        self._pending_files = [(fp, sz) for fp, _, sz in filtered]
         if self._pending_files:
             self._append_next_batch()
             if self._pending_files:
@@ -1255,12 +1392,20 @@ class FilesTab(QWidget):
             return
         batch = self._pending_files[:12]
         self._pending_files = self._pending_files[12:]
-        for filepath in batch:
-            item_widget = LocalFileItemWidget(filepath, self)
-            list_item = QListWidgetItem(self.files_list)
-            list_item.setSizeHint(item_widget.sizeHint())
-            self.files_list.addItem(list_item)
-            self.files_list.setItemWidget(list_item, item_widget)
+        self.files_list.setUpdatesEnabled(False)
+        try:
+            for item_data in batch:
+                if isinstance(item_data, (tuple, list)) and len(item_data) >= 2:
+                    filepath, size_bytes = item_data[0], item_data[1]
+                else:
+                    filepath, size_bytes = item_data, None
+                item_widget = LocalFileItemWidget(filepath, self, size_bytes=size_bytes)
+                list_item = QListWidgetItem(self.files_list)
+                list_item.setSizeHint(item_widget.sizeHint())
+                self.files_list.addItem(list_item)
+                self.files_list.setItemWidget(list_item, item_widget)
+        finally:
+            self.files_list.setUpdatesEnabled(True)
         if not self._pending_files:
             self._batch_timer.stop()
 
@@ -1271,6 +1416,28 @@ class FilesTab(QWidget):
         self.header_label.setText(self.translator.translate('downloaded_files', 'Скачанные файлы'))
         self.btn_refresh.setText(self.translator.translate('refresh', 'Обновить список'))
         self.btn_open_folder.setText(self.translator.translate('open_save_folder', 'Открыть папку'))
+        if hasattr(self, 'search_input'):
+            self.search_input.setPlaceholderText(self.translator.translate('search_files_placeholder', 'Поиск по имени файла...'))
+        if hasattr(self, 'type_filter_combo'):
+            cur_type = self.type_filter_combo.currentData() if self.type_filter_combo.count() > 0 else 'all'
+            self.type_filter_combo.blockSignals(True)
+            self.type_filter_combo.clear()
+            self.type_filter_combo.addItem(self.translator.translate('files_filter_all', 'Все файлы'), userData='all')
+            self.type_filter_combo.addItem(self.translator.translate('files_filter_video', 'Видео'), userData='video')
+            self.type_filter_combo.addItem(self.translator.translate('files_filter_audio', 'Аудио'), userData='audio')
+            idx = max(0, self.type_filter_combo.findData(cur_type))
+            self.type_filter_combo.setCurrentIndex(idx)
+            self.type_filter_combo.blockSignals(False)
+        if hasattr(self, 'sort_combo'):
+            cur_sort = self.sort_combo.currentData() if self.sort_combo.count() > 0 else 'date_desc'
+            self.sort_combo.blockSignals(True)
+            self.sort_combo.clear()
+            self.sort_combo.addItem(self.translator.translate('files_sort_newest', 'Сначала новые'), userData='date_desc')
+            self.sort_combo.addItem(self.translator.translate('files_sort_largest', 'Сначала крупные'), userData='size_desc')
+            self.sort_combo.addItem(self.translator.translate('files_sort_name', 'По названию'), userData='name_asc')
+            idx = max(0, self.sort_combo.findData(cur_sort))
+            self.sort_combo.setCurrentIndex(idx)
+            self.sort_combo.blockSignals(False)
 
         for i in range(self.files_list.count()):
             item = self.files_list.item(i)

@@ -27,8 +27,43 @@ yt_dlp = _LazyYtDlp()
 import threading
 import concurrent.futures
 import re
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from .stream_helper import StreamResolverHelper
-from .path_manager import get_aria2c_path, get_downloads_dir
+from .path_manager import get_aria2c_path, get_downloads_dir, get_data_dir
+
+
+def is_youtube_mix_url(url: str) -> bool:
+    """Определяет автогенерируемые YouTube Mix / Radio плейлисты (list=RD..., start_radio=1)."""
+    if not url:
+        return False
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not any(d in host for d in ("youtube.com", "youtu.be")):
+        return False
+    qs = parse_qs(parsed.query)
+    list_vals = qs.get("list", [])
+    if any(v.upper().startswith("RD") for v in list_vals):
+        return True
+    if qs.get("start_radio", [""])[0] == "1":
+        return True
+    return False
+
+
+def strip_youtube_playlist_params(url: str) -> str:
+    """Удаляет параметры плейлиста/микса (list, start_radio, index) из ссылки YouTube, оставляя само видео."""
+    if not url:
+        return url
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    if not any(k in qs for k in ("list", "start_radio", "index")):
+        return url
+    # Если это чистый /playlist?list=..., видео в ссылке нет
+    if not qs.get("v") and "youtu.be" not in (parsed.hostname or "").lower():
+        return url
+    for k in ("list", "start_radio", "index"):
+        qs.pop(k, None)
+    new_query = urlencode(qs, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
 
 
 def clean_ansi(text: str) -> str:
@@ -135,11 +170,12 @@ class UniversalSnifferWorker(QRunnable):
     и передает захваченный поток с заголовками и куками в основной поток.
     Поддерживает мгновенную отмену по сигналу пользователя или остановке задачи.
     """
-    def __init__(self, url: str, timeout: int = 18, task=None):
+    def __init__(self, url: str, timeout: int = 18, task=None, interactive: bool = False):
         super().__init__()
         self.url = url
         self.timeout = timeout
         self.task = task
+        self.interactive = interactive
         self._is_cancelled = False
         self.signals = UniversalSnifferSignals()
 
@@ -160,18 +196,29 @@ class UniversalSnifferWorker(QRunnable):
             if self.is_cancelled_check():
                 return
 
-            from .universal_sniffer import sniff_media_stream
+            from .universal_sniffer import sniff_media_stream, InteractiveBrowserSniffer, classify_sniffer_failure
 
             def on_status(msg):
                 if not self.is_cancelled_check():
                     self.signals.status_updated.emit(msg)
 
-            res = sniff_media_stream(
-                self.url,
-                timeout=self.timeout,
-                status_callback=on_status,
-                is_cancelled=self.is_cancelled_check
-            )
+            diag = {}
+            if self.interactive:
+                res = InteractiveBrowserSniffer.sniff(
+                    self.url,
+                    timeout=self.timeout,
+                    status_callback=on_status,
+                    is_cancelled=self.is_cancelled_check,
+                    diagnostics=diag,
+                )
+            else:
+                res = sniff_media_stream(
+                    self.url,
+                    timeout=self.timeout,
+                    status_callback=on_status,
+                    is_cancelled=self.is_cancelled_check,
+                    diagnostics=diag,
+                )
 
             if self.is_cancelled_check():
                 logger.info(f"[UniversalSnifferWorker] Задача {self.url} остановлена, результат отменен.")
@@ -180,7 +227,8 @@ class UniversalSnifferWorker(QRunnable):
             if res:
                 self.signals.stream_found.emit(res)
             else:
-                self.signals.error.emit(f"Не удалось обнаружить видеопоток на странице: {self.url}")
+                _, friendly_reason = classify_sniffer_failure(diag)
+                self.signals.error.emit(friendly_reason)
         except Exception as e:
             if not self.is_cancelled_check():
                 self.signals.error.emit(str(e))
@@ -423,6 +471,8 @@ class PlaylistCheckWorker(QRunnable):
                 'ignoreerrors': True,
                 'noplaylist': False,
             }
+            if is_youtube_mix_url(self.url):
+                ydl_opts['playlistend'] = 50
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
                 if info:
@@ -437,11 +487,19 @@ class _YtdlLogger:
     def __init__(self, parent_logger):
         self.parent = parent_logger
         self.last_error = ""
+        self.skipped_archive = False
 
-    def debug(self, msg): pass
-    def info(self, msg): pass
+    def debug(self, msg):
+        if msg and "already been recorded in the archive" in str(msg):
+            self.skipped_archive = True
+
+    def info(self, msg):
+        if msg and "already been recorded in the archive" in str(msg):
+            self.skipped_archive = True
+
     def warning(self, msg):
         self.parent.warning(f"[yt-dlp] {msg}")
+
     def error(self, msg):
         self.last_error = str(msg)
         self.parent.error(f"[yt-dlp] {msg}")
@@ -980,6 +1038,40 @@ class DownloadWorker(QRunnable):
                         except Exception as e:
                             logger.warning(f"Ошибка загрузки куки: {e}")
 
+        split_chapters = self.settings.value('split_chapters', False, type=bool) and not time_range
+        embed_chapters = self.settings.value('embed_chapters', True, type=bool) and not split_chapters
+
+        if split_chapters:
+            chapter_tpl = os.path.join(out_dir, '%(title).120B', '%(section_number)02d - %(section_title).120B.%(ext)s')
+            ydl_opts['outtmpl'] = {
+                'default': out_template,
+                'chapter': chapter_tpl,
+            }
+
+        if self.settings.value('download_archive_enabled', False, type=bool) and not time_range:
+            data_dir = get_data_dir()
+            os.makedirs(data_dir, exist_ok=True)
+            ydl_opts['download_archive'] = os.path.join(data_dir, 'archive.txt')
+
+        if embed_chapters:
+            has_ffmeta = any(p.get('key') == 'FFmpegMetadata' for p in ydl_opts['postprocessors'])
+            if not has_ffmeta:
+                ydl_opts['postprocessors'].append({
+                    'key': 'FFmpegMetadata',
+                    'add_chapters': True,
+                    'add_metadata': bool(self.settings.value('embed_metadata', True, type=bool)),
+                })
+            else:
+                for p in ydl_opts['postprocessors']:
+                    if p.get('key') == 'FFmpegMetadata':
+                        p['add_chapters'] = True
+
+        if split_chapters:
+            ydl_opts['postprocessors'].append({
+                'key': 'FFmpegSplitChapters',
+                'force_keyframes': False,
+            })
+
         if self.settings.value('sponsorblock_enabled', False, type=bool):
             sb_categories = ['sponsor', 'intro', 'outro', 'selfpromo', 'interaction']
             ydl_opts['postprocessors'].append({
@@ -1276,6 +1368,10 @@ class DownloadWorker(QRunnable):
             logger.info(f"[VOD] Найден финальный файл: {final_file} ({actual_size} байт)")
             self.task.update_progress(100, "Скачано")
             self.task.set_completed(final_file)
+        elif ytdl_logger.skipped_archive:
+            logger.info(f"[VOD] Пропущено по download_archive (уже скачано ранее): {self.task.url}")
+            self.task.set_completed(None)
+            self.task.update_progress(100, "Пропущено (уже в архиве)")
         else:
             raise Exception("Сбой скачивания: Файл пуст или yt-dlp не смог обработать поток.")
 
@@ -1293,6 +1389,9 @@ class DownloadWorker(QRunnable):
 
         session = requests.Session()
         session.trust_env = False
+        adapter = HTTPAdapter(pool_connections=4, pool_maxsize=16)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
         task_cookies = getattr(self.task, 'cookies', None)
         if task_cookies and isinstance(task_cookies, dict):
             session.cookies.update(task_cookies)
@@ -1353,6 +1452,8 @@ class DownloadWorker(QRunnable):
                 if os.path.exists(c_path):
                     chunk_downloaded[i] = min(os.path.getsize(c_path), e - s + 1)
 
+            cookie_header = "; ".join(f"{k}={v}" for k, v in session.cookies.get_dict().items())
+
             def _download_single_chunk(idx, start_byte, end_byte):
                 chunk_file = f"{part_path}.part{idx}"
                 existing_len = os.path.getsize(chunk_file) if os.path.exists(chunk_file) else 0
@@ -1369,9 +1470,9 @@ class DownloadWorker(QRunnable):
                         req_end = end_byte
                         c_headers = dict(headers)
                         c_headers['Range'] = f'bytes={req_start}-{req_end}'
-                        s = requests.Session()
-                        s.trust_env = False
-                        with s.get(self.task.url, headers=c_headers, stream=True, verify=False, timeout=15) as resp:
+                        if cookie_header and 'Cookie' not in c_headers:
+                            c_headers['Cookie'] = cookie_header
+                        with session.get(self.task.url, headers=c_headers, stream=True, verify=False, timeout=15) as resp:
                             if resp.status_code not in (200, 206):
                                 raise Exception(f"HTTP {resp.status_code}")
                             mode = 'ab' if existing_len > 0 else 'wb'

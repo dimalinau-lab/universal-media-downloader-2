@@ -2,7 +2,28 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                              QListWidget, QListWidgetItem, QMessageBox)
 from PyQt6.QtCore import Qt
 from qfluentwidgets import (SearchLineEdit, PushButton, PrimaryPushButton,
-                            SubtitleLabel, BodyLabel, CaptionLabel, LineEdit)
+                            SubtitleLabel, BodyLabel, CaptionLabel, LineEdit, isDarkTheme)
+
+
+def parse_range_spec(raw: str) -> set[int]:
+    """Разбирает строку диапазонов вида '1-10, 15, 20-30' в множество индексов."""
+    cleaned = (raw or "").strip()
+    if not cleaned:
+        return set()
+    indices: set[int] = set()
+    for part in cleaned.replace(';', ',').split(','):
+        p = part.strip()
+        if not p:
+            continue
+        if '-' in p:
+            start_s, end_s = p.split('-', 1)
+            s, e = int(start_s.strip()), int(end_s.strip())
+            if s > e:
+                s, e = e, s
+            indices.update(range(s, e + 1))
+        else:
+            indices.add(int(p))
+    return indices
 
 
 class PlaylistDialog(QDialog):
@@ -22,7 +43,21 @@ class PlaylistDialog(QDialog):
             return self.translator.translate(key, default)
         return default
 
+    def _is_dark_theme(self) -> bool:
+        parent = self.parent()
+        if parent is not None and hasattr(parent, 'settings') and parent.settings is not None:
+            return parent.settings.value('theme', 'dark') == 'dark'
+        return isDarkTheme()
+
     def initUI(self):
+        is_dark = self._is_dark_theme()
+        accent_color = "#29b6f6" if is_dark else "#0067c0"
+        muted_color = "#999999" if is_dark else "#666666"
+        list_bg = "rgba(255, 255, 255, 0.03)" if is_dark else "rgba(0, 0, 0, 0.02)"
+        list_border = "rgba(255, 255, 255, 0.1)" if is_dark else "rgba(0, 0, 0, 0.12)"
+        item_border = "rgba(255, 255, 255, 0.05)" if is_dark else "rgba(0, 0, 0, 0.06)"
+        item_hover = "rgba(255, 255, 255, 0.08)" if is_dark else "rgba(0, 0, 0, 0.05)"
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
@@ -30,14 +65,14 @@ class PlaylistDialog(QDialog):
         top_header = QHBoxLayout()
         self.title_label = SubtitleLabel(f"{self.t('found_videos', 'Найдено видео')}: {len(self.entries)}")
         self.count_label = CaptionLabel()
-        self.count_label.setStyleSheet("color: #29b6f6; font-weight: 600; font-size: 13px;")
+        self.count_label.setStyleSheet(f"color: {accent_color}; font-weight: 600; font-size: 13px;")
         top_header.addWidget(self.title_label)
         top_header.addStretch()
         top_header.addWidget(self.count_label)
         layout.addLayout(top_header)
 
         self.desc_label = CaptionLabel(self.t('playlist_desc', "Выберите видео для загрузки:"))
-        self.desc_label.setStyleSheet("color: #888888;")
+        self.desc_label.setStyleSheet(f"color: {muted_color};")
         layout.addWidget(self.desc_label)
 
         self.search_input = SearchLineEdit()
@@ -60,22 +95,22 @@ class PlaylistDialog(QDialog):
         layout.addLayout(range_layout)
 
         self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet("""
-            QListWidget {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+        self.list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {list_bg};
+                border: 1px solid {list_border};
                 border-radius: 8px;
                 padding: 5px;
                 outline: none;
-            }
-            QListWidget::item {
+            }}
+            QListWidget::item {{
                 padding: 10px;
                 border-radius: 6px;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            }
-            QListWidget::item:hover {
-                background-color: rgba(255, 255, 255, 0.08);
-            }
+                border-bottom: 1px solid {item_border};
+            }}
+            QListWidget::item:hover {{
+                background-color: {item_hover};
+            }}
         """)
 
         for idx, entry in enumerate(self.entries, start=1):
@@ -124,7 +159,8 @@ class PlaylistDialog(QDialog):
     def update_count_label(self):
         total = self.list_widget.count()
         selected = sum(1 for i in range(total) if self.list_widget.item(i).checkState() == Qt.CheckState.Checked)
-        self.count_label.setText(f"Выбрано: {selected} / {total}")
+        tpl = self.t('batch_selected_count', "Выбрано: {selected} из {total}")
+        self.count_label.setText(tpl.format(selected=selected, total=total))
         self.btn_ok.setEnabled(selected > 0)
 
     def filter_list(self, text):
@@ -163,21 +199,8 @@ class PlaylistDialog(QDialog):
         if not raw:
             return
 
-        target_indices = set()
-        parts = raw.replace(';', ',').split(',')
         try:
-            for part in parts:
-                p = part.strip()
-                if not p:
-                    continue
-                if '-' in p:
-                    start_s, end_s = p.split('-', 1)
-                    s, e = int(start_s.strip()), int(end_s.strip())
-                    if s > e:
-                        s, e = e, s
-                    target_indices.update(range(s, e + 1))
-                else:
-                    target_indices.add(int(p))
+            target_indices = parse_range_spec(raw)
 
             self.list_widget.blockSignals(True)
             for i in range(self.list_widget.count()):
@@ -190,7 +213,11 @@ class PlaylistDialog(QDialog):
             self.list_widget.blockSignals(False)
             self.update_count_label()
         except ValueError:
-            QMessageBox.warning(self, "Ошибка формата", "Введите корректный диапазон номеров, например: 1-10, 15, 20-30")
+            QMessageBox.warning(
+                self,
+                self.t('invalid_range_title', "Ошибка формата"),
+                self.t('invalid_range_msg', "Введите корректный диапазон номеров, например: 1-10, 15, 20-30")
+            )
 
     def accept_selection(self):
         self.selected_urls = []

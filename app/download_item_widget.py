@@ -177,6 +177,7 @@ class DownloadItemWidget(QWidget):
     move_up_requested = pyqtSignal()
     move_down_requested = pyqtSignal()
     move_bottom_requested = pyqtSignal()
+    interactive_sniff_requested = pyqtSignal()
 
     def __init__(self, task: DownloadTask, translator):
         super().__init__()
@@ -307,6 +308,14 @@ class DownloadItemWidget(QWidget):
         self.download_button.setToolTip("Скачать файл / Возобновить")
         self.download_button.clicked.connect(self.on_start_clicked)
 
+        self.sniff_browser_button = TransparentToolButton(FluentIcon.GLOBE)
+        self.sniff_browser_button.setFixedSize(34, 34)
+        self.sniff_browser_button.setToolTip(
+            self.translator.translate('interactive_sniff_tooltip', 'Открыть страницу в браузере и перехватить поток вручную')
+        )
+        self.sniff_browser_button.clicked.connect(self.interactive_sniff_requested.emit)
+        self.sniff_browser_button.hide()
+
         self.timerange_button = TransparentToolButton(FluentIcon.HISTORY)
         self.timerange_button.setFixedSize(34, 34)
         self.timerange_button.setToolTip(self.translator.translate('time_range', 'Скачать отрезок / таймкоды'))
@@ -335,6 +344,7 @@ class DownloadItemWidget(QWidget):
 
         buttons_layout.addWidget(self.play_button)
         buttons_layout.addWidget(self.download_button)
+        buttons_layout.addWidget(self.sniff_browser_button)
         buttons_layout.addWidget(self.stop_button)
         buttons_layout.addWidget(self.folder_button)
         buttons_layout.addWidget(self.more_button)
@@ -407,6 +417,9 @@ class DownloadItemWidget(QWidget):
         menu = QMenu(self)
         act_open_file = QAction(self.translator.translate('open_file', 'Смотреть видео'), self)
         act_start = QAction("Скачать / Возобновить", self)
+        act_interactive_sniff = QAction(
+            self.translator.translate('interactive_sniff_menu', 'Открыть в браузере (перехватить поток)...'), self
+        )
         act_timerange = QAction(self.translator.translate('time_range', 'Скачать отрезок (таймкоды)...'), self)
         act_mediainfo = QAction(self.translator.translate('media_info', 'Свойства медиа (MediaInfo)...'), self)
         act_convert_audio = QAction(self.translator.translate('convert_audio', 'Извлечь / Конвертировать аудио...'), self)
@@ -416,6 +429,7 @@ class DownloadItemWidget(QWidget):
 
         act_open_file.triggered.connect(self.open_file_requested.emit)
         act_start.triggered.connect(self.on_start_clicked)
+        act_interactive_sniff.triggered.connect(self.interactive_sniff_requested.emit)
         act_timerange.triggered.connect(self.open_time_range_dialog)
         act_mediainfo.triggered.connect(self.media_info_requested.emit)
         act_convert_audio.triggered.connect(self.convert_audio_requested.emit)
@@ -428,6 +442,7 @@ class DownloadItemWidget(QWidget):
         is_startable = self.task.status in (
             DownloadTask.Status.PENDING, DownloadTask.Status.ERROR, DownloadTask.Status.STOPPED)
         act_start.setEnabled(is_startable)
+        act_interactive_sniff.setEnabled(not is_completed)
         act_timerange.setEnabled(self.task.status in (DownloadTask.Status.PENDING, DownloadTask.Status.COMPLETED))
 
         act_open_file.setEnabled(is_completed)
@@ -438,6 +453,7 @@ class DownloadItemWidget(QWidget):
 
         menu.addAction(act_open_file)
         menu.addAction(act_start)
+        menu.addAction(act_interactive_sniff)
         menu.addAction(act_timerange)
         menu.addSeparator()
 
@@ -556,6 +572,7 @@ class DownloadItemWidget(QWidget):
         self.stop_button.setVisible(is_active)
         self.play_button.setVisible(is_completed)
         self.download_button.setVisible(is_pending or is_incomplete)
+        self.sniff_browser_button.setVisible(status == DownloadTask.Status.ERROR)
         self.timerange_button.setVisible(False)
         self.folder_button.setVisible(is_completed)
         self.more_button.setVisible(True)

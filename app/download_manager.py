@@ -1546,6 +1546,25 @@ class DownloadManager(QObject):
         task.set_error(friendly_err)
         self._update_summary()
 
+    def start_interactive_sniffer(self, task):
+        target_url = getattr(task, 'original_url', None) or task.url
+        if hasattr(task, '_stop_event'):
+            task._stop_event.clear()
+        task.url = target_url
+        task.error_message = ""
+        task.set_status(DownloadTask.Status.FETCHING_INFO)
+        msg = "Ожидание перехвата потока в окне браузера..."
+        task.progress_text = msg
+        task.progress_updated.emit(0, msg)
+        self.status_updated.emit(f"Интерактивный перехват: {target_url[:45]}...")
+
+        worker = UniversalSnifferWorker(target_url, timeout=90, task=task, interactive=True)
+        self._sniffer_workers[task] = worker
+        worker.signals.status_updated.connect(lambda m, t=task: self._on_sniffer_status(t, m))
+        worker.signals.stream_found.connect(lambda info, t=task: self._on_sniffer_stream_found(t, info))
+        worker.signals.error.connect(lambda err, t=task: self._on_sniffer_error(t, err))
+        self.thread_pool.start(worker)
+
     def _start_universal_sniffer(self, task):
         task.set_status(DownloadTask.Status.FETCHING_INFO)
         msg = "Поиск медиапотока (универсальный анализатор)..."
@@ -1599,6 +1618,27 @@ class DownloadManager(QObject):
         is_hls = info.get('is_hls', False) or '.m3u8' in task.url.lower()
         is_dash = info.get('is_dash', False) or '.mpd' in task.url.lower()
         badge = "HLS" if is_hls else ("DASH" if is_dash else "VOD")
+
+        variants = dict(info.get('variants') or {})
+        if is_hls and not variants:
+            try:
+                from .universal_sniffer import parse_hls_master_qualities
+                r = requests.get(
+                    task.url,
+                    headers=getattr(task, 'http_headers', None) or {},
+                    cookies=getattr(task, 'cookies', None) or {},
+                    timeout=6,
+                )
+                if r.status_code == 200 and '#EXT-X-STREAM-INF' in r.text:
+                    variants = parse_hls_master_qualities(r.text, task.url)
+            except Exception as var_err:
+                logger.debug(f"[DownloadManager] Не удалось разобрать варианты HLS: {var_err}")
+
+        if variants:
+            task.available_streams = variants
+            best_q = next(iter(variants))
+            badge = best_q
+            task.custom_quality = best_q
 
         task.quality_badge = badge
         task.set_status(DownloadTask.Status.PENDING)

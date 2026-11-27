@@ -1,5 +1,7 @@
 import os
+import re
 import sys
+import hashlib
 import shutil
 import logging
 import subprocess
@@ -24,6 +26,58 @@ GITHUB_REPO_OWNER = "dimalinau-lab"
 GITHUB_REPO_NAME = "universal-media-downloader-2"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
 PYPI_YTDLP_URL = "https://pypi.org/pypi/yt-dlp/json"
+_SHA256_HEX_RE = re.compile(r'^[a-fA-F0-9]{64}$')
+
+
+def extract_asset_sha256(asset: dict | None, sha256_sums_text: str = "", filename: str = "") -> str:
+    """Извлекает ожидаемый SHA-256 хэш из GitHub asset.digest или текста SHA256SUMS."""
+    if isinstance(asset, dict):
+        digest = str(asset.get('digest') or '').strip()
+        if digest.lower().startswith('sha256:'):
+            digest = digest.split(':', 1)[1].strip()
+        if _SHA256_HEX_RE.match(digest):
+            return digest.lower()
+        if not filename:
+            filename = str(asset.get('name') or '').strip()
+
+    if sha256_sums_text and filename:
+        target_name = os.path.basename(filename).lower()
+        for raw_line in sha256_sums_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and _SHA256_HEX_RE.match(parts[0]):
+                listed_name = os.path.basename(parts[-1].lstrip('*')).lower()
+                if listed_name == target_name:
+                    return parts[0].lower()
+    return ""
+
+
+def verify_file_sha256(file_path: str, expected_sha256: str) -> tuple[bool, str]:
+    """Проверяет SHA-256 контрольную сумму скачанного файла."""
+    expected = str(expected_sha256 or '').strip().lower()
+    if expected.startswith('sha256:'):
+        expected = expected.split(':', 1)[1].strip()
+    if not expected:
+        return True, ""
+
+    if not os.path.isfile(file_path):
+        return False, "Файл не найден для проверки контрольной суммы."
+
+    h = hashlib.sha256()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            h.update(chunk)
+    actual = h.hexdigest().lower()
+
+    if actual != expected:
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+        return False, f"SHA-256 не совпадает (ожидалось {expected[:12]}..., получено {actual[:12]}...)."
+    return True, actual
 
 
 def is_installer_mode() -> bool:
@@ -264,6 +318,7 @@ class CheckAllUpdatesWorker(QRunnable):
                     assets = data.get('assets', [])
                     installer_asset = None
                     portable_asset = None
+                    sums_asset = None
 
                     for asset in assets:
                         name = asset.get('name', '').lower()
@@ -271,6 +326,25 @@ class CheckAllUpdatesWorker(QRunnable):
                             installer_asset = asset
                         elif (name.endswith('.exe') or name.endswith('.zip')) and 'unins' not in name:
                             portable_asset = asset
+                        elif 'sha256' in name and name.endswith('.txt'):
+                            sums_asset = asset
+
+                    sums_text = ""
+                    needs_sums = any(
+                        a and not extract_asset_sha256(a)
+                        for a in (installer_asset, portable_asset)
+                    )
+                    if needs_sums and sums_asset and sums_asset.get('browser_download_url'):
+                        try:
+                            s_resp = requests.get(sums_asset['browser_download_url'], timeout=8)
+                            if s_resp.status_code == 200:
+                                sums_text = s_resp.text
+                        except Exception as sum_err:
+                            logger.debug(f"Не удалось скачать SHA256SUMS: {sum_err}")
+
+                    for a in (installer_asset, portable_asset):
+                        if isinstance(a, dict):
+                            a['expected_sha256'] = extract_asset_sha256(a, sums_text, a.get('name', ''))
 
                     app_update = {
                         'latest_version': tag,
@@ -330,11 +404,12 @@ class CheckAllUpdatesWorker(QRunnable):
 
 
 class AppDownloadWorker(QRunnable):
-    """Потоковый загрузчик бинарника приложения с расчетом скорости."""
-    def __init__(self, download_url: str, target_filename: str):
+    """Потоковый загрузчик бинарника приложения с расчетом скорости и проверкой SHA-256."""
+    def __init__(self, download_url: str, target_filename: str, expected_sha256: str = ""):
         super().__init__()
         self.download_url = download_url
         self.target_filename = target_filename
+        self.expected_sha256 = expected_sha256
         self.signals = DownloadSignals()
 
     def run(self):
@@ -364,6 +439,13 @@ class AppDownloadWorker(QRunnable):
                         speed_kbps = (downloaded / 1024.0) / elapsed
                         self.signals.progress.emit(downloaded, total_size, speed_kbps)
                         last_emit = now
+
+            if self.expected_sha256:
+                ok, check_msg = verify_file_sha256(dest_path, self.expected_sha256)
+                if not ok:
+                    logger.error(f"Проверка целостности обновления провалена: {check_msg}")
+                    self.signals.completed.emit(False, f"Ошибка проверки целостности файла:\n{check_msg}")
+                    return
 
             self.signals.progress.emit(total_size, total_size, 0)
             self.signals.completed.emit(True, dest_path)
@@ -545,19 +627,19 @@ class ModernUpdateDialog(QDialog):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #3d3d3d;
+        self.progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                border: 1px solid {self.card_border};
                 border-radius: 4px;
-                background-color: #2b2b2b;
+                background-color: {self.card_bg};
                 text-align: center;
-                color: #ffffff;
+                color: {self.text_primary};
                 height: 20px;
-            }
-            QProgressBar::chunk {
+            }}
+            QProgressBar::chunk {{
                 background-color: #0078d4;
                 border-radius: 3px;
-            }
+            }}
         """)
         p_layout.addWidget(self.progress_label)
         p_layout.addWidget(self.progress_bar)
@@ -589,13 +671,14 @@ class ModernUpdateDialog(QDialog):
 
         download_url = asset['browser_download_url']
         filename = asset['name']
+        expected_sha256 = asset.get('expected_sha256') or extract_asset_sha256(asset)
 
         self.btn_update_app.setEnabled(False)
         if hasattr(self, 'btn_update_ytdlp'):
             self.btn_update_ytdlp.setEnabled(False)
         self.progress_container.setVisible(True)
 
-        worker = AppDownloadWorker(download_url, filename)
+        worker = AppDownloadWorker(download_url, filename, expected_sha256=expected_sha256)
         worker.signals.progress.connect(self._on_download_progress)
         worker.signals.completed.connect(self._on_app_download_completed)
         self.thread_pool.start(worker)
@@ -616,6 +699,8 @@ class ModernUpdateDialog(QDialog):
     def _on_app_download_completed(self, success: bool, result_path_or_msg: str):
         self.progress_container.setVisible(False)
         self.btn_update_app.setEnabled(True)
+        if hasattr(self, 'btn_update_ytdlp'):
+            self.btn_update_ytdlp.setEnabled(True)
 
         if not success:
             QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось загрузить обновление:\n{result_path_or_msg}")

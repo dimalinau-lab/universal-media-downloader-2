@@ -191,47 +191,53 @@ class HistoryTab(QWidget):
 
     def _populate_table(self, entries):
         """Populate table with entries."""
-        self.table.setRowCount(len(entries))
+        self.table.setUpdatesEnabled(False)
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(len(entries))
 
-        for row, entry in enumerate(entries):
-            # Date
-            date_str = entry.get('date', '')
-            try:
-                dt = datetime.fromisoformat(date_str)
-                date_display = dt.strftime('%Y-%m-%d %H:%M')
-            except Exception:
-                date_display = date_str[:16] if len(date_str) > 16 else date_str
+            for row, entry in enumerate(entries):
+                # Date
+                date_str = entry.get('date', '')
+                try:
+                    dt = datetime.fromisoformat(date_str)
+                    date_display = dt.strftime('%Y-%m-%d %H:%M')
+                except Exception:
+                    date_display = date_str[:16] if len(date_str) > 16 else date_str
 
-            date_item = QTableWidgetItem(date_display)
-            date_item.setData(Qt.ItemDataRole.UserRole, entry)
-            self.table.setItem(row, 0, date_item)
+                date_item = QTableWidgetItem(date_display)
+                date_item.setData(Qt.ItemDataRole.UserRole, entry)
+                self.table.setItem(row, 0, date_item)
 
-            # Title
-            title = entry.get('title', 'Unknown')
-            if len(title) > 60:
-                title = title[:57] + '...'
-            title_item = QTableWidgetItem(title)
-            title_item.setToolTip(entry.get('title', ''))
-            self.table.setItem(row, 1, title_item)
+                # Title
+                title = entry.get('title', 'Unknown')
+                if len(title) > 60:
+                    title = title[:57] + '...'
+                title_item = QTableWidgetItem(title)
+                title_item.setToolTip(entry.get('title', ''))
+                self.table.setItem(row, 1, title_item)
 
-            # Platform
-            platform_item = QTableWidgetItem(entry.get('platform', 'Unknown'))
-            self.table.setItem(row, 2, platform_item)
+                # Platform
+                platform_item = QTableWidgetItem(entry.get('platform', 'Unknown'))
+                self.table.setItem(row, 2, platform_item)
 
-            # Status
-            status = entry.get('status', 'unknown')
-            status_display = self.translator.translate(f'status_{status}', status.capitalize())
-            status_item = QTableWidgetItem(status_display)
+                # Status
+                status = entry.get('status', 'unknown')
+                status_display = self.translator.translate(f'status_{status}', status.capitalize())
+                status_item = QTableWidgetItem(status_display)
 
-            # Color code status
-            if status == 'completed':
-                status_item.setForeground(Qt.GlobalColor.darkGreen)
-            elif status == 'error':
-                status_item.setForeground(Qt.GlobalColor.red)
-            elif status == 'stopped':
-                status_item.setForeground(Qt.GlobalColor.darkYellow)
+                # Color code status
+                if status == 'completed':
+                    status_item.setForeground(Qt.GlobalColor.darkGreen)
+                elif status == 'error':
+                    status_item.setForeground(Qt.GlobalColor.red)
+                elif status == 'stopped':
+                    status_item.setForeground(Qt.GlobalColor.darkYellow)
 
-            self.table.setItem(row, 3, status_item)
+                self.table.setItem(row, 3, status_item)
+        finally:
+            self.table.blockSignals(False)
+            self.table.setUpdatesEnabled(True)
 
     def _update_stats(self, entries):
         """Update statistics label."""

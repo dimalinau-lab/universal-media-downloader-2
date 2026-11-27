@@ -1,5 +1,7 @@
 import sys
 import os
+import json
+import zipfile
 import logging
 import shutil
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
@@ -13,6 +15,60 @@ from .translation import Translator
 from .theme_manager import ThemeManager
 
 logger = logging.getLogger(__name__)
+
+
+def export_app_backup(settings: QSettings, data_dir: str, zip_path: str) -> tuple[bool, str]:
+    """Экспортирует настройки QSettings, историю (history.json) и archive.txt в ZIP-архив."""
+    try:
+        settings_dump = {}
+        for key in settings.allKeys():
+            val = settings.value(key)
+            if isinstance(val, (bool, int, float, str, list)):
+                settings_dump[key] = val
+            elif val is not None:
+                settings_dump[key] = str(val)
+
+        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('settings_backup.json', json.dumps(settings_dump, ensure_ascii=False, indent=2))
+            if data_dir and os.path.isdir(data_dir):
+                for fname in ('history.json', 'archive.txt'):
+                    fpath = os.path.join(data_dir, fname)
+                    if os.path.isfile(fpath):
+                        zf.write(fpath, fname)
+        return True, zip_path
+    except Exception as e:
+        logger.error(f"Ошибка экспорта резервной копии: {e}")
+        return False, str(e)
+
+
+def import_app_backup(settings: QSettings, data_dir: str, zip_path: str) -> tuple[bool, int]:
+    """Импортирует настройки, историю и архив загрузок из ZIP-архива."""
+    try:
+        restored_keys = 0
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = set(zf.namelist())
+            if 'settings_backup.json' in names:
+                raw = zf.read('settings_backup.json').decode('utf-8')
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        settings.setValue(str(k), v)
+                        restored_keys += 1
+                    settings.sync()
+
+            if data_dir:
+                os.makedirs(data_dir, exist_ok=True)
+                for fname in ('history.json', 'archive.txt'):
+                    if fname in names:
+                        target = os.path.join(data_dir, fname)
+                        tmp_target = f"{target}.tmp.{os.getpid()}"
+                        with open(tmp_target, 'wb') as out_f:
+                            out_f.write(zf.read(fname))
+                        os.replace(tmp_target, target)
+        return True, restored_keys
+    except Exception as e:
+        logger.error(f"Ошибка импорта резервной копии: {e}")
+        return False, 0
 
 SPEED_PRESETS = [
     (0, "speed_unlimited", "Без ограничений"),
@@ -369,6 +425,26 @@ class SettingsTab(QWidget):
         self.custom_tpl_widget.setVisible(False)
         self._apply_tooltip(self.custom_tpl_input, tip_tpl)
 
+        # Архив загрузок (download_archive)
+        archive_layout = QHBoxLayout()
+        self.archive_label = BodyLabel()
+        self.archive_label.setProperty("text_key", "download_archive_label")
+        self.archive_label.setText(self.translator.translate("download_archive_label", "Пропускать уже скачанные видео (архив)"))
+        self.archive_checkbox = SwitchButton()
+        self.archive_checkbox.setOnText("Вкл")
+        self.archive_checkbox.setOffText("Выкл")
+        self.btn_clear_archive = PushButton(self.translator.translate("clear_archive_btn", "Очистить архив"))
+        self.btn_clear_archive.setFixedWidth(145)
+        archive_layout.addWidget(self.archive_label)
+        archive_layout.addStretch()
+        archive_layout.addWidget(self.btn_clear_archive)
+        archive_layout.addWidget(self.archive_checkbox)
+        v_layout.addLayout(archive_layout)
+
+        tip_archive = "Записывает ID скачанных роликов в data/archive.txt и пропускает их при повторной загрузке плейлистов/каналов."
+        self._apply_tooltip(self.archive_label, tip_archive)
+        self._apply_tooltip(self.archive_checkbox, tip_archive)
+
         layout.addWidget(group_box)
 
     def create_formats_codecs_settings(self, layout):
@@ -537,6 +613,39 @@ class SettingsTab(QWidget):
         tip_sb = "Автоматически вырезает спонсорские интеграции, заставки и саморекламу из роликов YouTube на основе базы сообщества."
         self._apply_tooltip(self.sb_lbl, tip_sb)
         self._apply_tooltip(self.sponsorblock_checkbox, tip_sb)
+
+        # Главы (Chapters): вшивание и нарезка
+        ch_embed_layout = QHBoxLayout()
+        self.embed_chapters_lbl = BodyLabel()
+        self.embed_chapters_lbl.setProperty("text_key", "embed_chapters")
+        self.embed_chapters_lbl.setText(self.translator.translate("embed_chapters", "Вшивать главы в видео и аудио (Chapters)"))
+        self.embed_chapters_checkbox = SwitchButton()
+        self.embed_chapters_checkbox.setOnText("Вкл")
+        self.embed_chapters_checkbox.setOffText("Выкл")
+        ch_embed_layout.addWidget(self.embed_chapters_lbl)
+        ch_embed_layout.addStretch()
+        ch_embed_layout.addWidget(self.embed_chapters_checkbox)
+        v_layout.addLayout(ch_embed_layout)
+
+        tip_ch_embed = "Добавляет метки глав YouTube внутрь медиафайла для удобной навигации в плеере."
+        self._apply_tooltip(self.embed_chapters_lbl, tip_ch_embed)
+        self._apply_tooltip(self.embed_chapters_checkbox, tip_ch_embed)
+
+        ch_split_layout = QHBoxLayout()
+        self.split_chapters_lbl = BodyLabel()
+        self.split_chapters_lbl.setProperty("text_key", "split_chapters")
+        self.split_chapters_lbl.setText(self.translator.translate("split_chapters", "Разбивать видео на файлы по главам"))
+        self.split_chapters_checkbox = SwitchButton()
+        self.split_chapters_checkbox.setOnText("Вкл")
+        self.split_chapters_checkbox.setOffText("Выкл")
+        ch_split_layout.addWidget(self.split_chapters_lbl)
+        ch_split_layout.addStretch()
+        ch_split_layout.addWidget(self.split_chapters_checkbox)
+        v_layout.addLayout(ch_split_layout)
+
+        tip_ch_split = "Нарезает видео с главами на отдельные файлы в подпапку <Название>/<01 - Глава>."
+        self._apply_tooltip(self.split_chapters_lbl, tip_ch_split)
+        self._apply_tooltip(self.split_chapters_checkbox, tip_ch_split)
 
         layout.addWidget(group_box)
 
@@ -956,6 +1065,19 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.portable_label, tip_port)
         self._apply_tooltip(self.portable_checkbox, tip_port)
 
+        # Экспорт и импорт резервной копии
+        backup_layout = QHBoxLayout()
+        self.backup_label = BodyLabel()
+        self.backup_label.setProperty("text_key", "backup_settings_label")
+        self.backup_label.setText(self.translator.translate("backup_settings_label", "Резервная копия (настройки и история)"))
+        self.btn_export_backup = PushButton(FluentIcon.SAVE, self.translator.translate("export_backup_btn", "Экспорт..."))
+        self.btn_import_backup = PushButton(FluentIcon.FOLDER, self.translator.translate("import_backup_btn", "Импорт..."))
+        backup_layout.addWidget(self.backup_label)
+        backup_layout.addStretch()
+        backup_layout.addWidget(self.btn_export_backup)
+        backup_layout.addWidget(self.btn_import_backup)
+        v_layout.addLayout(backup_layout)
+
         layout.addWidget(group_box)
 
     def on_test_net_clicked(self):
@@ -1017,6 +1139,12 @@ class SettingsTab(QWidget):
         self.sniffer_timeout_spin.valueChanged.connect(self.on_setting_changed)
         self.subtitles_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.sponsorblock_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.embed_chapters_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.split_chapters_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.archive_checkbox.checkedChanged.connect(self.on_setting_changed)
+        self.btn_clear_archive.clicked.connect(self.on_clear_archive_clicked)
+        self.btn_export_backup.clicked.connect(self.on_export_backup_clicked)
+        self.btn_import_backup.clicked.connect(self.on_import_backup_clicked)
         self.cookies_checkbox.checkedChanged.connect(self.on_setting_changed)
         self.rb_cookie_file.toggled.connect(self.on_setting_changed)
         self.cookies_btn.clicked.connect(self.on_select_cookies_file)
@@ -1053,6 +1181,12 @@ class SettingsTab(QWidget):
             self.save_path_btn.clicked,
             self.subtitles_checkbox.checkedChanged,
             self.sponsorblock_checkbox.checkedChanged,
+            self.embed_chapters_checkbox.checkedChanged,
+            self.split_chapters_checkbox.checkedChanged,
+            self.archive_checkbox.checkedChanged,
+            self.btn_clear_archive.clicked,
+            self.btn_export_backup.clicked,
+            self.btn_import_backup.clicked,
             self.cookies_checkbox.checkedChanged,
             self.rb_cookie_file.toggled,
             self.cookies_btn.clicked,
@@ -1181,6 +1315,9 @@ class SettingsTab(QWidget):
         self.set_combo_by_data(self.subtitles_mode_combo, self.settings.value('subtitles_mode', 'embed'))
         self.set_combo_by_data(self.subtitles_format_combo, self.settings.value('subtitles_format', 'srt'))
         self.sponsorblock_checkbox.setChecked(self.settings.value('sponsorblock_enabled', False, type=bool))
+        self.embed_chapters_checkbox.setChecked(self.settings.value('embed_chapters', True, type=bool))
+        self.split_chapters_checkbox.setChecked(self.settings.value('split_chapters', False, type=bool))
+        self.archive_checkbox.setChecked(self.settings.value('download_archive_enabled', False, type=bool))
         self.cookies_checkbox.setChecked(self.settings.value('use_cookies', False, type=bool))
         self.tray_checkbox.setChecked(self.settings.value('close_to_tray', True, type=bool))
         self.clipboard_checkbox.setChecked(self.settings.value('clipboard_monitor', False, type=bool))
@@ -1281,6 +1418,9 @@ class SettingsTab(QWidget):
         self.settings.setValue('subtitles_mode', self.subtitles_mode_combo.currentData() or 'embed')
         self.settings.setValue('subtitles_format', self.subtitles_format_combo.currentData() or 'srt')
         self.settings.setValue('sponsorblock_enabled', self.sponsorblock_checkbox.isChecked())
+        self.settings.setValue('embed_chapters', self.embed_chapters_checkbox.isChecked())
+        self.settings.setValue('split_chapters', self.split_chapters_checkbox.isChecked())
+        self.settings.setValue('download_archive_enabled', self.archive_checkbox.isChecked())
         self.settings.setValue('use_cookies', self.cookies_checkbox.isChecked())
         self.settings.setValue('close_to_tray', self.tray_checkbox.isChecked())
         self.settings.setValue('clipboard_monitor', self.clipboard_checkbox.isChecked())
@@ -1343,6 +1483,77 @@ class SettingsTab(QWidget):
             self.update_status_indicators()
 
 
+
+    def on_clear_archive_clicked(self):
+        from .path_manager import get_data_dir
+        archive_path = os.path.join(get_data_dir(), 'archive.txt')
+        if not os.path.exists(archive_path):
+            QMessageBox.information(
+                self,
+                self.translator.translate('info', 'Информация'),
+                self.translator.translate('archive_already_empty', 'Архив загрузок пока пуст.')
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            self.translator.translate('clear_archive_btn', 'Очистить архив'),
+            self.translator.translate('confirm_clear_archive', 'Удалить список ID ранее скачанных видео (archive.txt)?'),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                os.remove(archive_path)
+            except Exception as e:
+                QMessageBox.warning(self, self.translator.translate('error', 'Ошибка'), str(e))
+
+    def on_export_backup_clicked(self):
+        from .path_manager import get_data_dir
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.translator.translate('export_backup_title', 'Экспорт настроек и истории'),
+            'umd_backup.zip',
+            'ZIP Archives (*.zip)'
+        )
+        if not path:
+            return
+        ok, res = export_app_backup(self.settings, get_data_dir(), path)
+        if ok:
+            QMessageBox.information(
+                self,
+                self.translator.translate('success', 'Успешно'),
+                self.translator.translate('export_backup_ok', 'Резервная копия успешно сохранена.')
+            )
+        else:
+            QMessageBox.warning(self, self.translator.translate('error', 'Ошибка'), res)
+
+    def on_import_backup_clicked(self):
+        from .path_manager import get_data_dir
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.translator.translate('import_backup_title', 'Импорт настроек и истории'),
+            '',
+            'ZIP Archives (*.zip)'
+        )
+        if not path:
+            return
+        ok, count = import_app_backup(self.settings, get_data_dir(), path)
+        if ok:
+            self.load_settings()
+            ThemeManager(self.settings, self.parent_window).apply_theme()
+            if getattr(self.parent_window, '_history_page', None):
+                self.parent_window._history_page.history_manager._load()
+                self.parent_window._history_page.load_history()
+            QMessageBox.information(
+                self,
+                self.translator.translate('success', 'Успешно'),
+                self.translator.translate('import_backup_ok', 'Импортировано параметров: {count}.').format(count=count)
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                self.translator.translate('error', 'Ошибка'),
+                self.translator.translate('import_backup_fail', 'Не удалось прочитать файл резервной копии.')
+            )
 
     def update_cookie_widgets_state(self):
         use_cookies = self.cookies_checkbox.isChecked()
