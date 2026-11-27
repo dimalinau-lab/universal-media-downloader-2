@@ -117,3 +117,7 @@ browser_profile/get_site_code.py
 test/
 tests/
 docs/diagrams/
+
+# Local design notes & agent skill lock
+DESIGN.md
+skills-lock.json
