@@ -13,7 +13,12 @@ from PyQt6.QtWidgets import QMessageBox
 
 import threading
 from .threads import InfoWorker, DownloadWorker, ThumbnailWorker, UniversalSnifferWorker
-from .download_task import DownloadTask
+from .download_task import (
+    DownloadTask,
+    estimate_task_filesize,
+    extract_task_heights,
+    resolve_nearest_height,
+)
 from .extractors import find_extractor_for_url
 from .stream_helper import StreamResolverHelper
 
@@ -1755,6 +1760,220 @@ class DownloadManager(QObject):
         for t in tasks:
             self.remove_task(t)
         return len(tasks)
+
+    BATCH_QUALITY_ELIGIBLE_STATUSES = (
+        DownloadTask.Status.PENDING,
+        DownloadTask.Status.FETCHING_INFO,
+        DownloadTask.Status.STOPPED,
+        DownloadTask.Status.ERROR,
+    )
+
+    _WEB_MEDIA_DOMAINS = (
+        'twitch.tv', 'youtube.com', 'youtu.be', 'kick.com',
+        'rutube.ru', 'vk.com', 'tiktok.com', 'instagram.com',
+    )
+
+    @staticmethod
+    def _format_height_label(height: int) -> str:
+        if height >= 2160:
+            return f"{height}p (4K)"
+        if height >= 1440:
+            return f"{height}p (2K)"
+        if height >= 1080:
+            return f"{height}p (Full HD)"
+        if height >= 720:
+            return f"{height}p (HD)"
+        if height >= 480 or height >= 360:
+            return f"{height}p (SD)"
+        return f"{height}p"
+
+    def get_eligible_quality_tasks(self) -> list:
+        """Возвращает еще не скачанные задачи очереди (PENDING, FETCHING_INFO, STOPPED, ERROR)."""
+        return [t for t in self.tasks if t.status in self.BATCH_QUALITY_ELIGIBLE_STATUSES]
+
+    def collect_available_batch_qualities(self) -> list:
+        """Собирает доступные варианты качества из метаданных текущих задач очереди + аудио-пресеты."""
+        eligible = self.get_eligible_quality_tasks()
+        if not eligible:
+            return []
+
+        discovered_heights: set[int] = set()
+        task_heights_map: list[tuple] = []
+        known_meta_count = 0
+
+        for task in eligible:
+            info = getattr(task, 'info', None) or {}
+            av_streams = getattr(task, 'available_streams', None) or info.get('available_streams')
+            heights = extract_task_heights(info, av_streams)
+            if heights:
+                known_meta_count += 1
+                discovered_heights.update(heights)
+            else:
+                badge = str(getattr(task, 'quality_badge', '') or getattr(task, 'custom_quality', '') or '')
+                m_b = re.match(r'^(\d{3,4})p?$', badge.replace(' ▾', '').strip(), re.IGNORECASE)
+                if m_b:
+                    discovered_heights.add(int(m_b.group(1)))
+            task_heights_map.append((task, info, heights))
+
+        if not discovered_heights:
+            discovered_heights = {2160, 1440, 1080, 720, 480, 360}
+
+        best_total_bytes = 0
+        audio_total_bytes = 0
+        for task, info, heights in task_heights_map:
+            best_badge = f"{max(heights)}p" if heights else ""
+            sz_best = estimate_task_filesize(info, best_badge, is_audio=False)
+            if sz_best:
+                best_total_bytes += sz_best
+            sz_audio = estimate_task_filesize(info, "MP3", is_audio=True)
+            if sz_audio:
+                audio_total_bytes += sz_audio
+
+        items = [{
+            'key': 'best',
+            'badge': 'Best',
+            'label': self.translator.translate('batch_quality_best', 'Лучшее доступное (Best)'),
+            'height': None,
+            'is_audio': False,
+            'is_best': True,
+            'size_bytes': best_total_bytes,
+            'supported_count': len(eligible),
+            'known_meta_count': known_meta_count,
+        }]
+
+        for h in sorted(discovered_heights, reverse=True):
+            supported_count = 0
+            total_sz = 0
+            for _task, info, heights in task_heights_map:
+                if heights and max(heights) >= h:
+                    supported_count += 1
+                actual_h = resolve_nearest_height(heights, h) if heights else h
+                est = estimate_task_filesize(info, f"{actual_h}p", is_audio=False)
+                if est:
+                    total_sz += est
+
+            items.append({
+                'key': f"{h}p",
+                'badge': f"{h}p",
+                'label': self._format_height_label(h),
+                'height': h,
+                'is_audio': False,
+                'is_best': False,
+                'size_bytes': total_sz,
+                'supported_count': supported_count,
+                'known_meta_count': known_meta_count,
+            })
+
+        items.append({
+            'key': 'audio_only',
+            'badge': 'AUDIO',
+            'label': self.translator.translate('profile_audio_only', 'Только аудио (M4A / OPUS)'),
+            'height': None,
+            'is_audio': True,
+            'is_best': False,
+            'size_bytes': audio_total_bytes,
+            'supported_count': len(eligible),
+            'known_meta_count': known_meta_count,
+        })
+        items.append({
+            'key': 'audio_mp3',
+            'badge': 'MP3',
+            'label': self.translator.translate('profile_audio_mp3', 'Только аудио (MP3)'),
+            'height': None,
+            'is_audio': True,
+            'is_best': False,
+            'size_bytes': audio_total_bytes,
+            'supported_count': len(eligible),
+            'known_meta_count': known_meta_count,
+        })
+        return items
+
+    @staticmethod
+    def _pick_stream_for_height(av_streams: dict, target_height: int | None, pick_best: bool = False):
+        parsed = []
+        for label, s_url in av_streams.items():
+            m = re.search(r'(\d{3,4})', str(label))
+            h = int(m.group(1)) if m else 0
+            score = h * 10 + (5 if 'ultra' in str(label).lower() else 0)
+            parsed.append((h, score, label, s_url))
+        if not parsed:
+            return None, None
+        if pick_best or target_height is None:
+            best_item = max(parsed, key=lambda x: x[1])
+            return best_item[2], best_item[3]
+        le_items = [p for p in parsed if p[0] <= target_height]
+        chosen = max(le_items, key=lambda x: x[1]) if le_items else min(parsed, key=lambda x: x[1])
+        return chosen[2], chosen[3]
+
+    def apply_batch_quality(self, option: dict) -> int:
+        """Массово применяет выбранное качество ко всем еще не скачанным задачам с фоллбэком <= target."""
+        eligible = self.get_eligible_quality_tasks()
+        if not eligible:
+            return 0
+
+        is_audio = bool(option.get('is_audio'))
+        is_best = bool(option.get('is_best'))
+        target_h = option.get('height')
+        opt_key = str(option.get('key', ''))
+        updated = 0
+
+        for task in eligible:
+            info = getattr(task, 'info', None) or {}
+            av_streams = getattr(task, 'available_streams', None) or info.get('available_streams')
+            orig_u = (getattr(task, 'original_url', '') or task.url or '').lower()
+            is_web_media = any(d in orig_u for d in self._WEB_MEDIA_DOMAINS)
+
+            if is_audio:
+                audio_fmt = str(self.settings.value('audio_format', 'mp3')).upper() or 'AUDIO'
+                badge = 'MP3' if opt_key == 'audio_mp3' else audio_fmt
+                task.audio_only = True
+                task.quality_override = opt_key
+                task.quality_badge = badge
+                task.custom_quality = badge
+                if StreamResolverHelper.is_kodik_stream(task.url):
+                    task.url = StreamResolverHelper.replace_quality(task.url, badge, is_audio=True)
+            elif is_best:
+                task.audio_only = False
+                task.quality_override = 'best'
+                if isinstance(av_streams, dict) and av_streams:
+                    chosen_label, chosen_url = self._pick_stream_for_height(av_streams, None, pick_best=True)
+                    badge = chosen_label or 'Best'
+                    if chosen_url and not is_web_media:
+                        task.url = chosen_url
+                else:
+                    heights = extract_task_heights(info)
+                    badge = f"{max(heights)}p" if heights else 'Best'
+                    if StreamResolverHelper.is_kodik_stream(task.url) and heights:
+                        task.url = StreamResolverHelper.replace_quality(task.url, badge, is_audio=False)
+                task.quality_badge = badge
+                task.custom_quality = badge
+            else:
+                task.audio_only = False
+                if isinstance(av_streams, dict) and av_streams:
+                    chosen_label, chosen_url = self._pick_stream_for_height(av_streams, target_h, pick_best=False)
+                    badge = chosen_label or f"{target_h}p"
+                    task.quality_override = badge
+                    if chosen_url and not is_web_media:
+                        task.url = chosen_url
+                else:
+                    heights = extract_task_heights(info)
+                    actual_h = resolve_nearest_height(heights, target_h) if heights else target_h
+                    badge = f"{actual_h}p"
+                    task.quality_override = badge
+                    if StreamResolverHelper.is_kodik_stream(task.url):
+                        task.url = StreamResolverHelper.replace_quality(task.url, badge, is_audio=False)
+                task.quality_badge = badge
+                task.custom_quality = badge
+
+            est_size = estimate_task_filesize(info, task.quality_badge, is_audio=task.audio_only)
+            if est_size:
+                task.set_file_size(est_size, force=True)
+
+            task.info_updated.emit()
+            updated += 1
+
+        self._update_summary()
+        return updated
 
     def _start_custom_extractor_scan(self, url, extractor, is_from_bot=False):
         self.status_updated.emit(f"Анализ {extractor.name}...")

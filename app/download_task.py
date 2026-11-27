@@ -6,6 +6,88 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage
 
 
+def extract_task_heights(info: dict | None, available_streams: dict | None = None) -> list[int]:
+    """Извлекает список доступных вертикальных разрешений (height) из метаданных задачи."""
+    heights: set[int] = set()
+    info = info if isinstance(info, dict) else {}
+
+    av_streams = available_streams or info.get('available_streams')
+    if isinstance(av_streams, dict):
+        for label in av_streams.keys():
+            m = re.search(r'(\d{3,4})', str(label))
+            if m:
+                heights.add(int(m.group(1)))
+
+    for f in info.get('formats') or []:
+        h = f.get('height')
+        if not h or not isinstance(h, (int, float)):
+            continue
+        if f.get('ext') in ('mhtml', 'sb3') or f.get('format_note') == 'storyboard':
+            continue
+        heights.add(int(h))
+
+    for q in info.get('available_qualities') or []:
+        m = re.search(r'(\d{3,4})', str(q))
+        if m:
+            heights.add(int(m.group(1)))
+
+    if not heights and isinstance(info.get('height'), (int, float)) and info['height'] > 0:
+        heights.add(int(info['height']))
+
+    return sorted(heights, reverse=True)
+
+
+def resolve_nearest_height(heights: list[int], target_height: int) -> int:
+    """Возвращает ближайшее доступное разрешение не выше target_height (или минимальное, если все выше)."""
+    if not heights:
+        return target_height
+    le_heights = [h for h in heights if h <= target_height]
+    return max(le_heights) if le_heights else min(heights)
+
+
+def estimate_task_filesize(info: dict | None, badge: str = "", is_audio: bool = False) -> int | None:
+    """Оценивает размер файла в байтах для указанного качества/режима на основе метаданных."""
+    info = info if isinstance(info, dict) else {}
+    formats = info.get('formats') or []
+    duration = info.get('duration') or 0
+    calc_size = None
+
+    if formats:
+        if is_audio:
+            best_a = None
+            for f in formats:
+                if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                    if not best_a or (f.get('abr') or 0) > (best_a.get('abr') or 0):
+                        best_a = f
+            if best_a:
+                calc_size = best_a.get('filesize') or best_a.get('filesize_approx')
+                if not calc_size and duration and best_a.get('abr'):
+                    calc_size = int((best_a['abr'] * 1000 / 8) * duration)
+            if not calc_size and duration:
+                calc_size = int((320 * 1000 / 8) * duration)
+        elif badge:
+            clean_b = str(badge).replace(' ▾', '').strip()
+            m_h = re.match(r'^(\d{3,4})p?$', clean_b, re.IGNORECASE)
+            if m_h:
+                target_h = int(m_h.group(1))
+                audio_sz = 0
+                for f in formats:
+                    if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                        audio_sz = max(audio_sz, f.get('filesize') or f.get('filesize_approx') or 0)
+                cand_vf = None
+                for f in formats:
+                    if f.get('height') == target_h:
+                        if not cand_vf or (f.get('filesize') or f.get('tbr') or 0) > (cand_vf.get('filesize') or cand_vf.get('tbr') or 0):
+                            cand_vf = f
+                if cand_vf:
+                    v_sz = cand_vf.get('filesize') or cand_vf.get('filesize_approx') or 0
+                    if not v_sz and duration and (cand_vf.get('tbr') or cand_vf.get('vbr')):
+                        v_sz = int(((cand_vf.get('tbr') or cand_vf.get('vbr')) * 1000 / 8) * duration)
+                    calc_size = v_sz + (audio_sz if cand_vf.get('acodec') == 'none' else 0)
+
+    return calc_size or info.get('filesize') or info.get('filesize_approx')
+
+
 class DownloadTask(QObject):
     class Status(Enum):
         PENDING = "pending"
@@ -105,7 +187,27 @@ class DownloadTask(QObject):
 
         # Определение значка качества / формата
         badge = ""
-        if hasattr(self, 'custom_quality') and self.custom_quality:
+        is_audio_mode = (
+            getattr(self, 'audio_only', False)
+            or getattr(self, 'quality_override', '') in ('audio_only', 'audio_mp3')
+        )
+        qo = str(getattr(self, 'quality_override', '') or '').strip()
+        avail_heights = extract_task_heights(info, getattr(self, 'available_streams', None))
+
+        if is_audio_mode:
+            badge = getattr(self, 'custom_quality', None) or getattr(self, 'quality_badge', None) or (
+                "MP3" if qo == 'audio_mp3' else "AUDIO"
+            )
+        elif qo.lower() == 'best' and avail_heights:
+            badge = f"{max(avail_heights)}p"
+            self.custom_quality = badge
+        elif qo and re.match(r'^(\d{3,4})p?$', qo, re.IGNORECASE) and avail_heights:
+            target_h = int(re.match(r'^(\d{3,4})', qo).group(1))
+            actual_h = resolve_nearest_height(avail_heights, target_h)
+            badge = f"{actual_h}p"
+            self.quality_override = badge
+            self.custom_quality = badge
+        elif hasattr(self, 'custom_quality') and self.custom_quality:
             badge = self.custom_quality
         elif hasattr(self, 'quality_badge') and self.quality_badge:
             badge = self.quality_badge
@@ -130,42 +232,8 @@ class DownloadTask(QObject):
         self.quality_badge = badge
 
         # Smart size estimation based on selected quality / badge
-        calc_size = None
-        formats = info.get('formats', [])
-        duration = info.get('duration', 0)
-        is_audio_mode = badge in ('MP3', 'AUDIO') or getattr(self, 'quality_override', '') in ('audio_only', 'audio_mp3') or getattr(self, 'audio_only', False)
-
-        if formats:
-            if is_audio_mode:
-                best_a = None
-                for f in formats:
-                    if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
-                        if not best_a or (f.get('abr') or 0) > (best_a.get('abr') or 0):
-                            best_a = f
-                if best_a:
-                    calc_size = best_a.get('filesize') or best_a.get('filesize_approx')
-                    if not calc_size and duration and best_a.get('abr'):
-                        calc_size = int((best_a['abr'] * 1000 / 8) * duration)
-                if not calc_size and duration:
-                    calc_size = int((320 * 1000 / 8) * duration)
-            elif badge and badge.rstrip('p').isdigit():
-                target_h = int(badge.rstrip('p'))
-                audio_sz = 0
-                for f in formats:
-                    if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
-                        audio_sz = max(audio_sz, f.get('filesize') or f.get('filesize_approx') or 0)
-                cand_vf = None
-                for f in formats:
-                    if f.get('height') == target_h:
-                        if not cand_vf or (f.get('filesize') or f.get('tbr') or 0) > (cand_vf.get('filesize') or cand_vf.get('tbr') or 0):
-                            cand_vf = f
-                if cand_vf:
-                    v_sz = cand_vf.get('filesize') or cand_vf.get('filesize_approx') or 0
-                    if not v_sz and duration and (cand_vf.get('tbr') or cand_vf.get('vbr')):
-                        v_sz = int(((cand_vf.get('tbr') or cand_vf.get('vbr')) * 1000 / 8) * duration)
-                    calc_size = v_sz + (audio_sz if cand_vf.get('acodec') == 'none' else 0)
-
-        filesize = calc_size or info.get('filesize') or info.get('filesize_approx')
+        is_audio_mode = is_audio_mode or badge in ('MP3', 'AUDIO')
+        filesize = estimate_task_filesize(info, badge, is_audio=is_audio_mode)
         if filesize:
             self.set_file_size(filesize)
 

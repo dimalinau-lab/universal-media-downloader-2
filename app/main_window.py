@@ -504,6 +504,11 @@ class MainWindow(QMainWindow):
 
         ft_layout.addStretch()
 
+        self.btn_batch_quality = PushButton(FluentIcon.VIDEO, self.translator.translate('batch_quality_btn', 'Качество ▾'))
+        self.btn_batch_quality.setFixedHeight(30)
+        self.btn_batch_quality.setToolTip(self.translator.translate('batch_quality_tooltip', 'Изменить качество для всех нескачанных видео в очереди'))
+        ft_layout.addWidget(self.btn_batch_quality)
+
         self.platform_filter_combo = ComboBox()
         self.platform_filter_combo.setFixedHeight(30)
         self.platform_filter_combo.setMinimumWidth(165)
@@ -724,6 +729,7 @@ class MainWindow(QMainWindow):
         self.btn_open_logs.clicked.connect(self.open_logs_folder)
         self.btn_clear_recent.clicked.connect(self._clear_recent_history)
         self.filter_btn_group.idClicked.connect(self.on_filter_changed)
+        self.btn_batch_quality.clicked.connect(self.show_batch_quality_menu)
         self.platform_filter_combo.currentIndexChanged.connect(self.apply_downloads_filter)
         self.search_downloads_input.textChanged.connect(self.apply_downloads_filter)
         self.btn_quick_speed.clicked.connect(self.show_quick_speed_menu)
@@ -781,6 +787,9 @@ class MainWindow(QMainWindow):
         self.btn_filter_downloading.setText(self.translator.translate('filter_downloading', 'Скачиваются'))
         self.btn_filter_completed.setText(self.translator.translate('filter_completed', 'Завершенные'))
         self.btn_filter_errors.setText(self.translator.translate('filter_errors', 'Ошибки'))
+        if hasattr(self, 'btn_batch_quality'):
+            self.btn_batch_quality.setText(self.translator.translate('batch_quality_btn', 'Качество ▾'))
+            self.btn_batch_quality.setToolTip(self.translator.translate('batch_quality_tooltip', 'Изменить качество для всех нескачанных видео в очереди'))
         self._populate_platform_filter()
         self.search_downloads_input.setPlaceholderText(self.translator.translate('search_placeholder', 'Поиск по названию...'))
         self.btn_quick_speed.setToolTip(self.translator.translate('speed_quick_menu', 'Лимит скорости'))
@@ -851,6 +860,8 @@ class MainWindow(QMainWindow):
             self.btn_import.setIcon(FluentIcon.FOLDER.icon(theme))
         if hasattr(self, 'btn_quality'):
             self.btn_quality.setIcon(FluentIcon.SETTING.icon(theme))
+        if hasattr(self, 'btn_batch_quality'):
+            self.btn_batch_quality.setIcon(FluentIcon.VIDEO.icon(theme))
 
         # Нижняя панель действий
         if hasattr(self, 'download_button'):
@@ -1983,6 +1994,81 @@ class MainWindow(QMainWindow):
                 matches_platform = (self._get_task_platform_group(task) == selected_platform)
 
             item.setHidden(not (matches_filter and matches_search and matches_platform))
+
+    @staticmethod
+    def _format_size_bytes(size_bytes: int) -> str:
+        if not size_bytes or size_bytes <= 0:
+            return ""
+        b = float(size_bytes)
+        for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+            if b < 1024.0:
+                return f"{b:.1f} {unit}"
+            b /= 1024.0
+        return ""
+
+    def show_batch_quality_menu(self):
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        items = self.download_manager.collect_available_batch_qualities()
+        if not items:
+            InfoBar.info(
+                title=self.translator.translate('batch_quality_btn', 'Качество').replace(' ▾', ''),
+                content=self.translator.translate('batch_quality_no_tasks', 'В очереди нет нескачанных задач для смены качества.'),
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self,
+            )
+            return
+
+        eligible = self.download_manager.get_eligible_quality_tasks()
+        overrides = {str(getattr(t, 'quality_override', '') or '').lower() for t in eligible}
+        badges = {str(getattr(t, 'quality_badge', '') or '').replace(' ▾', '').strip().lower() for t in eligible}
+        uniform_override = next(iter(overrides)) if len(overrides) == 1 else ""
+        uniform_badge = next(iter(badges)) if len(badges) == 1 else ""
+
+        menu = RoundMenu(parent=self)
+        audio_separator_added = False
+
+        for it in items:
+            if it.get('is_audio') and not audio_separator_added:
+                menu.addSeparator()
+                audio_separator_added = True
+
+            label_parts = [it['label']]
+            known_meta = it.get('known_meta_count', 0)
+            supported = it.get('supported_count', 0)
+            if not it.get('is_audio') and not it.get('is_best') and known_meta > 0 and 0 < supported < known_meta:
+                label_parts.append(f"• {supported}/{known_meta}")
+            sz_str = self._format_size_bytes(it.get('size_bytes', 0))
+            if sz_str:
+                label_parts.append(f"(~{sz_str})")
+
+            action = Action(" ".join(label_parts), self)
+            item_key = str(it.get('key', '')).lower()
+            item_badge = str(it.get('badge', '')).lower()
+            is_active = (
+                (uniform_override and uniform_override == item_key)
+                or (not it.get('is_best') and uniform_badge and uniform_badge == item_badge)
+            )
+            if is_active:
+                action.setIcon(FluentIcon.ACCEPT)
+
+            action.triggered.connect(lambda _chk, opt=it: self._apply_batch_quality_option(opt))
+            menu.addAction(action)
+
+        menu.exec(self.btn_batch_quality.mapToGlobal(self.btn_batch_quality.rect().bottomLeft()))
+
+    def _apply_batch_quality_option(self, option: dict):
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        count = self.download_manager.apply_batch_quality(option)
+        if count > 0:
+            msg_tpl = self.translator.translate('batch_quality_applied', 'Качество «{quality}» применено для {count} задач(и).')
+            InfoBar.success(
+                title=self.translator.translate('batch_quality_applied_title', 'Качество обновлено'),
+                content=msg_tpl.format(quality=option.get('label', option.get('badge', '')), count=count),
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self,
+            )
 
     def show_quick_speed_menu(self):
         menu = RoundMenu(parent=self)
