@@ -33,7 +33,7 @@ adaptive
 
 ## Evidence on Hand
 - Рабочий проект на Python 3.12 + PyQt6 (`main.py`, `app/`).
-- Релизная сборка v3.5.0 (`Universal_Media_Downloader_v3.5.0_Setup.exe`, `Windows_UMD_v3.5.0_Portable.zip`).
+- Релизная сборка v3.5.1 (`Universal_Media_Downloader_v3.5.1_Setup.exe`, `Windows_UMD_v3.5.1_Portable.zip`).
 - Актуальная документация: `README.md`.
 
 ## Product Principles

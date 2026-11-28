@@ -31,6 +31,7 @@ env/
 .vscode/
 .claude/
 .agents/
+.specify/
 *.swp
 *.swo
 *~

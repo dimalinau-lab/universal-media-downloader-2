@@ -61,12 +61,94 @@ class ThemeManager:
             #BottomBar { border-top: 1px solid rgba(255, 255, 255, 0.05); }
 
             /* Карточки и списки */
-            #EmptyCard, #DownloadItem {
+            #EmptyCard, #DownloadItem, #HistoryItem {
                 background-color: #272727;
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 8px; /* Более строгий радиус Windows 11 */
             }
+            #DownloadItem:hover, #HistoryItem:hover {
+                border: 1px solid rgba(255, 255, 255, 0.16);
+            }
             #EmptyCard { padding: 24px; }
+
+            /* Сворачиваемые карточки-аккордеоны настроек */
+            #AccordionCard {
+                background-color: #272727;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+            #AccordionCard:hover {
+                border: 1px solid rgba(255, 255, 255, 0.14);
+            }
+            #AccordionHeader {
+                background-color: transparent;
+                border: none;
+                border-radius: 8px;
+            }
+            #AccordionHeader[expanded="true"] {
+                border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+                border-bottom-left-radius: 0px;
+                border-bottom-right-radius: 0px;
+            }
+            #AccordionHeader:hover {
+                background-color: rgba(255, 255, 255, 0.04);
+            }
+            #AccordionTitle { font-weight: 600; font-size: 14px; color: #ffffff; }
+            #AccordionSummary { color: #a0a0a0; font-size: 12px; }
+            #AccordionBody { background-color: transparent; }
+
+            #PageTitle { font-size: 20px; font-weight: 600; color: #ffffff; }
+            #FilterBarCard {
+                background-color: #272727;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+            #StatsPill {
+                background-color: rgba(255, 255, 255, 0.06);
+                color: #a0a0a0;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                padding: 3px 10px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            #StatusBadgeSuccess {
+                background-color: rgba(16, 185, 129, 0.15);
+                color: #10b981;
+                border: 1px solid rgba(16, 185, 129, 0.3);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #StatusBadgeWarning {
+                background-color: rgba(245, 158, 11, 0.15);
+                color: #f59e0b;
+                border: 1px solid rgba(245, 158, 11, 0.3);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #StatusBadgeDanger {
+                background-color: rgba(239, 68, 68, 0.15);
+                color: #ef4444;
+                border: 1px solid rgba(239, 68, 68, 0.3);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #StatusBadgeMuted {
+                background-color: rgba(255, 255, 255, 0.06);
+                color: #a0a0a0;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #ActionLinkLabel { color: #60a5fa; }
 
             QGroupBox#SettingsGroup {
                 background-color: #272727;
@@ -97,6 +179,16 @@ class ThemeManager:
                 background-color: transparent;
                 border: none;
                 outline: none;
+            }
+            #DownloadsList::item,
+            #DownloadsList::item:hover,
+            #DownloadsList::item:selected,
+            #DownloadsList::item:selected:hover,
+            #DownloadsList::item:selected:!active {
+                background: transparent;
+                border: none;
+                padding: 0;
+                margin: 0;
             }
             QTableWidget::item { color: #ffffff; }
             QHeaderView::section {
@@ -279,12 +371,94 @@ class ThemeManager:
             #BottomBar { border-top: 1px solid rgba(0, 0, 0, 0.05); }
 
             /* Карточки и списки */
-            #EmptyCard, #DownloadItem {
+            #EmptyCard, #DownloadItem, #HistoryItem {
                 background-color: #ffffff;
                 border: 1px solid rgba(0, 0, 0, 0.06);
                 border-radius: 8px;
             }
+            #DownloadItem:hover, #HistoryItem:hover {
+                border: 1px solid rgba(0, 0, 0, 0.16);
+            }
             #EmptyCard { padding: 24px; }
+
+            /* Сворачиваемые карточки-аккордеоны настроек */
+            #AccordionCard {
+                background-color: #ffffff;
+                border: 1px solid rgba(0, 0, 0, 0.06);
+                border-radius: 8px;
+            }
+            #AccordionCard:hover {
+                border: 1px solid rgba(0, 0, 0, 0.14);
+            }
+            #AccordionHeader {
+                background-color: transparent;
+                border: none;
+                border-radius: 8px;
+            }
+            #AccordionHeader[expanded="true"] {
+                border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+                border-bottom-left-radius: 0px;
+                border-bottom-right-radius: 0px;
+            }
+            #AccordionHeader:hover {
+                background-color: rgba(0, 0, 0, 0.03);
+            }
+            #AccordionTitle { font-weight: 600; font-size: 14px; color: #000000; }
+            #AccordionSummary { color: #606060; font-size: 12px; }
+            #AccordionBody { background-color: transparent; }
+
+            #PageTitle { font-size: 20px; font-weight: 600; color: #000000; }
+            #FilterBarCard {
+                background-color: #ffffff;
+                border: 1px solid rgba(0, 0, 0, 0.06);
+                border-radius: 8px;
+            }
+            #StatsPill {
+                background-color: rgba(0, 0, 0, 0.04);
+                color: #606060;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 6px;
+                padding: 3px 10px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            #StatusBadgeSuccess {
+                background-color: rgba(16, 124, 65, 0.1);
+                color: #107c41;
+                border: 1px solid rgba(16, 124, 65, 0.25);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #StatusBadgeWarning {
+                background-color: rgba(180, 83, 9, 0.1);
+                color: #b45309;
+                border: 1px solid rgba(180, 83, 9, 0.25);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #StatusBadgeDanger {
+                background-color: rgba(220, 38, 38, 0.1);
+                color: #dc2626;
+                border: 1px solid rgba(220, 38, 38, 0.25);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #StatusBadgeMuted {
+                background-color: rgba(0, 0, 0, 0.04);
+                color: #606060;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            #ActionLinkLabel { color: #005fb8; }
 
             QGroupBox#SettingsGroup {
                 background-color: #ffffff;
@@ -315,6 +489,16 @@ class ThemeManager:
                 background-color: transparent;
                 border: none;
                 outline: none;
+            }
+            #DownloadsList::item,
+            #DownloadsList::item:hover,
+            #DownloadsList::item:selected,
+            #DownloadsList::item:selected:hover,
+            #DownloadsList::item:selected:!active {
+                background: transparent;
+                border: none;
+                padding: 0;
+                margin: 0;
             }
             QTableWidget::item { color: #000000; }
             QHeaderView::section {

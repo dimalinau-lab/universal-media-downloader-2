@@ -27,6 +27,7 @@ from .translation import Translator
 from .theme_manager import ThemeManager
 from .flow_layout import FlowLayout
 from .telegram_bot import TelegramBotManager
+from .ui_components import EmptyStateCard
 from .__version__ import __version__ as APP_VERSION
 logger = logging.getLogger(__name__)
 
@@ -466,7 +467,7 @@ class MainWindow(QMainWindow):
         self.empty_b3 = BodyLabel(
             self.translator.translate('empty_tip_support', 'Supported: YouTube, TikTok, Instagram, VK, RuTube…'))
         for l in (self.empty_b1, self.empty_b3):
-            l.setStyleSheet("color: #888888;")
+            l.setObjectName('HintLabel')
             bullets_layout.addWidget(l)
 
         self.quick_actions = QWidget()
@@ -507,7 +508,7 @@ class MainWindow(QMainWindow):
         rc_layout.addLayout(self.recent_buttons_layout)
 
         self.hint_label = CaptionLabel(self.translator.translate('empty_hint', "Press Enter or '+' button to add"))
-        self.hint_label.setStyleSheet("color: #666666;")
+        self.hint_label.setObjectName('HintLabel')
         self.hint_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         card_layout.addLayout(title_row)
@@ -522,12 +523,13 @@ class MainWindow(QMainWindow):
         # Контейнер списка загрузок с панелью фильтрации и поиска
         self.downloads_container = QWidget()
         dl_container_layout = QVBoxLayout(self.downloads_container)
-        dl_container_layout.setContentsMargins(10, 8, 10, 6)
-        dl_container_layout.setSpacing(8)
+        dl_container_layout.setContentsMargins(18, 14, 18, 10)
+        dl_container_layout.setSpacing(10)
 
-        self.filter_toolbar = QWidget()
+        self.filter_toolbar = QFrame()
+        self.filter_toolbar.setObjectName('FilterBarCard')
         ft_layout = QHBoxLayout(self.filter_toolbar)
-        ft_layout.setContentsMargins(0, 0, 0, 0)
+        ft_layout.setContentsMargins(10, 8, 10, 8)
         ft_layout.setSpacing(6)
 
         self.btn_filter_all = PushButton(self.translator.translate('filter_all', 'Все'))
@@ -547,7 +549,7 @@ class MainWindow(QMainWindow):
         self.filter_btn_group.addButton(self.btn_filter_errors, 3)
         self.btn_filter_all.setChecked(True)
 
-        ft_layout.addStretch()
+        ft_layout.addStretch(1)
 
         self.btn_batch_quality = PushButton(FluentIcon.VIDEO, self.translator.translate('batch_quality_btn', 'Качество ▾'))
         self.btn_batch_quality.setFixedHeight(30)
@@ -556,18 +558,43 @@ class MainWindow(QMainWindow):
 
         self.platform_filter_combo = ComboBox()
         self.platform_filter_combo.setFixedHeight(30)
-        self.platform_filter_combo.setMinimumWidth(165)
+        self.platform_filter_combo.setMinimumWidth(145)
         self._populate_platform_filter()
         ft_layout.addWidget(self.platform_filter_combo)
 
         self.search_downloads_input = SearchLineEdit()
         self.search_downloads_input.setPlaceholderText(self.translator.translate('search_placeholder', 'Поиск по названию...'))
-        self.search_downloads_input.setFixedWidth(230)
+        self.search_downloads_input.setMinimumWidth(160)
+        self.search_downloads_input.setMaximumWidth(250)
         self.search_downloads_input.setFixedHeight(30)
+        self.search_downloads_input.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         ft_layout.addWidget(self.search_downloads_input)
 
         dl_container_layout.addWidget(self.filter_toolbar)
-        dl_container_layout.addWidget(self.downloads_list, 1)
+
+        self.downloads_list_stack = QStackedWidget()
+        self.downloads_list_stack.addWidget(self.downloads_list)
+
+        self.downloads_no_results_container = QWidget()
+        dnr_layout = QVBoxLayout(self.downloads_no_results_container)
+        dnr_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.downloads_no_results_card = EmptyStateCard(
+            icon=FluentIcon.SEARCH,
+            title=self.translator.translate('downloads_no_results_title', 'По фильтру ничего не найдено'),
+            subtitle=self.translator.translate(
+                'downloads_no_results_subtitle',
+                'В очереди есть задачи, но они скрыты текущими фильтрами или поиском.',
+            ),
+            action_text=self.translator.translate('filter_reset', 'Сбросить фильтры'),
+            action_callback=self.reset_downloads_filters,
+            parent=self.downloads_no_results_container,
+        )
+        self.downloads_no_results_card.setMinimumWidth(420)
+        self.downloads_no_results_card.setMaximumWidth(560)
+        dnr_layout.addWidget(self.downloads_no_results_card, 0, Qt.AlignmentFlag.AlignCenter)
+        self.downloads_list_stack.addWidget(self.downloads_no_results_container)
+
+        dl_container_layout.addWidget(self.downloads_list_stack, 1)
 
         self.downloads_page_stack.addWidget(self.empty_widget)
         self.downloads_page_stack.addWidget(self.downloads_container)
@@ -688,6 +715,8 @@ class MainWindow(QMainWindow):
             self._history_page = HistoryTab(self.translator, self)
             self._history_page.redownload_requested.connect(self._redownload_from_history)
             self._history_page.redownload_timerange_requested.connect(lambda u: self._redownload_from_history(u, force_timerange=True))
+            if hasattr(self._history_page, 'go_downloads_requested'):
+                self._history_page.go_downloads_requested.connect(lambda: self.page_stack.setCurrentIndex(0))
             self.page_stack.removeWidget(self._placeholder_history)
             self.page_stack.insertWidget(1, self._history_page)
         return self._history_page
@@ -842,6 +871,15 @@ class MainWindow(QMainWindow):
             self.btn_batch_quality.setToolTip(self.translator.translate('batch_quality_tooltip', 'Изменить качество для всех нескачанных видео в очереди'))
         self._populate_platform_filter()
         self.search_downloads_input.setPlaceholderText(self.translator.translate('search_placeholder', 'Поиск по названию...'))
+        if hasattr(self, 'downloads_no_results_card'):
+            self.downloads_no_results_card.set_state(
+                title=self.translator.translate('downloads_no_results_title', 'По фильтру ничего не найдено'),
+                subtitle=self.translator.translate(
+                    'downloads_no_results_subtitle',
+                    'В очереди есть задачи, но они скрыты текущими фильтрами или поиском.',
+                ),
+                action_text=self.translator.translate('filter_reset', 'Сбросить фильтры'),
+            )
         self.btn_quick_speed.setToolTip(self.translator.translate('speed_quick_menu', 'Лимит скорости'))
         self.update_quick_speed_display()
         self.update_disk_space()
@@ -2098,6 +2136,29 @@ class MainWindow(QMainWindow):
                 matches_platform = (self._get_task_platform_group(task) == selected_platform)
 
             item.setHidden(not (matches_filter and matches_search and matches_platform))
+
+        if hasattr(self, 'downloads_list_stack'):
+            visible_count = sum(
+                1 for i in range(self.downloads_list.count())
+                if not self.downloads_list.item(i).isHidden()
+            )
+            if self.downloads_list.count() > 0 and visible_count == 0:
+                self.downloads_list_stack.setCurrentWidget(self.downloads_no_results_container)
+            else:
+                self.downloads_list_stack.setCurrentWidget(self.downloads_list)
+
+    def reset_downloads_filters(self):
+        """Сбрасывает фильтры статуса, платформы и поиск в очереди загрузок."""
+        self.current_filter_mode = 'all'
+        self.btn_filter_all.setChecked(True)
+        self.platform_filter_combo.blockSignals(True)
+        if self.platform_filter_combo.count() > 0:
+            self.platform_filter_combo.setCurrentIndex(0)
+        self.platform_filter_combo.blockSignals(False)
+        self.search_downloads_input.blockSignals(True)
+        self.search_downloads_input.clear()
+        self.search_downloads_input.blockSignals(False)
+        self.apply_downloads_filter()
 
     @staticmethod
     def _format_size_bytes(size_bytes: int) -> str:

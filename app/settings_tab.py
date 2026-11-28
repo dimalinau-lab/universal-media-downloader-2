@@ -5,14 +5,16 @@ import zipfile
 import logging
 import shutil
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
-                             QFileDialog, QGridLayout, QGroupBox, QLabel, QComboBox,
+                             QFileDialog, QGridLayout, QLabel, QComboBox,
                              QMessageBox, QApplication, QToolTip)
 from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QObject, QEvent
 from PyQt6.QtGui import QPixmap, QCursor, QColor
 from qfluentwidgets import (SwitchButton, ComboBox, SpinBox, DoubleSpinBox, RadioButton,
-                             PushButton, BodyLabel, FluentIcon, SingleDirectionScrollArea, IconWidget, LineEdit)
+                             PushButton, BodyLabel, SubtitleLabel, FluentIcon,
+                             SingleDirectionScrollArea, IconWidget, LineEdit)
 from .translation import Translator
 from .theme_manager import ThemeManager
+from .ui_components import AccordionSectionCard
 
 logger = logging.getLogger(__name__)
 
@@ -220,8 +222,38 @@ class SettingsTab(QWidget):
         self.delayed_tooltip_filter = DelayedToolTipFilter(delay_ms=1800, parent=self)
 
         outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
+        outer_layout.setContentsMargins(18, 14, 18, 14)
+        outer_layout.setSpacing(10)
+
+        # Компактная шапка настроек и управление аккордеонами
+        top_header = QHBoxLayout()
+        top_header.setSpacing(8)
+
+        self.settings_title_lbl = SubtitleLabel(
+            self.translator.translate('settings_page_title', 'Настройки'),
+            self
+        )
+        self.settings_title_lbl.setObjectName('PageTitle')
+        top_header.addWidget(self.settings_title_lbl)
+        top_header.addStretch(1)
+
+        self.btn_expand_all = PushButton(
+            self.translator.translate('settings_expand_all', 'Развернуть все'),
+            self
+        )
+        self.btn_expand_all.setFixedHeight(30)
+        self.btn_expand_all.clicked.connect(self.expand_all_sections)
+        top_header.addWidget(self.btn_expand_all)
+
+        self.btn_collapse_all = PushButton(
+            self.translator.translate('settings_collapse_all', 'Свернуть все'),
+            self
+        )
+        self.btn_collapse_all.setFixedHeight(30)
+        self.btn_collapse_all.clicked.connect(self.collapse_all_sections)
+        top_header.addWidget(self.btn_collapse_all)
+
+        outer_layout.addLayout(top_header)
 
         # Скролл-область Fluent UI: предотвращает сжатие и наложение элементов
         self.scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical, parent=self)
@@ -235,11 +267,13 @@ class SettingsTab(QWidget):
         self.scroll_content.setStyleSheet("#SettingsScrollContent { background: transparent; }")
 
         main_layout = QVBoxLayout(self.scroll_content)
-        main_layout.setContentsMargins(20, 15, 20, 25)
-        main_layout.setSpacing(18)
+        main_layout.setContentsMargins(0, 4, 6, 16)
+        main_layout.setSpacing(10)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # 7 структурированных карточек настроек
+        self.accordion_sections: dict[str, AccordionSectionCard] = {}
+
+        # 7 сворачиваемых карточек-аккордеонов настроек
         self.create_download_storage_settings(main_layout)
         self.create_formats_codecs_settings(main_layout)
         self.create_quality_settings(main_layout)
@@ -249,11 +283,43 @@ class SettingsTab(QWidget):
         self.create_general_settings(main_layout)
 
         self.scroll_area.setWidget(self.scroll_content)
-        outer_layout.addWidget(self.scroll_area)
+        outer_layout.addWidget(self.scroll_area, 1)
 
         self.update_translations()
         self.connect_signals()
         self.load_settings()
+
+    def _create_accordion_section(
+        self,
+        section_key: str,
+        title_key: str,
+        default_title: str,
+        icon: FluentIcon,
+        default_expanded: bool = False,
+    ) -> AccordionSectionCard:
+        expanded = self.settings.value(f'settings_accordion/{section_key}', default_expanded, type=bool)
+        card = AccordionSectionCard(
+            section_key=section_key,
+            title=self.translator.translate(title_key, default_title),
+            icon=icon,
+            expanded=expanded,
+            settings=self.settings,
+            parent=self,
+        )
+        card.setProperty('title_key', title_key)
+        card.setProperty('default_title', default_title)
+        self.accordion_sections[section_key] = card
+        return card
+
+    def expand_all_sections(self):
+        """Разворачивает все секции настроек."""
+        for card in self.accordion_sections.values():
+            card.set_expanded(True)
+
+    def collapse_all_sections(self):
+        """Сворачивает все секции настроек, сохраняя значения."""
+        for card in self.accordion_sections.values():
+            card.set_expanded(False)
 
     def _apply_tooltip(self, widget, text: str):
         if widget and text:
@@ -261,13 +327,14 @@ class SettingsTab(QWidget):
             widget.installEventFilter(self.delayed_tooltip_filter)
 
     def create_download_storage_settings(self, layout):
-        group_box = QGroupBox()
-        group_box.setProperty("title_key", "download_storage_settings")
-        group_box.setTitle(self.translator.translate("download_storage_settings", "Загрузка и хранилище"))
-        group_box.setObjectName('SettingsGroup')
-        v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(14)
-        v_layout.setContentsMargins(16, 22, 16, 16)
+        card = self._create_accordion_section(
+            'download_storage',
+            'download_storage_settings',
+            'Загрузка и хранилище',
+            FluentIcon.FOLDER,
+            default_expanded=True,
+        )
+        v_layout = card.content_layout()
 
         # Путь сохранения
         save_path_layout = QHBoxLayout()
@@ -276,6 +343,7 @@ class SettingsTab(QWidget):
         self.save_path_lbl_title.setText(self.translator.translate("select_save_folder", "Папка сохранения"))
 
         self.save_path_lbl = BodyLabel()
+        self.save_path_lbl.setObjectName('ActionLinkLabel')
         self.save_path_lbl.setOpenExternalLinks(True)
         self.save_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.save_path_lbl.setStyleSheet("color: #005fb8;")
@@ -445,16 +513,17 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.archive_label, tip_archive)
         self._apply_tooltip(self.archive_checkbox, tip_archive)
 
-        layout.addWidget(group_box)
+        layout.addWidget(self.accordion_sections['download_storage'])
 
     def create_formats_codecs_settings(self, layout):
-        group_box = QGroupBox()
-        group_box.setProperty("title_key", "formats_codecs_settings")
-        group_box.setTitle(self.translator.translate("formats_codecs_settings", "Форматы, кодеки и звук"))
-        group_box.setObjectName('SettingsGroup')
-        v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(14)
-        v_layout.setContentsMargins(16, 22, 16, 16)
+        card = self._create_accordion_section(
+            'formats_codecs',
+            'formats_codecs_settings',
+            'Форматы, кодеки и звук',
+            FluentIcon.MUSIC,
+            default_expanded=True,
+        )
+        v_layout = card.content_layout()
 
         # Предпочитаемый видеокодек
         codec_layout = QHBoxLayout()
@@ -647,20 +716,22 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.split_chapters_lbl, tip_ch_split)
         self._apply_tooltip(self.split_chapters_checkbox, tip_ch_split)
 
-        layout.addWidget(group_box)
+        layout.addWidget(self.accordion_sections['formats_codecs'])
 
     def create_quality_settings(self, layout):
-        self.quality_group_box = QGroupBox()
-        group_box = self.quality_group_box
-        group_box.setProperty("title_key", "quality_settings")
-        group_box.setTitle(self.translator.translate("quality_settings", "Настройки качества по платформам"))
-        group_box.setObjectName('SettingsGroup')
+        self.quality_group_box = self._create_accordion_section(
+            'quality',
+            'quality_settings',
+            'Настройки качества по платформам',
+            FluentIcon.VIDEO,
+            default_expanded=False,
+        )
 
         tip_qual = "Индивидуальное разрешение видео по умолчанию при добавлении ссылок с соответствующей платформы."
-        self._apply_tooltip(group_box, tip_qual)
+        self._apply_tooltip(self.quality_group_box, tip_qual)
 
-        grid_layout = QGridLayout(group_box)
-        grid_layout.setContentsMargins(16, 22, 16, 16)
+        grid_layout = QGridLayout()
+        grid_layout.setContentsMargins(0, 0, 0, 0)
         grid_layout.setSpacing(12)
         grid_layout.setVerticalSpacing(10)
         grid_layout.setHorizontalSpacing(16)
@@ -697,19 +768,21 @@ class SettingsTab(QWidget):
                 col = 0
                 row += 1
 
-        layout.addWidget(group_box)
+        self.quality_group_box.content_layout().addLayout(grid_layout)
+        layout.addWidget(self.quality_group_box)
 
     def create_sniffer_settings(self, layout):
-        group_box = QGroupBox()
-        group_box.setProperty("title_key", "sniffer_settings")
-        group_box.setTitle(self.translator.translate("sniffer_settings", "Универсальный сниффер потоков (Sniffer)"))
-        group_box.setObjectName('SettingsGroup')
-        v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(14)
-        v_layout.setContentsMargins(16, 22, 16, 16)
+        card = self._create_accordion_section(
+            'sniffer',
+            'sniffer_settings',
+            'Универсальный сниффер потоков (Sniffer)',
+            FluentIcon.SEARCH,
+            default_expanded=False,
+        )
+        v_layout = card.content_layout()
 
         tip_sniffer = "Автономный сетевой анализатор на базе Chromium: активируется при сбое прямого экстрактора yt-dlp для перехвата m3u8, mpd и прямых видеопотоков."
-        self._apply_tooltip(group_box, tip_sniffer)
+        self._apply_tooltip(card, tip_sniffer)
 
         # Тумблер включения каскадного сниффера
         sniffer_enable_layout = QHBoxLayout()
@@ -758,20 +831,23 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.sniffer_timeout_spin, tip_timeout)
 
         v_layout.addWidget(self.sniffer_options_widget)
-        layout.addWidget(group_box)
+        layout.addWidget(self.accordion_sections['sniffer'])
 
     def update_sniffer_widgets_state(self):
         if hasattr(self, 'sniffer_options_widget') and hasattr(self, 'sniffer_enabled_checkbox'):
             self.sniffer_options_widget.setEnabled(self.sniffer_enabled_checkbox.isChecked())
+        if hasattr(self, '_update_section_summaries'):
+            self._update_section_summaries()
 
     def create_cookies_settings(self, layout):
-        group_box = QGroupBox()
-        group_box.setProperty("title_key", "cookies_settings")
-        group_box.setTitle(self.translator.translate("cookies_settings", "Cookies и авторизация"))
-        group_box.setObjectName('SettingsGroup')
-        v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(14)
-        v_layout.setContentsMargins(16, 22, 16, 16)
+        card = self._create_accordion_section(
+            'cookies',
+            'cookies_settings',
+            'Cookies и авторизация',
+            FluentIcon.DOCUMENT,
+            default_expanded=False,
+        )
+        v_layout = card.content_layout()
 
         # Куки переключатель
         cookies_layout = QHBoxLayout()
@@ -824,8 +900,8 @@ class SettingsTab(QWidget):
         self.btn_cookie_help.setIcon(FluentIcon.HELP)
         self.btn_cookie_help.clicked.connect(self.show_cookie_help_dialog)
         self.lbl_cookie_status = BodyLabel("")
+        self.lbl_cookie_status.setObjectName('HintLabel')
         self.lbl_cookie_status.setWordWrap(True)
-        self.lbl_cookie_status.setStyleSheet("color: #888888; font-size: 12px;")
         cookie_test_layout.addWidget(self.btn_test_cookies)
         cookie_test_layout.addWidget(self.btn_cookie_help)
         cookie_test_layout.addSpacing(10)
@@ -838,7 +914,7 @@ class SettingsTab(QWidget):
         self.rb_cookie_file.setProperty("text_key", "cookie_file")
         self.rb_cookie_file.setText(self.translator.translate("cookie_file", "Файл cookie"))
         self.cookies_lbl = BodyLabel()
-        self.cookies_lbl.setStyleSheet("color: #005fb8;")
+        self.cookies_lbl.setObjectName('ActionLinkLabel')
         self.cookies_btn = PushButton("Выбрать файл")
         self.cookies_btn.setIcon(FluentIcon.DOCUMENT)
 
@@ -849,19 +925,20 @@ class SettingsTab(QWidget):
         co_layout.addLayout(file_opt_layout)
 
         v_layout.addWidget(self.cookies_options_widget)
-        layout.addWidget(group_box)
+        layout.addWidget(self.accordion_sections['cookies'])
 
     def create_diagnostics_settings(self, layout):
-        group_box = QGroupBox()
-        group_box.setProperty("title_key", "diagnostics_settings")
-        group_box.setTitle(self.translator.translate("diagnostics_settings", "Диагностика окружения и сети"))
-        group_box.setObjectName('SettingsGroup')
-        v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(14)
-        v_layout.setContentsMargins(16, 22, 16, 16)
+        card = self._create_accordion_section(
+            'diagnostics',
+            'diagnostics_settings',
+            'Диагностика окружения и сети',
+            FluentIcon.SPEED_HIGH,
+            default_expanded=False,
+        )
+        v_layout = card.content_layout()
 
         tip_diag = "Проверка состояния системных утилит (Deno, FFmpeg) и измерение сетевой задержки к медиа-сервисам."
-        self._apply_tooltip(group_box, tip_diag)
+        self._apply_tooltip(card, tip_diag)
 
         # Deno статус
         deno_layout = QHBoxLayout()
@@ -951,9 +1028,9 @@ class SettingsTab(QWidget):
         self.btn_test_net.setIcon(FluentIcon.SPEED_HIGH)
         self.btn_test_net.clicked.connect(self.on_test_net_clicked)
         self.lbl_net_status = BodyLabel()
+        self.lbl_net_status.setObjectName('HintLabel')
         self.lbl_net_status.setTextFormat(Qt.TextFormat.RichText)
         self.lbl_net_status.setText(self.translator.translate("network_status_idle", "Нажмите для проверки сетевой задержки к YouTube, VK, RuTube, KinoPub"))
-        self.lbl_net_status.setStyleSheet("color: #888888; font-size: 12px;")
         self.lbl_net_status.setWordWrap(True)
 
         net_layout.addWidget(self.btn_test_net)
@@ -965,16 +1042,17 @@ class SettingsTab(QWidget):
         self._apply_tooltip(self.btn_test_net, tip_net)
         self._apply_tooltip(self.lbl_net_status, tip_net)
 
-        layout.addWidget(group_box)
+        layout.addWidget(self.accordion_sections['diagnostics'])
 
     def create_general_settings(self, layout):
-        group_box = QGroupBox()
-        group_box.setProperty("title_key", "app_system_settings")
-        group_box.setTitle(self.translator.translate("app_system_settings", "Приложение и система"))
-        group_box.setObjectName('SettingsGroup')
-        v_layout = QVBoxLayout(group_box)
-        v_layout.setSpacing(14)
-        v_layout.setContentsMargins(16, 22, 16, 16)
+        card = self._create_accordion_section(
+            'app_system',
+            'app_system_settings',
+            'Приложение и система',
+            FluentIcon.SETTING,
+            default_expanded=False,
+        )
+        v_layout = card.content_layout()
 
         # Тема оформления
         theme_layout = QHBoxLayout()
@@ -1078,7 +1156,7 @@ class SettingsTab(QWidget):
         backup_layout.addWidget(self.btn_import_backup)
         v_layout.addLayout(backup_layout)
 
-        layout.addWidget(group_box)
+        layout.addWidget(self.accordion_sections['app_system'])
 
     def on_test_net_clicked(self):
         self.btn_test_net.setEnabled(False)
@@ -1252,6 +1330,19 @@ class SettingsTab(QWidget):
         self.speed_combo.blockSignals(False)
 
     def update_translations(self):
+        if hasattr(self, 'settings_title_lbl'):
+            self.settings_title_lbl.setText(self.translator.translate('settings_page_title', 'Настройки'))
+        if hasattr(self, 'btn_expand_all'):
+            self.btn_expand_all.setText(self.translator.translate('settings_expand_all', 'Развернуть все'))
+        if hasattr(self, 'btn_collapse_all'):
+            self.btn_collapse_all.setText(self.translator.translate('settings_collapse_all', 'Свернуть все'))
+        if hasattr(self, 'accordion_sections'):
+            for card in self.accordion_sections.values():
+                t_key = card.property('title_key')
+                default_t = card.property('default_title') or ''
+                if t_key:
+                    card.set_title(self.translator.translate(t_key, default_t))
+
         if not hasattr(self, '_translatable_widgets') or self._translatable_widgets is None:
             self._translatable_widgets = [
                 (w, w.property("text_key"), w.property("title_key"))
@@ -1261,7 +1352,7 @@ class SettingsTab(QWidget):
         for widget, text_key, title_key in self._translatable_widgets:
             if text_key and hasattr(widget, 'setText'):
                 widget.setText(self.translator.translate(text_key))
-            if title_key and hasattr(widget, 'setTitle'):
+            if title_key and hasattr(widget, 'setTitle') and not isinstance(widget, AccordionSectionCard):
                 widget.setTitle(self.translator.translate(title_key))
 
         self.populate_speed_presets()
@@ -1289,6 +1380,7 @@ class SettingsTab(QWidget):
             self.cookies_lbl.setText(f'<a href="file:///{cookies_path}">{cookies_path}</a>')
         else:
             self.cookies_lbl.setText(self.translator.translate('file_not_selected'))
+        self._update_section_summaries()
 
     def load_settings(self):
         self.disconnect_signals()
@@ -1338,6 +1430,7 @@ class SettingsTab(QWidget):
             self.cookies_lbl.setText(f'<a href="file:///{cookies_path}">{cookies_path}</a>')
         else:
             self.cookies_lbl.setText(self.translator.translate('file_not_selected'))
+        self._update_section_summaries()
 
         cookie_browser = self.settings.value('cookie_browser', 'none')
         self.set_combo_by_data(self.cookie_browser_combo, cookie_browser)
@@ -1409,7 +1502,8 @@ class SettingsTab(QWidget):
         self.settings.setValue('sniffer_timeout', self.sniffer_timeout_spin.value())
         self.update_sniffer_widgets_state()
         self.settings.setValue('parallel_downloads', self.parallel_downloads_spin.value())
-        self.parent_window.thread_pool.setMaxThreadCount(max(self.parallel_downloads_spin.value() + 8, 10))
+        if hasattr(self.parent_window, 'thread_pool') and self.parent_window.thread_pool:
+            self.parent_window.thread_pool.setMaxThreadCount(max(self.parallel_downloads_spin.value() + 8, 10))
 
         subs_on = self.subtitles_checkbox.isChecked()
         self.settings.setValue('subtitles_enabled', subs_on)
@@ -1481,6 +1575,7 @@ class SettingsTab(QWidget):
                 self.parent_window.quick_theme_combo.setCurrentIndex(0 if new_theme == 'dark' else 1)
                 self.parent_window.quick_theme_combo.blockSignals(False)
             self.update_status_indicators()
+        self._update_section_summaries()
 
 
 
@@ -1610,12 +1705,14 @@ class SettingsTab(QWidget):
         browser = self.cookie_browser_combo.currentData()
         if not browser or browser == 'none':
             self.lbl_cookie_status.setText("Выберите браузер в списке")
-            self.lbl_cookie_status.setStyleSheet("color: #d83b01; font-size: 12px;")
+            self.lbl_cookie_status.setObjectName("StatusLabelDanger")
+            self._polish_widget(self.lbl_cookie_status)
             return
 
         self.btn_test_cookies.setEnabled(False)
         self.lbl_cookie_status.setText(f"Чтение cookies из {browser.capitalize()}...")
-        self.lbl_cookie_status.setStyleSheet("color: #0078D7; font-size: 12px;")
+        self.lbl_cookie_status.setObjectName("ActionLinkLabel")
+        self._polish_widget(self.lbl_cookie_status)
 
         self._cookie_thread = CookieTestThread(browser, self)
         self._cookie_thread.result_ready.connect(self._on_cookies_test_result)
@@ -1624,9 +1721,16 @@ class SettingsTab(QWidget):
 
     def _on_cookies_test_result(self, ok, msg):
         self.lbl_cookie_status.setText(msg)
-        color = "#107c41" if ok else "#d83b01"
-        self.lbl_cookie_status.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self.lbl_cookie_status.setObjectName("StatusLabelSuccess" if ok else "StatusLabelDanger")
+        self._polish_widget(self.lbl_cookie_status)
         self.btn_test_cookies.setEnabled(True)
+
+    @staticmethod
+    def _polish_widget(widget):
+        style = widget.style() if widget else None
+        if style is not None:
+            style.unpolish(widget)
+            style.polish(widget)
 
     def show_cookie_help_dialog(self):
         from PyQt6.QtWidgets import QMessageBox
@@ -1672,8 +1776,12 @@ class SettingsTab(QWidget):
 
     def scroll_to_quality_settings(self):
         if hasattr(self, 'quality_group_box') and self.quality_group_box and hasattr(self, 'scroll_area'):
-            target_y = self.quality_group_box.pos().y()
-            self.scroll_area.verticalScrollBar().setValue(max(0, target_y - 10))
+            if hasattr(self.quality_group_box, 'set_expanded'):
+                self.quality_group_box.set_expanded(True)
+            QTimer.singleShot(
+                20,
+                lambda: self.scroll_area.ensureWidgetVisible(self.quality_group_box, 0, 20),
+            )
 
     def update_theme_icons(self):
         """Обновляет иконки на кнопках вкладки настроек при смене темы."""
@@ -1691,32 +1799,73 @@ class SettingsTab(QWidget):
             self.btn_test_net.setIcon(FluentIcon.SPEED_HIGH)
         self.update_status_indicators()
 
-    def update_status_indicators(self):
-        """Обновляет индикаторы Deno и FFmpeg с устойчивыми к смене темы цветами."""
-        theme_str = self.settings.value('theme', 'dark')
-        success_color = '#10b981' if theme_str == 'dark' else '#107c41'
-        warning_color = '#f59e0b' if theme_str == 'dark' else '#b45309'
-        danger_color = '#ef4444' if theme_str == 'dark' else '#dc2626'
+    def _update_section_summaries(self):
+        """Обновляет краткие сводки и бейджи в заголовках аккордеонов."""
+        sections = getattr(self, 'accordion_sections', {})
+        if not sections:
+            return
 
+        if 'download_storage' in sections:
+            save_path = str(self.settings.value('save_path', '') or '')
+            short_path = os.path.basename(save_path.rstrip('/\\')) or save_path
+            threads = int(self.settings.value('parallel_downloads', 2) or 2)
+            sections['download_storage'].set_summary(
+                f"{short_path or self.translator.translate('folder_not_selected')} · {threads}×"
+            )
+
+        if 'formats_codecs' in sections and hasattr(self, 'audio_fmt_combo'):
+            fmt = str(self.audio_fmt_combo.currentData() or 'mp3').upper()
+            codec = str(self.codec_combo.currentData() or 'auto')
+            sections['formats_codecs'].set_summary(f"{fmt} · {codec}")
+
+        if 'quality' in sections and hasattr(self, 'quality_combos'):
+            yt_combo = self.quality_combos.get('YouTube')
+            yt_text = yt_combo.currentText() if yt_combo else ''
+            sections['quality'].set_summary(f"YouTube: {yt_text}" if yt_text else "")
+
+        if 'sniffer' in sections and hasattr(self, 'sniffer_enabled_checkbox'):
+            on = self.sniffer_enabled_checkbox.isChecked()
+            badge_text = self.translator.translate(
+                'settings_summary_on' if on else 'settings_summary_off',
+                'Включено' if on else 'Отключено',
+            )
+            sections['sniffer'].set_status_badge(badge_text, 'success' if on else 'muted')
+
+        if 'cookies' in sections and hasattr(self, 'cookies_checkbox'):
+            on = self.cookies_checkbox.isChecked()
+            browser = self.cookie_browser_combo.currentData() if hasattr(self, 'cookie_browser_combo') else 'none'
+            if on and browser and browser != 'none':
+                sections['cookies'].set_summary(str(browser).capitalize())
+            else:
+                sections['cookies'].set_summary('')
+            badge_text = self.translator.translate(
+                'settings_summary_on' if on else 'settings_summary_off',
+                'Включено' if on else 'Отключено',
+            )
+            sections['cookies'].set_status_badge(badge_text, 'success' if on else 'muted')
+
+        if 'app_system' in sections:
+            theme = str(self.settings.value('theme', 'dark') or 'dark').capitalize()
+            lang = str(self.settings.value('language', 'ru') or 'ru').upper()
+            sections['app_system'].set_summary(f"{theme} · {lang}")
+
+    def update_status_indicators(self):
+        """Обновляет индикаторы Deno, FFmpeg и Playwright с устойчивыми к смене темы стилями."""
         deno_installed = bool(shutil.which('deno') or os.path.exists(os.path.expanduser('~/.deno/bin/deno.exe')))
         if hasattr(self, 'lbl_deno_icon') and hasattr(self, 'lbl_deno_status'):
             if deno_installed:
                 self.lbl_deno_icon.setIcon(FluentIcon.ACCEPT.colored(QColor('#107c41'), QColor('#10b981')))
                 self.lbl_deno_status.setText("Установлен и активен")
-                self.lbl_deno_status.setTextColor(QColor('#107c41'), QColor('#10b981'))
-                self.lbl_deno_status.setStyleSheet(f"color: {success_color} !important; font-weight: 600;")
                 self.lbl_deno_status.setObjectName("StatusLabelSuccess")
             else:
                 self.lbl_deno_icon.setIcon(FluentIcon.INFO.colored(QColor('#b45309'), QColor('#f59e0b')))
                 self.lbl_deno_status.setText("Не обнаружен в системе (рекомендуется)")
-                self.lbl_deno_status.setTextColor(QColor('#b45309'), QColor('#f59e0b'))
-                self.lbl_deno_status.setStyleSheet(f"color: {warning_color} !important; font-weight: 600;")
                 self.lbl_deno_status.setObjectName("StatusLabelWarning")
 
             f = self.lbl_deno_status.font()
             f.setBold(True)
             self.lbl_deno_status.setFont(f)
-            self.lbl_deno_status.style().polish(self.lbl_deno_status)
+            self._polish_widget(self.lbl_deno_status)
 
         if hasattr(self, 'btn_copy_deno_cmd'):
             self.btn_copy_deno_cmd.setVisible(not deno_installed)
@@ -1726,20 +1875,16 @@ class SettingsTab(QWidget):
             if ffmpeg_ok:
                 self.lbl_ff_icon.setIcon(FluentIcon.ACCEPT.colored(QColor('#107c41'), QColor('#10b981')))
                 self.lbl_ff_status.setText("Активен (assets/ffmpeg/bin)")
-                self.lbl_ff_status.setTextColor(QColor('#107c41'), QColor('#10b981'))
-                self.lbl_ff_status.setStyleSheet(f"color: {success_color} !important; font-weight: 600;")
                 self.lbl_ff_status.setObjectName("StatusLabelSuccess")
             else:
                 self.lbl_ff_icon.setIcon(FluentIcon.CLOSE.colored(QColor('#dc2626'), QColor('#ef4444')))
                 self.lbl_ff_status.setText("Не найден")
-                self.lbl_ff_status.setTextColor(QColor('#dc2626'), QColor('#ef4444'))
-                self.lbl_ff_status.setStyleSheet(f"color: {danger_color} !important; font-weight: 600;")
                 self.lbl_ff_status.setObjectName("StatusLabelDanger")
 
             f = self.lbl_ff_status.font()
             f.setBold(True)
             self.lbl_ff_status.setFont(f)
-            self.lbl_ff_status.style().polish(self.lbl_ff_status)
+            self._polish_widget(self.lbl_ff_status)
 
         # Playwright & Edge/Chromium статус (сниффер)
         has_playwright = False
@@ -1760,26 +1905,34 @@ class SettingsTab(QWidget):
             if has_playwright and has_edge_or_chrome:
                 self.lbl_playwright_icon.setIcon(FluentIcon.ACCEPT.colored(QColor('#107c41'), QColor('#10b981')))
                 self.lbl_playwright_status.setText("Активен (Playwright + Edge/Chrome)")
-                self.lbl_playwright_status.setTextColor(QColor('#107c41'), QColor('#10b981'))
-                self.lbl_playwright_status.setStyleSheet(f"color: {success_color} !important; font-weight: 600;")
                 self.lbl_playwright_status.setObjectName("StatusLabelSuccess")
             elif has_playwright:
                 self.lbl_playwright_icon.setIcon(FluentIcon.INFO.colored(QColor('#b45309'), QColor('#f59e0b')))
                 self.lbl_playwright_status.setText("Playwright установлен (браузер не найден)")
-                self.lbl_playwright_status.setTextColor(QColor('#b45309'), QColor('#f59e0b'))
-                self.lbl_playwright_status.setStyleSheet(f"color: {warning_color} !important; font-weight: 600;")
                 self.lbl_playwright_status.setObjectName("StatusLabelWarning")
             else:
                 self.lbl_playwright_icon.setIcon(FluentIcon.INFO.colored(QColor('#b45309'), QColor('#f59e0b')))
                 self.lbl_playwright_status.setText("Не обнаружен (сниффер отключен)")
-                self.lbl_playwright_status.setTextColor(QColor('#b45309'), QColor('#f59e0b'))
-                self.lbl_playwright_status.setStyleSheet(f"color: {warning_color} !important; font-weight: 600;")
                 self.lbl_playwright_status.setObjectName("StatusLabelWarning")
 
             f_pw = self.lbl_playwright_status.font()
             f_pw.setBold(True)
             self.lbl_playwright_status.setFont(f_pw)
-            self.lbl_playwright_status.style().polish(self.lbl_playwright_status)
+            self._polish_widget(self.lbl_playwright_status)
 
         if hasattr(self, 'btn_copy_playwright_cmd'):
             self.btn_copy_playwright_cmd.setVisible(not (has_playwright and has_edge_or_chrome))
+
+        diag_card = getattr(self, 'accordion_sections', {}).get('diagnostics')
+        if diag_card is not None:
+            all_ok = ffmpeg_ok and has_playwright and has_edge_or_chrome
+            diag_card.set_summary(
+                f"FFmpeg: {'OK' if ffmpeg_ok else '—'} · Sniffer: {'OK' if (has_playwright and has_edge_or_chrome) else '—'} · Deno: {'OK' if deno_installed else '—'}"
+            )
+            diag_card.set_status_badge(
+                self.translator.translate(
+                    'settings_summary_ok' if all_ok else 'settings_summary_attention',
+                    'Готово' if all_ok else 'Требует внимания',
+                ),
+                'success' if all_ok else ('danger' if not ffmpeg_ok else 'warning'),
+            )
